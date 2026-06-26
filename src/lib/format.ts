@@ -69,6 +69,7 @@ export const workTypeLabel: Record<string, string> = {
   directional_bore: 'Directional Bore',
   splicing: 'Splicing',
   mdu: 'MDU',
+  cable_plow: 'Cable Plow',
 }
 
 export type BadgeTone = 'slate' | 'blue' | 'green' | 'amber' | 'red' | 'cyan'

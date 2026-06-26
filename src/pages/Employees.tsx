@@ -8,7 +8,7 @@ import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
 import { moneyExact } from '../lib/format'
-import { weeklyHoursByEmployee } from '../lib/analytics'
+import { weekStart, weekEnd } from '../lib/analytics'
 import type { Employee } from '../types'
 
 const OT_THRESHOLD = 40
@@ -103,10 +103,20 @@ export function Employees() {
   const [dialog, setDialog] = useState<{ open: boolean; emp: Employee | null }>({ open: false, emp: null })
   const today = new Date().toISOString().slice(0, 10)
 
-  const weekHours = useMemo(
-    () => weeklyHoursByEmployee(data.timecards, today),
-    [data.timecards, today],
-  )
+  // Build weekly hours from clock entries (actual time worked) so hours show
+  // even when production hasn't been logged yet for the week.
+  const weekHours = useMemo(() => {
+    const wStart = weekStart(today)
+    const wEnd   = weekEnd(today)
+    const map = new Map<string, number>()
+    for (const ce of data.clockEntries ?? []) {
+      const d = ce.clockIn.slice(0, 10)
+      if (d < wStart || d > wEnd || !ce.clockOut) continue
+      const hrs = (new Date(ce.clockOut).getTime() - new Date(ce.clockIn).getTime()) / 3_600_000
+      map.set(ce.employeeId, (map.get(ce.employeeId) ?? 0) + hrs)
+    }
+    return map
+  }, [data.clockEntries, today])
 
   const save = (form: EmpForm) => {
     const payload = {

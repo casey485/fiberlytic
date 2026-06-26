@@ -1,7 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type {
   AppData,
+  AnnotationShape,
   Client,
+  ClockEntry,
   Crew,
   Employee,
   Equipment,
@@ -13,13 +15,15 @@ import type {
   ProductionLineItem,
   PnLEntry,
   Project,
+  ProjectFile,
   RateCard,
   RateCardUnit,
   Timecard,
 } from '../types'
 import { generateSeedData } from '../data/seed'
 import { crewLaborCost } from '../lib/laborCost'
-import { revenuePerFoot } from '../lib/analytics'
+import { daysInMonth, workTypeDivisions } from '../lib/analytics'
+import { saveBlob, deleteBlob } from '../lib/fileStore'
 
 const STORAGE_KEY = 'fiberlytic:data:v1'
 
@@ -31,6 +35,27 @@ function migrateData(raw: AppData): AppData {
     payAmount: c.payAmount ?? c.dayRate ?? 0,
     members: c.members ?? [],
   }))
+
+  // Migrate projects: promote legacy `workType` (singular) → `workTypes` (array),
+  // back-fill retentionPct to 10% when unset, recompute footageComplete from production
+  const footageByProject = new Map<string, number>()
+  for (const pe of raw.production ?? []) {
+    footageByProject.set(pe.projectId, (footageByProject.get(pe.projectId) ?? 0) + pe.footage)
+  }
+  const projects = (raw.projects ?? []).map((p) => {
+    const pAny = p as unknown as Record<string, unknown>
+    const withTypes: typeof p = Array.isArray(pAny.workTypes)
+      ? p
+      : { ...p, workTypes: (pAny.workType ? [pAny.workType] : []) as import('../types').WorkType[] }
+    const footageComplete = withTypes.status === 'complete'
+      ? withTypes.footageComplete
+      : (footageByProject.get(withTypes.id) ?? 0)
+    return {
+      ...withTypes,
+      footageComplete,
+      retentionPct: withTypes.retentionPct ?? 0.10,
+    }
+  })
   const employees = (raw.employees ?? []).map((e) => ({
     ...e,
     isForeman: e.isForeman ?? false,
@@ -143,18 +168,46 @@ function migrateData(raw: AppData): AppData {
     ]
   }
 
+  // Migrate rateCards: promote legacy `division` (singular) → `divisions` (array)
+  const rateCards = (raw.rateCards ?? []).map((rc) => {
+    const rcAny = rc as unknown as Record<string, unknown>
+    if (Array.isArray(rcAny.divisions)) return rc
+    const legacy = rcAny.division as string | undefined
+    const divisions = (legacy ? [legacy] : []) as import('../types').RateCardDivision[]
+    return { ...rc, divisions }
+  })
+
+  // Back-fill revenue for pnl entries that were saved as $0 before rate-card-based
+  // revenue calculation was in place. Uses the same priority logic as the production form.
+  const productionById = new Map((raw.production ?? []).map((pe) => [pe.id, pe]))
+  const rateCardUnits = raw.rateCardUnits ?? []
+  const pnlWithRevenue = pnl.map((entry) => {
+    if (entry.revenue !== 0) return entry
+    if (!entry.productionEntryId) return entry
+    const pe = productionById.get(entry.productionEntryId)
+    if (!pe) return entry
+    const proj = projects.find((p) => p.id === pe.projectId)
+    const rate = resolveRatePerFoot(proj, rateCards, rateCardUnits)
+    if (rate <= 0) return entry
+    return { ...entry, revenue: Math.round(pe.footage * rate) }
+  })
+
   return {
     ...raw,
     crews,
     employees,
-    pnl,
+    projects,
+    pnl: pnlWithRevenue,
     clients: raw.clients ?? [],
-    rateCards: raw.rateCards ?? [],
+    rateCards,
     rateCardUnits: raw.rateCardUnits ?? [],
     productionLineItems: raw.productionLineItems ?? [],
     timecards: raw.timecards ?? [],
     jobExpenses,
     equipment: raw.equipment ?? [],
+    projectFiles: raw.projectFiles ?? [],
+    annotations: raw.annotations ?? [],
+    clockEntries: raw.clockEntries ?? [],
   }
 }
 
@@ -185,14 +238,14 @@ interface DataContextValue {
   updateCrew: (id: string, patch: Partial<Crew>) => void
   deleteCrew: (id: string) => void
   // Production (also rolls up footage + a P&L line)
-  addProduction: (e: Omit<ProductionEntry, 'id'>, lineItems?: LineItemInput[]) => void
+  addProduction: (e: Omit<ProductionEntry, 'id'>, lineItems?: LineItemInput[]) => string
   deleteProduction: (id: string) => void
   // Materials
   addMaterial: (m: Omit<Material, 'id'>) => void
   updateMaterial: (id: string, patch: Partial<Material>) => void
   deleteMaterial: (id: string) => void
   // Photos
-  addPhoto: (p: Omit<Photo, 'id'>) => void
+  addPhoto: (p: Omit<Photo, 'id'>) => Photo
   deletePhoto: (id: string) => void
   // Invoices
   addInvoice: (i: Omit<Invoice, 'id'>) => void
@@ -226,8 +279,10 @@ interface DataContextValue {
     notes?: string
     employees: { employeeId: string; hours: number }[]
     equipmentIds?: string[]
-  }) => void
+    lineItems?: LineItemInput[]
+  }) => string
   deleteCrewDayEntry: (productionEntryId: string) => void
+  patchProductionEntry: (id: string, patch: { projectId?: string; crewId?: string; lineItems?: LineItemInput[] }) => void
   // Job expenses
   addJobExpense: (e: Omit<JobExpense, 'id'>) => void
   deleteJobExpense: (id: string) => void
@@ -235,22 +290,85 @@ interface DataContextValue {
   addEquipment: (e: Omit<Equipment, 'id'>) => Equipment
   updateEquipment: (id: string, patch: Partial<Equipment>) => void
   deleteEquipment: (id: string) => void
+  // Project files (blob stored in IndexedDB; only metadata goes to localStorage)
+  addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => void
+  deleteProjectFile: (id: string) => void
+  // Annotations (redline markup)
+  addAnnotation: (a: Omit<AnnotationShape, 'id'>) => void
+  deleteAnnotation: (id: string) => void
+  clearAnnotations: (fileId: string, page: number) => void
+  // Clock-in / geofence
+  addClockIn: (entry: Omit<ClockEntry, 'id'>) => ClockEntry
+  clockOut: (id: string) => void
+  deleteClockEntry: (id: string) => void
+  updateClockEntry: (id: string, patch: Partial<Omit<ClockEntry, 'id'>>) => void
   // Misc
   resetData: () => void
 }
 
 const DataContext = createContext<DataContextValue | null>(null)
 
+/**
+ * Resolves per-foot revenue rate using the same priority as the Production form:
+ *   1. LF unit from rate card matched by clientId + work-type division
+ *   2. LF unit from rate card matched by work-type division only
+ *   3. LF unit from any rate card that has one
+ *   4. Project contract pricing (contractValue / footageGoal) as last resort
+ *   5. 0 (no rate configured)
+ * Returns 12 when project is undefined (no project found at all).
+ */
+function resolveRatePerFoot(
+  project: Project | undefined,
+  rateCards: RateCard[],
+  rateCardUnits: RateCardUnit[],
+): number {
+  if (!project) return 12
+
+  const divs = workTypeDivisions(project.workTypes ?? [])
+  const hasLF = (rcId: string) => rateCardUnits.some((u) => u.rateCardId === rcId && u.uom === 'LF' && u.rate > 0)
+
+  let cardId: string | undefined
+  if (project.clientId && divs.length > 0)
+    cardId = rateCards.find((rc) => rc.clientId === project.clientId && rc.divisions.some((d) => divs.includes(d)) && hasLF(rc.id))?.id
+  if (!cardId && divs.length > 0)
+    cardId = rateCards.find((rc) => rc.divisions.some((d) => divs.includes(d)) && hasLF(rc.id))?.id
+  if (!cardId)
+    cardId = rateCards.find((rc) => hasLF(rc.id))?.id
+
+  const rateCardRate = cardId ? (rateCardUnits.find((u) => u.rateCardId === cardId && u.uom === 'LF' && u.rate > 0)?.rate ?? 0) : 0
+  if (rateCardRate > 0) return rateCardRate
+
+  return project.footageGoal > 0 ? project.contractValue / project.footageGoal : 0
+}
+
 export function DataProvider({ children }: { children: ReactNode }) {
   const [data, setData] = useState<AppData>(loadData)
 
+  // Strip base64 blobs before writing to localStorage — blobs live in IndexedDB.
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
+      const slim = {
+        ...data,
+        projectFiles: data.projectFiles.map(({ dataUrl: _skip, ...rest }) => rest),
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(slim))
     } catch {
-      // storage full / unavailable — non-fatal for a prototype
+      // storage quota — non-fatal
     }
   }, [data])
+
+  // One-time migration: if legacy data has dataUrls in localStorage, move them to IndexedDB.
+  useEffect(() => {
+    const legacy = data.projectFiles.filter((f) => f.dataUrl)
+    if (legacy.length === 0) return
+    Promise.all(legacy.map((f) => saveBlob(f.id, f.dataUrl!))).then(() => {
+      setData((d) => ({
+        ...d,
+        projectFiles: d.projectFiles.map(({ dataUrl: _skip, ...rest }) => rest),
+      }))
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const value = useMemo<DataContextValue>(() => {
     const recomputeFootage = (projects: Project[], production: ProductionEntry[]) =>
@@ -259,7 +377,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const total = production
           .filter((e) => e.projectId === p.id)
           .reduce((sum, e) => sum + e.footage, 0)
-        return { ...p, footageComplete: Math.min(p.footageGoal, total) }
+        return { ...p, footageComplete: total }
       })
 
     return {
@@ -298,7 +416,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
 
       addProduction(e, lineItems) {
-        const entry: ProductionEntry = { ...e, id: newId('prod') }
+        const entryId = newId('prod')
+        const entry: ProductionEntry = { ...e, id: entryId }
         setData((d) => {
           const crew = d.crews.find((c) => c.id === entry.crewId)
           const project = d.projects.find((p) => p.id === entry.projectId)
@@ -311,13 +430,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
             : null
 
           const laborCost = crewLaborCost(crew, entry.hours, entry.footage).total
-          const revenue = revenueFromItems ?? (project ? entry.footage * revenuePerFoot(project) : entry.footage * 12)
+          const revenue = revenueFromItems ?? entry.footage * resolveRatePerFoot(project, d.rateCards, d.rateCardUnits)
 
-          // Sum daily cost of all active equipment assigned to this crew (monthly / 21 working days)
+          // Sum daily cost of all active equipment assigned to this crew (monthly / actual days in that month)
           const equipmentCost = Math.round(
             d.equipment
               .filter((eq) => eq.active && eq.crewId === entry.crewId)
-              .reduce((s, eq) => s + eq.monthlyCost / 21, 0)
+              .reduce((s, eq) => s + eq.monthlyCost / daysInMonth(entry.date), 0)
           )
 
           const pnlLine: PnLEntry = {
@@ -344,8 +463,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
             projects: recomputeFootage(d.projects, production),
           }
         })
+        return entryId
       },
       deleteProduction(id) {
+        for (const p of data.photos) {
+          if (p.productionEntryId === id && p.url.startsWith('idb:')) deleteBlob(p.url.slice(4))
+        }
         setData((d) => {
           const entry = d.production.find((e) => e.id === id)
           const production = d.production.filter((e) => e.id !== id)
@@ -359,6 +482,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
             production,
             pnl,
             productionLineItems: d.productionLineItems.filter((li) => li.productionEntryId !== id),
+            photos: d.photos.filter((p) => p.productionEntryId !== id),
             projects: recomputeFootage(d.projects, production),
           }
         })
@@ -375,9 +499,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
 
       addPhoto(p) {
-        setData((d) => ({ ...d, photos: [{ ...p, id: newId('photo') }, ...d.photos] }))
+        const photo: Photo = { ...p, id: newId('photo') }
+        setData((d) => ({ ...d, photos: [photo, ...d.photos] }))
+        return photo
       },
       deletePhoto(id) {
+        const photo = data.photos.find((p) => p.id === id)
+        if (photo?.url.startsWith('idb:')) deleteBlob(photo.url.slice(4))
         setData((d) => ({ ...d, photos: d.photos.filter((p) => p.id !== id) }))
       },
 
@@ -456,15 +584,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
 
       // --- Crew day entry ---
-      addCrewDayEntry({ date, projectId, crewId, footage, notes, employees: empEntries, equipmentIds }) {
+      addCrewDayEntry({ date, projectId, crewId, footage, notes, employees: empEntries, equipmentIds, lineItems }) {
+        const entryId = newId('prod')
         setData((d) => {
           const totalHours = empEntries.reduce((s, e) => s + e.hours, 0)
+          const hasLineItems = lineItems && lineItems.length > 0
+          const revenueFromItems = hasLineItems
+            ? lineItems.reduce((s, li) => s + li.extendedTotal, 0)
+            : null
+          // Footage from LF line items when provided, otherwise use raw footage
+          const effectiveFootage = hasLineItems
+            ? Math.round(lineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0))
+            : footage
           const entry: ProductionEntry = {
-            id: newId('prod'),
+            id: entryId,
             date,
             projectId,
             crewId,
-            footage,
+            footage: effectiveFootage,
             hours: totalHours,
             notes,
             equipmentIds,
@@ -477,12 +614,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
           }, 0)
 
           const project = d.projects.find((p) => p.id === projectId)
-          const revenue = project ? footage * revenuePerFoot(project) : footage * 12
+          const revenue = revenueFromItems ?? effectiveFootage * resolveRatePerFoot(project, d.rateCards, d.rateCardUnits)
 
           const equipmentCost = Math.round(
             d.equipment
               .filter((eq) => eq.active && eq.crewId === crewId)
-              .reduce((s, eq) => s + eq.monthlyCost / 21, 0)
+              .reduce((s, eq) => s + eq.monthlyCost / daysInMonth(date), 0)
           )
 
           const pnlLine: PnLEntry = {
@@ -519,16 +656,25 @@ export function DataProvider({ children }: { children: ReactNode }) {
             }
           })
 
+          const newLineItems: ProductionLineItem[] = hasLineItems
+            ? lineItems.map((li) => ({ ...li, id: newId('pli'), productionEntryId: entry.id }))
+            : []
+
           return {
             ...d,
             production,
             pnl: [...d.pnl, pnlLine],
             timecards: [...d.timecards, ...timecards],
+            productionLineItems: [...d.productionLineItems, ...newLineItems],
             projects: recomputeFootage(d.projects, production),
           }
         })
+        return entryId
       },
       deleteCrewDayEntry(productionEntryId) {
+        for (const p of data.photos) {
+          if (p.productionEntryId === productionEntryId && p.url.startsWith('idb:')) deleteBlob(p.url.slice(4))
+        }
         setData((d) => {
           const production = d.production.filter((e) => e.id !== productionEntryId)
           return {
@@ -537,8 +683,47 @@ export function DataProvider({ children }: { children: ReactNode }) {
             pnl: d.pnl.filter((e) => e.productionEntryId !== productionEntryId),
             productionLineItems: d.productionLineItems.filter((li) => li.productionEntryId !== productionEntryId),
             timecards: d.timecards.filter((t) => t.productionEntryId !== productionEntryId),
+            photos: d.photos.filter((p) => p.productionEntryId !== productionEntryId),
             projects: recomputeFootage(d.projects, production),
           }
+        })
+      },
+
+      patchProductionEntry(id, patch) {
+        setData((d) => {
+          const { lineItems: newLineItems, ...entryPatch } = patch
+          const hasNewLineItems = newLineItems && newLineItems.length > 0
+
+          // Recompute footage from LF line items when replacing them
+          const footagePatch = hasNewLineItems
+            ? { footage: Math.round(newLineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)) }
+            : {}
+
+          const production = d.production.map((e) =>
+            e.id !== id ? e : { ...e, ...entryPatch, ...footagePatch },
+          )
+          // Cascade project change to linked timecards, pnl, and photos
+          const timecards = patch.projectId
+            ? d.timecards.map((t) => t.productionEntryId === id ? { ...t, jobId: patch.projectId! } : t)
+            : d.timecards
+          // If new line items provided, update pnl revenue + replace line item records
+          let pnl = patch.projectId
+            ? d.pnl.map((e) => e.productionEntryId === id ? { ...e, projectId: patch.projectId! } : e)
+            : d.pnl
+          if (hasNewLineItems) {
+            const newRevenue = Math.round(newLineItems.reduce((s, li) => s + li.extendedTotal, 0))
+            pnl = pnl.map((e) => e.productionEntryId === id ? { ...e, revenue: newRevenue } : e)
+          }
+          const productionLineItems = hasNewLineItems
+            ? [
+                ...d.productionLineItems.filter((li) => li.productionEntryId !== id),
+                ...newLineItems.map((li) => ({ ...li, id: newId('pli'), productionEntryId: id })),
+              ]
+            : d.productionLineItems
+          const photos = patch.projectId
+            ? d.photos.map((p) => p.productionEntryId === id ? { ...p, projectId: patch.projectId! } : p)
+            : d.photos
+          return { ...d, production, timecards, pnl, productionLineItems, photos, projects: recomputeFootage(d.projects, production) }
         })
       },
 
@@ -561,6 +746,54 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
       deleteEquipment(id) {
         setData((d) => ({ ...d, equipment: d.equipment.filter((e) => e.id !== id) }))
+      },
+
+      addProjectFile(f) {
+        const id = newId('pf')
+        const { dataUrl, ...meta } = f
+        saveBlob(id, dataUrl) // async — store blob in IndexedDB
+        setData((d) => ({ ...d, projectFiles: [...d.projectFiles, { ...meta, id }] }))
+      },
+      deleteProjectFile(id) {
+        deleteBlob(id) // async — clean up from IndexedDB
+        setData((d) => ({
+          ...d,
+          projectFiles: d.projectFiles.filter((f) => f.id !== id),
+          annotations: d.annotations.filter((a) => a.fileId !== id),
+        }))
+      },
+
+      addAnnotation(a) {
+        setData((d) => ({ ...d, annotations: [...d.annotations, { ...a, id: newId('ann') }] }))
+      },
+      deleteAnnotation(id) {
+        setData((d) => ({ ...d, annotations: d.annotations.filter((a) => a.id !== id) }))
+      },
+      clearAnnotations(fileId, page) {
+        setData((d) => ({ ...d, annotations: d.annotations.filter((a) => !(a.fileId === fileId && a.page === page)) }))
+      },
+
+      addClockIn(entry) {
+        const clock: ClockEntry = { ...entry, id: newId('clk') }
+        setData((d) => ({ ...d, clockEntries: [...(d.clockEntries ?? []), clock] }))
+        return clock
+      },
+      clockOut(id) {
+        setData((d) => ({
+          ...d,
+          clockEntries: (d.clockEntries ?? []).map((e) =>
+            e.id === id ? { ...e, clockOut: new Date().toISOString() } : e,
+          ),
+        }))
+      },
+      deleteClockEntry(id) {
+        setData((d) => ({ ...d, clockEntries: (d.clockEntries ?? []).filter((e) => e.id !== id) }))
+      },
+      updateClockEntry(id, patch) {
+        setData((d) => ({
+          ...d,
+          clockEntries: (d.clockEntries ?? []).map((e) => e.id !== id ? e : { ...e, ...patch }),
+        }))
       },
 
       resetData() {

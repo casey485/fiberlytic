@@ -16,10 +16,12 @@ import { legendSummary } from '../features/printkmz/legendEngine'
 import { OBJECT_TYPES, objectMeta } from '../features/printkmz/types'
 import type { DetectedObject, ObjectType } from '../features/printkmz/types'
 import { number } from '../lib/format'
+import { useRole } from '../store/RoleContext'
 
 export function PrintReview() {
   const { sessionId } = useParams<{ sessionId: string }>()
   const navigate = useNavigate()
+  const { isAdmin } = useRole()
   const session = usePrintSession(sessionId)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [typeFilter, setTypeFilter] = useState<ObjectType | 'all'>('all')
@@ -50,10 +52,10 @@ export function PrintReview() {
   if (!session) {
     return (
       <div>
-        <Link to="/print-reader" className="mb-4 inline-flex items-center gap-1 text-sm text-brand-600">
-          <ArrowLeft size={16} /> Back to Print Reader
+        <Link to={isAdmin ? '/print-reader' : '/'} className="mb-4 inline-flex items-center gap-1 text-sm text-brand-600">
+          <ArrowLeft size={16} /> {isAdmin ? 'Back to Print Reader' : 'Back to Dashboard'}
         </Link>
-        <Card className="p-10 text-center text-slate-500">Session not found.</Card>
+        <Card className="p-10 text-center text-slate-500">Print not found.</Card>
       </div>
     )
   }
@@ -101,8 +103,8 @@ export function PrintReview() {
 
   return (
     <div>
-      <Link to="/print-reader" className="mb-3 inline-flex items-center gap-1 text-sm text-brand-600 hover:text-brand-700">
-        <ArrowLeft size={16} /> Back to Print Reader
+      <Link to={isAdmin ? '/print-reader' : '/'} className="mb-3 inline-flex items-center gap-1 text-sm text-brand-600 hover:text-brand-700">
+        <ArrowLeft size={16} /> {isAdmin ? 'Back to Print Reader' : 'Back to Dashboard'}
       </Link>
 
       <PageHeader
@@ -114,7 +116,7 @@ export function PrintReview() {
         ]
           .filter(Boolean)
           .join(' · ')}
-        action={
+        action={isAdmin ? (
           <>
             <Badge tone={isSupabaseConfigured ? 'green' : 'slate'}>{isSupabaseConfigured ? 'Supabase' : 'Local'}</Badge>
             <Button variant="secondary" onClick={onSave} disabled={saveState.kind === 'saving'}>
@@ -127,7 +129,7 @@ export function PrintReview() {
               <Download size={16} /> Export KMZ
             </Button>
           </>
-        }
+        ) : undefined}
       />
 
       {saveState.msg && (
@@ -170,11 +172,11 @@ export function PrintReview() {
         <Card className="lg:col-span-2">
           <CardHeader
             title="Detected objects"
-            action={
+            action={isAdmin ? (
               <button onClick={approveAll} className="flex items-center gap-1 text-xs font-medium text-brand-600 hover:text-brand-700">
                 <CheckCheck size={14} /> Approve all
               </button>
-            }
+            ) : undefined}
           />
           <CardBody className="space-y-3">
             <div className="flex gap-2">
@@ -188,18 +190,20 @@ export function PrintReview() {
               </Select>
             </div>
 
-            <div className="flex flex-wrap gap-1.5">
-              {OBJECT_TYPES.map((t) => (
-                <button
-                  key={t.type}
-                  onClick={() => addObject(t.type)}
-                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
-                  title={`Add ${t.label}`}
-                >
-                  <Plus size={11} /> {t.label}
-                </button>
-              ))}
-            </div>
+            {isAdmin && (
+              <div className="flex flex-wrap gap-1.5">
+                {OBJECT_TYPES.map((t) => (
+                  <button
+                    key={t.type}
+                    onClick={() => addObject(t.type)}
+                    className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50"
+                    title={`Add ${t.label}`}
+                  >
+                    <Plus size={11} /> {t.label}
+                  </button>
+                ))}
+              </div>
+            )}
 
             <ul className="max-h-[460px] space-y-1.5 overflow-y-auto">
               {filtered.map((o) => {
@@ -237,23 +241,25 @@ export function PrintReview() {
 
         {/* Map */}
         <Card className="overflow-hidden lg:col-span-3">
-          <MapToolbar
-            selected={selected}
-            drawingId={drawingId}
-            onToggleDraw={() => setDrawingId((d) => (d === selected?.id ? null : selected?.id ?? null))}
-            onUndo={() => selected && undoVertex(selected.id)}
-            onClear={() => selected && setPath(selected.id, [])}
-          />
+          {isAdmin && (
+            <MapToolbar
+              selected={selected}
+              drawingId={drawingId}
+              onToggleDraw={() => setDrawingId((d) => (d === selected?.id ? null : selected?.id ?? null))}
+              onUndo={() => selected && undoVertex(selected.id)}
+              onClear={() => selected && setPath(selected.id, [])}
+            />
+          )}
           <div className="h-[520px]">
             <MapView
               objects={objects}
               center={session.center}
               selectedId={selectedId}
-              drawingId={drawingId}
+              drawingId={isAdmin ? drawingId : null}
               onSelect={setSelectedId}
-              onMove={(id, pos) => update(id, { position: pos })}
-              onAppendVertex={appendVertex}
-              onPathChange={setPath}
+              onMove={isAdmin ? (id, pos) => update(id, { position: pos }) : undefined}
+              onAppendVertex={isAdmin ? appendVertex : undefined}
+              onPathChange={isAdmin ? setPath : undefined}
             />
           </div>
         </Card>
@@ -329,7 +335,7 @@ export function PrintReview() {
         </CardBody>
       </Card>
 
-      {selected && (
+      {selected && isAdmin && (
         <ObjectEditorDrawer
           object={selected}
           onClose={() => setSelectedId(null)}

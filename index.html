@@ -5,6 +5,17 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nextgen Fiber LLC</title>
+    <!-- Apply dark class before first paint — default is dark -->
+    <script>
+      try {
+        var s = localStorage.getItem('fiberlytic:theme');
+        var dark = s !== 'light'; // only go light if explicitly stored as 'light'
+        if (dark) document.documentElement.classList.add('dark');
+        document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+      } catch(e) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

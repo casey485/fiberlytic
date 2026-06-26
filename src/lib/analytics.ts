@@ -1,4 +1,14 @@
-import type { AppData, PnLEntry, Project, Timecard, Equipment } from '../types'
+import type { AppData, PnLEntry, Project, Timecard, Equipment, WorkType, RateCardDivision } from '../types'
+
+/** Maps project work types to the division labels used on rate cards. */
+export function workTypeDivisions(wts: WorkType[]): RateCardDivision[] {
+  const out = new Set<RateCardDivision>()
+  for (const wt of wts) {
+    if (wt === 'underground' || wt === 'directional_bore' || wt === 'cable_plow') out.add('Underground')
+    if (wt === 'aerial') out.add('Aerial')
+  }
+  return [...out]
+}
 
 export const pnlCost = (e: PnLEntry) => e.laborCost + e.materialCost + e.equipmentCost + e.otherCost
 export const pnlProfit = (e: PnLEntry) => e.revenue - pnlCost(e)
@@ -198,8 +208,17 @@ export interface MetricsResult {
   byProject: Map<string, MetricsRow>
 }
 
-/** Returns the daily equipment cost for a piece of equipment (monthly / 21 working days). */
-export const equipmentDailyRate = (eq: Equipment) => eq.monthlyCost / 21
+/** Returns the total calendar days in the month of a given YYYY-MM-DD date string. */
+export function daysInMonth(dateStr: string): number {
+  const d = new Date(dateStr.slice(0, 7) + '-01T12:00:00')
+  d.setMonth(d.getMonth() + 1)
+  d.setDate(0)
+  return d.getDate()
+}
+
+/** Returns the daily equipment cost for a piece of equipment using actual calendar days in the given month. */
+export const equipmentDailyRate = (eq: Equipment, dateStr?: string) =>
+  eq.monthlyCost / daysInMonth(dateStr ?? new Date().toISOString().slice(0, 10))
 
 export function computeMetrics(
   data: AppData,
@@ -265,7 +284,7 @@ export function computeMetrics(
     const crewEquip = (pe.equipmentIds && pe.equipmentIds.length > 0)
       ? data.equipment.filter((eq) => pe.equipmentIds!.includes(eq.id))
       : data.equipment.filter((eq) => eq.active && eq.crewId === pe.crewId)
-    const cost = Math.round(crewEquip.reduce((s, eq) => s + eq.monthlyCost / 21, 0))
+    const cost = Math.round(crewEquip.reduce((s, eq) => s + eq.monthlyCost / daysInMonth(pe.date), 0))
     if (cost > 0) bump(pe.date, pe.projectId, 'equipment', cost)
   }
 
@@ -303,7 +322,7 @@ export function computeMetrics(
         if (!prodByCrewDate.has(`${crewId}|${ds}`)) {
           // Only count equipment that was deployed by this date (or has no deployedFrom)
           const eligible = crewEquip.filter((eq) => !eq.deployedFrom || eq.deployedFrom <= ds)
-          const cost = Math.round(eligible.reduce((s, eq) => s + eq.monthlyCost / 21, 0))
+          const cost = Math.round(eligible.reduce((s, eq) => s + eq.monthlyCost / daysInMonth(ds), 0))
           if (cost > 0) bump(ds, crewProjectId, 'equipment', cost)
         }
       }

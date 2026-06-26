@@ -1,6 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { Plus, Trash2, X, Users } from 'lucide-react'
+import { Plus, Trash2, X, FileText, PenLine, AlertCircle, Download, Clock, Camera, Pencil } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -8,17 +10,17 @@ import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { StatCard } from '../components/ui/StatCard'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
-import { number, money, moneyExact, formatDate, formatDateShort } from '../lib/format'
-import { dailyProductionSeries, weekStart, weekEnd } from '../lib/analytics'
-import type { RateCardUnit, WorkType } from '../types'
+import { number, money, moneyExact, formatDate, formatDateShort, workTypeLabel } from '../lib/format'
+import { dailyProductionSeries, weekStart, weekEnd, daysInMonth, workTypeDivisions } from '../lib/analytics'
+import { compressImage } from '../lib/imageCompress'
+import { saveBlob } from '../lib/fileStore'
+import type { RateCardUnit } from '../types'
 import type { LineItemInput } from '../store/DataContext'
+import type { PendingProduction } from '../lib/pendingProduction'
+
+type PendingPhoto = { key: string; preview: string; caption: string }
 
 
-function workTypeDivision(wt: WorkType) {
-  if (wt === 'underground' || wt === 'directional_bore') return 'Underground'
-  if (wt === 'aerial') return 'Aerial'
-  return null
-}
 
 // ---------------------------------------------------------------------------
 // Production Log Modal — rate-card line items
@@ -33,8 +35,12 @@ interface LineItemRow {
   quantity: string
 }
 
+type EmpRow = { employeeId: string; checked: boolean; hours: string; fromClock: boolean }
+
 function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { data, addProduction } = useData()
+  const { data, addProduction, addPhoto } = useData()
+  const navigate = useNavigate()
+  const { isAdmin } = useRole()
   const today = new Date().toISOString().slice(0, 10)
   const activeProjects = data.projects.filter((p) => p.status === 'active')
 
@@ -45,13 +51,13 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
   // clientId+division > division-only > any card with units > first card
   const resolveRateCard = (projectId: string): string => {
     const proj = data.projects.find((p) => p.id === projectId)
-    const div = proj ? workTypeDivision(proj.workType) : null
-    if (proj?.clientId && div) {
-      const m = data.rateCards.find((rc) => rc.clientId === proj.clientId && rc.division === div && hasUnits(rc.id))
+    const divs = workTypeDivisions(proj?.workTypes ?? [])
+    if (proj?.clientId && divs.length > 0) {
+      const m = data.rateCards.find((rc) => rc.clientId === proj.clientId && (rc.divisions ?? []).some((d) => divs.includes(d)) && hasUnits(rc.id))
       if (m) return m.id
     }
-    if (div) {
-      const m = data.rateCards.find((rc) => rc.division === div && hasUnits(rc.id))
+    if (divs.length > 0) {
+      const m = data.rateCards.find((rc) => (rc.divisions ?? []).some((d) => divs.includes(d)) && hasUnits(rc.id))
       if (m) return m.id
     }
     // Any rate card with units
@@ -62,23 +68,64 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
   }
 
   const initialProjectId = activeProjects[0]?.id ?? ''
+
+  const pdfsForProject = (projectId: string) =>
+    data.projectFiles.filter((f) => f.projectId === projectId && f.fileType === 'pdf')
+
   const [form, setForm] = useState({
     date: today,
     projectId: initialProjectId,
     crewId: data.crews[0]?.id ?? '',
     rateCardId: resolveRateCard(initialProjectId),
-    hours: '9',
     notes: '',
   })
   const [rows, setRows] = useState<LineItemRow[]>([])
   const [nextKey, setNextKey] = useState(0)
+  const [selectedFileId, setSelectedFileId] = useState<string>(() => pdfsForProject(initialProjectId)[0]?.id ?? '')
+  const [empRows, setEmpRows] = useState<EmpRow[]>(() =>
+    data.employees.filter((e) => e.active).map((e) => ({ employeeId: e.id, checked: false, hours: '8', fromClock: false }))
+  )
+  const [pendingPhotos, setPendingPhotos] = useState<PendingPhoto[]>([])
+  const [compressing, setCompressing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
 
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }))
+
+  // Auto-fill employee hours from time clock when date / project changes.
+  // Match by employee + date only — NOT by project, because the employee's project
+  // selection at clock-in time may differ from the foreman's production entry project.
+  // Sum ALL completed sessions on that date so multi-session days are fully captured.
+  useEffect(() => {
+    const clockEntries = data.clockEntries ?? []
+    setEmpRows(
+      data.employees.filter((e) => e.active).map((emp) => {
+        const daySessions = clockEntries.filter(
+          (ce) =>
+            ce.employeeId === emp.id &&
+            ce.clockIn.slice(0, 10) === form.date &&
+            !!ce.clockOut,
+        )
+        if (daySessions.length > 0) {
+          const totalMs = daySessions.reduce(
+            (s, ce) => s + (new Date(ce.clockOut!).getTime() - new Date(ce.clockIn).getTime()),
+            0,
+          )
+          const hrs = Math.round((totalMs / 3_600_000) * 10) / 10
+          return { employeeId: emp.id, checked: true, hours: String(hrs > 0 ? hrs : 8), fromClock: true }
+        }
+        return { employeeId: emp.id, checked: false, hours: '8', fromClock: false }
+      }),
+    )
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.date, form.crewId, form.projectId])
 
   const changeProject = (projectId: string) => {
     setForm((f) => ({ ...f, projectId, rateCardId: resolveRateCard(projectId) }))
     setRows([])
+    setSelectedFileId(pdfsForProject(projectId)[0]?.id ?? '')
   }
+
+  const projectPdfs = pdfsForProject(form.projectId)
 
   const changeRateCard = (rateCardId: string) => {
     setForm((f) => ({ ...f, rateCardId }))
@@ -138,26 +185,78 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
 
   const totalRevenue = lineItems.reduce((s, li) => s + li.extendedTotal, 0)
   const totalLF = lineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)
-  const hours = parseFloat(form.hours) || 0
 
-  const canSubmit = form.projectId && form.crewId && hours > 0
+  const toggleEmpProd = (id: string) =>
+    setEmpRows((rows) => rows.map((r) => (r.employeeId === id ? { ...r, checked: !r.checked } : r)))
+  const setHoursProd = (id: string, hrs: string) =>
+    setEmpRows((rows) => rows.map((r) => (r.employeeId === id ? { ...r, hours: hrs, fromClock: false } : r)))
 
-  const submit = () => {
-    if (!canSubmit) return
-    addProduction(
-      {
-        date: form.date,
-        projectId: form.projectId,
-        crewId: form.crewId,
-        footage: Math.round(totalLF),
-        hours,
-        notes: form.notes || undefined,
-      },
-      lineItems.length > 0 ? lineItems : undefined,
-    )
+  const checkedEmpRows = empRows.filter((r) => r.checked)
+  const totalHours = checkedEmpRows.reduce((s, r) => s + (parseFloat(r.hours) || 0), 0)
+  const clockFilledCountProd = empRows.filter((r) => r.fromClock).length
+  const totalLaborCostProd = checkedEmpRows.reduce((s, r) => {
+    const emp = data.employees.find((e) => e.id === r.employeeId)
+    return s + (emp ? (parseFloat(r.hours) || 0) * emp.hourlyRate : 0)
+  }, 0)
+
+  const canSubmit = !!(form.projectId && form.crewId && checkedEmpRows.length > 0 && checkedEmpRows.every((r) => parseFloat(r.hours) > 0) && pendingPhotos.length > 0)
+
+  const handlePhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    if (files.length === 0) return
+    setCompressing(true)
+    try {
+      const newPhotos = await Promise.all(
+        files.map(async (file) => {
+          const preview = await compressImage(file)
+          return { key: Date.now().toString(36) + Math.random().toString(36).slice(2), preview, caption: '' }
+        })
+      )
+      setPendingPhotos((prev) => [...prev, ...newPhotos])
+    } finally {
+      setCompressing(false)
+      e.target.value = ''
+    }
+  }
+
+  const submitOnly = async () => {
+    if (!canSubmit || submitting) return
+    setSubmitting(true)
+    try {
+      const entryId = addProduction(
+        { date: form.date, projectId: form.projectId, crewId: form.crewId, footage: Math.round(totalLF), hours: totalHours, notes: form.notes || undefined },
+        lineItems.length > 0 ? lineItems : undefined,
+      )
+      await Promise.all(pendingPhotos.map(async (ph) => {
+        const blobKey = 'pb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
+        await saveBlob(blobKey, ph.preview)
+        addPhoto({ projectId: form.projectId, caption: ph.caption || 'Production photo', category: 'progress', date: form.date, uploadedBy: 'Field', url: 'idb:' + blobKey, productionEntryId: entryId })
+      }))
+      setRows([])
+      setEmpRows((rows) => rows.map((r) => ({ ...r, checked: false })))
+      setPendingPhotos([])
+      setForm((f) => ({ ...f, notes: '' }))
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const submitAndRedline = () => {
+    if (!canSubmit || !selectedFileId || submitting) return
+    const pending: PendingProduction = {
+      type: 'simple',
+      date: form.date,
+      projectId: form.projectId,
+      crewId: form.crewId,
+      footage: Math.round(totalLF),
+      hours: totalHours,
+      notes: form.notes || undefined,
+      lineItems,
+      photos: pendingPhotos,
+    }
     onClose()
-    setRows([])
-    setForm((f) => ({ ...f, hours: '9', notes: '' }))
+    navigate(`/redline/${selectedFileId}`, { state: { pending } })
   }
 
   return (
@@ -167,8 +266,11 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
       title="Log production"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={!canSubmit}>Save entry</Button>
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button variant="secondary" onClick={submitOnly} disabled={!canSubmit || submitting}>{submitting ? 'Saving…' : 'Save only'}</Button>
+          <Button onClick={submitAndRedline} disabled={!canSubmit || !selectedFileId || submitting} className="gap-1.5">
+            <PenLine size={15} /> Save + Redline
+          </Button>
         </>
       }
     >
@@ -176,35 +278,156 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
         <Field label="Date">
           <Input type="date" value={form.date} onChange={(e) => set('date', e.target.value)} />
         </Field>
-        <Field label="Crew-hours">
-          <Input type="number" min="0" step="0.5" value={form.hours} onChange={(e) => set('hours', e.target.value)} />
-        </Field>
         <Field label="Project">
           <Select value={form.projectId} onChange={(e) => changeProject(e.target.value)}>
             {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
         </Field>
-        <Field label="Crew">
-          <Select value={form.crewId} onChange={(e) => set('crewId', e.target.value)}>
-            {data.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </Select>
-        </Field>
         <div className="sm:col-span-2">
-        <Field label="Rate card">
-          <Select value={form.rateCardId} onChange={(e) => changeRateCard(e.target.value)}>
-            <option value="">— Select rate card —</option>
-            {data.rateCards.map((rc) => (
-              <option key={rc.id} value={rc.id}>{rc.name} · {rc.division}</option>
-            ))}
-          </Select>
-        </Field>
+          <Field label="Crew / Foreman">
+            <Select value={form.crewId} onChange={(e) => set('crewId', e.target.value)}>
+              {data.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+          </Field>
         </div>
+        <div className="sm:col-span-2">
+          <Field label="Rate card">
+            <Select value={form.rateCardId} onChange={(e) => changeRateCard(e.target.value)}>
+              <option value="">— Select rate card —</option>
+              {data.rateCards.map((rc) => (
+                <option key={rc.id} value={rc.id}>{rc.name}{(rc.divisions ?? []).length > 0 ? ` · ${rc.divisions.join(' + ')}` : ''}</option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        {/* Print selection — mandatory redline step */}
+        <div className="sm:col-span-2">
+          <div className={`rounded-lg border px-4 py-3 ${projectPdfs.length === 0 ? 'border-amber-200 bg-amber-50' : 'border-brand-100 bg-brand-50'}`}>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <PenLine size={13} /> Select print to mark up
+            </p>
+            {projectPdfs.length === 0 ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs text-amber-700">
+                <AlertCircle size={13} />
+                <span>No prints uploaded for this project.</span>
+                {form.projectId && (
+                  <Link to={`/projects/${form.projectId}`} onClick={onClose} className="font-semibold underline">
+                    Upload a print →
+                  </Link>
+                )}
+                <span className="text-amber-500">(You can still "Save only" without a print.)</span>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {projectPdfs.map((f) => (
+                  <label key={f.id} className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition ${selectedFileId === f.id ? 'bg-brand-100' : 'hover:bg-brand-50/80'}`}>
+                    <input
+                      type="radio"
+                      name="prod-file"
+                      checked={selectedFileId === f.id}
+                      onChange={() => setSelectedFileId(f.id)}
+                      className="accent-brand-600"
+                    />
+                    <FileText size={14} className="shrink-0 text-red-500" />
+                    <span className={`text-sm ${selectedFileId === f.id ? 'font-semibold text-brand-800' : 'text-slate-700'}`}>{f.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Employee selection — hours pulled from time clock */}
+      <div className="mt-5">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Employees on site today</p>
+          {clockFilledCountProd > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">
+              <Clock size={10} /> {clockFilledCountProd} from time clock
+            </span>
+          )}
+        </div>
+        {clockFilledCountProd > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+            <Clock size={12} className="shrink-0" />
+            Hours are pulled from the time clock and are read-only. To correct a clock entry, use the Time Clock page.
+          </div>
+        )}
+        {empRows.length === 0 ? (
+          <p className="text-sm text-slate-400">No active employees found.</p>
+        ) : (
+          <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
+            {empRows.map((row) => {
+              const emp = data.employees.find((e) => e.id === row.employeeId)
+              if (!emp) return null
+              return (
+                <div key={emp.id} className={`flex items-center gap-3 px-4 py-2.5 ${row.checked ? 'bg-brand-50/40' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={row.checked}
+                    onChange={() => toggleEmpProd(emp.id)}
+                    className="rounded border-slate-300"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-medium text-slate-800">{emp.name}</span>
+                    {emp.isForeman && (
+                      <span className="ml-1.5 inline-flex items-center rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">Foreman</span>
+                    )}
+                    <span className="ml-1.5 text-xs text-slate-400">{emp.role}</span>
+                    {row.fromClock && (
+                      <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        <Clock size={8} /> clocked in
+                      </span>
+                    )}
+                  </div>
+                  {row.checked && (
+                    row.fromClock ? (
+                      <span className="flex items-center gap-1 text-sm font-semibold text-emerald-700">
+                        <Clock size={13} />
+                        {row.hours} hrs
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          className="w-20 text-right text-sm border-amber-300"
+                          value={row.hours}
+                          onChange={(e) => setHoursProd(emp.id, e.target.value)}
+                          placeholder="0"
+                        />
+                        <span className="text-xs text-amber-600">hrs*</span>
+                      </div>
+                    )
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+        {checkedEmpRows.length > 0 && (
+          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-slate-500">Total hours</span>
+              <span className="font-semibold text-slate-800">{totalHours.toFixed(1)} hrs</span>
+            </div>
+            {isAdmin && (
+              <div className="mt-0.5 flex items-center justify-between text-sm">
+                <span className="text-slate-500">Est. labor cost</span>
+                <span className="font-semibold text-slate-800">{moneyExact(totalLaborCostProd)}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Line items */}
       <div className="mt-5">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Line items</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rate card line items</p>
           <Button variant="ghost" className="py-1 text-xs" onClick={addRow} disabled={availableUnits.length === 0}>
             <Plus size={13} /> Add line item
           </Button>
@@ -259,7 +482,9 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
                           }}
                         >
                           {availableUnits.map((u) => (
-                            <option key={u.id} value={u.unitCode}>{u.unitCode}</option>
+                            <option key={u.id} value={u.unitCode}>
+                              {u.unitCode}{u.description ? ` — ${u.description}` : ''}
+                            </option>
                           ))}
                         </Select>
                       </td>
@@ -300,10 +525,12 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
               <span className="text-slate-500">Total LF placed</span>
               <span className="font-semibold text-slate-800">{number(totalLF)} ft</span>
             </div>
-            <div className="mt-1 flex items-center justify-between text-sm">
-              <span className="text-slate-500">Total revenue</span>
-              <span className="font-semibold text-emerald-700">{money(totalRevenue)}</span>
-            </div>
+            {isAdmin && (
+              <div className="mt-1 flex items-center justify-between text-sm">
+                <span className="text-slate-500">Total revenue</span>
+                <span className="font-semibold text-emerald-700">{money(totalRevenue)}</span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -313,6 +540,50 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
           <Textarea rows={2} value={form.notes} onChange={(e) => set('notes', e.target.value)} placeholder="Weather, delays, rework…" />
         </Field>
       </div>
+
+      {/* Photo picker — mandatory */}
+      <div className="mt-5">
+        <div className={`rounded-xl border-2 transition-colors ${pendingPhotos.length === 0 ? 'border-dashed border-rose-300 bg-rose-50/40' : 'border-emerald-200 bg-emerald-50/30'}`}>
+          <div className="flex items-center justify-between px-4 pt-3 pb-2">
+            <div className="flex items-center gap-2">
+              <Camera size={15} className={pendingPhotos.length === 0 ? 'text-rose-500' : 'text-emerald-600'} />
+              <p className={`text-sm font-semibold ${pendingPhotos.length === 0 ? 'text-rose-700' : 'text-emerald-800'}`}>
+                Site photos <span className="text-rose-500">*</span>
+                {pendingPhotos.length === 0
+                  ? <span className="ml-2 text-xs font-normal text-rose-500">At least 1 required</span>
+                  : <span className="ml-2 text-xs font-normal text-emerald-600">{pendingPhotos.length} photo{pendingPhotos.length > 1 ? 's' : ''} added</span>
+                }
+              </p>
+            </div>
+            <label className="cursor-pointer rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 transition">
+              {compressing ? 'Processing…' : '+ Add photos'}
+              <input type="file" accept="image/*" multiple className="hidden" onChange={handlePhotoSelect} disabled={compressing} />
+            </label>
+          </div>
+          {pendingPhotos.length === 0 ? (
+            <p className="px-4 pb-3 text-xs text-rose-400">Take or select at least one site photo before submitting.</p>
+          ) : (
+            <div className="flex flex-wrap gap-3 px-4 pb-4">
+              {pendingPhotos.map((ph) => (
+                <div key={ph.key} className="relative">
+                  <img src={ph.preview} alt="" className="h-20 w-20 rounded-lg object-cover shadow-sm" />
+                  <button
+                    type="button"
+                    onClick={() => setPendingPhotos((prev) => prev.filter((p) => p.key !== ph.key))}
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-xs font-bold text-white hover:bg-rose-600"
+                  >×</button>
+                  <input
+                    value={ph.caption}
+                    onChange={(e) => setPendingPhotos((prev) => prev.map((p) => p.key === ph.key ? { ...p, caption: e.target.value } : p))}
+                    placeholder="Caption…"
+                    className="mt-1 block w-20 truncate rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-600 placeholder-slate-300 focus:border-brand-400 focus:outline-none"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </Modal>
   )
 }
@@ -321,46 +592,162 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
 // Crew Day Modal
 // ---------------------------------------------------------------------------
 
-type EmpRow = { employeeId: string; checked: boolean; hours: string }
-
 function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { data, addCrewDayEntry } = useData()
+  const { data, addCrewDayEntry, addPhoto } = useData()
+  const navigate = useNavigate()
   const { isAdmin } = useRole()
   const today = new Date().toISOString().slice(0, 10)
   const activeProjects = data.projects.filter((p) => p.status === 'active')
-  const activeEmps = data.employees.filter((e) => e.active)
 
   const defaultCrewId = data.crews[0]?.id ?? ''
-  const defaultEquipIds = (crewId: string) =>
-    data.equipment.filter((eq) => eq.active && eq.crewId === crewId).map((eq) => eq.id)
+
+  const pdfsForProject = (projectId: string) =>
+    data.projectFiles.filter((f) => f.projectId === projectId && f.fileType === 'pdf')
+
+  const hasUnits = (rcId: string) => data.rateCardUnits.some((u) => u.rateCardId === rcId)
+  const resolveRateCard = (projectId: string): string => {
+    const proj = data.projects.find((p) => p.id === projectId)
+    const divs = workTypeDivisions(proj?.workTypes ?? [])
+    if (proj?.clientId && divs.length > 0) {
+      const m = data.rateCards.find((rc) => rc.clientId === proj.clientId && (rc.divisions ?? []).some((d) => divs.includes(d)) && hasUnits(rc.id))
+      if (m) return m.id
+    }
+    if (divs.length > 0) {
+      const m = data.rateCards.find((rc) => (rc.divisions ?? []).some((d) => divs.includes(d)) && hasUnits(rc.id))
+      if (m) return m.id
+    }
+    const any = data.rateCards.find((rc) => hasUnits(rc.id))
+    if (any) return any.id
+    return data.rateCards[0]?.id ?? ''
+  }
+
+  const initialProjId = activeProjects[0]?.id ?? ''
 
   const [form, setForm] = useState({
     date: today,
-    projectId: activeProjects[0]?.id ?? '',
+    projectId: initialProjId,
     crewId: defaultCrewId,
     footage: '',
+    rateCardId: resolveRateCard(initialProjId),
     notes: '',
   })
   const setF = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
-  const [selectedEquipIds, setSelectedEquipIds] = useState<string[]>(() => defaultEquipIds(defaultCrewId))
+  const [rows, setRows] = useState<LineItemRow[]>([])
+  const [nextKey, setNextKey] = useState(0)
+
+  const [selectedFileId, setSelectedFileId] = useState<string>(() => pdfsForProject(initialProjId)[0]?.id ?? '')
+  const [empRows, setEmpRows] = useState<EmpRow[]>([])
+  const [pendingPhotos, setPendingPhotos] = useState<PendingPhoto[]>([])
+  const [compressing, setCompressing] = useState(false)
+  const [submitting, setSubmitting] = useState(false)
+
+  // ── Auto-populate employees + hours from time clock whenever crew/date/project changes ──
+  // Match by employee + date only — NOT by project, because what the employee selected
+  // at clock-in time has no bearing on which project the foreman assigns the production entry to.
+  // Sum ALL completed sessions on that date so multi-session (break) days are fully captured.
+  useEffect(() => {
+    const allActive = data.employees.filter((e) => e.active)
+    const clockEntries = data.clockEntries ?? []
+
+    setEmpRows(
+      allActive.map((emp) => {
+        const daySessions = clockEntries.filter(
+          (ce) =>
+            ce.employeeId === emp.id &&
+            ce.clockIn.slice(0, 10) === form.date &&
+            !!ce.clockOut,
+        )
+        if (daySessions.length > 0) {
+          const totalMs = daySessions.reduce(
+            (s, ce) => s + (new Date(ce.clockOut!).getTime() - new Date(ce.clockIn).getTime()),
+            0,
+          )
+          const hrs = Math.round((totalMs / 3_600_000) * 10) / 10
+          return { employeeId: emp.id, checked: true, hours: String(hrs > 0 ? hrs : 8), fromClock: true }
+        }
+        return { employeeId: emp.id, checked: false, hours: '8', fromClock: false }
+      }),
+    )
+  // Re-run whenever date/project/crew change; omit `data` to avoid wiping manual edits on unrelated updates
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.date, form.crewId, form.projectId])
 
   const changeCrew = (crewId: string) => {
     setForm((f) => ({ ...f, crewId }))
-    setSelectedEquipIds(defaultEquipIds(crewId))
   }
 
-  const toggleEquip = (eqId: string) =>
-    setSelectedEquipIds((ids) => ids.includes(eqId) ? ids.filter((x) => x !== eqId) : [...ids, eqId])
+  const changeProject = (projectId: string) => {
+    setForm((f) => ({ ...f, projectId, rateCardId: resolveRateCard(projectId) }))
+    setSelectedFileId(pdfsForProject(projectId)[0]?.id ?? '')
+    setRows([])
+  }
 
-  const [empRows, setEmpRows] = useState<EmpRow[]>(() =>
-    activeEmps.map((e) => ({ employeeId: e.id, checked: false, hours: '8' }))
+  const changeRateCard = (rateCardId: string) => {
+    setForm((f) => ({ ...f, rateCardId }))
+    setRows([])
+  }
+
+  const availableCrewUnits = useMemo(
+    () => data.rateCardUnits.filter((u) => u.rateCardId === form.rateCardId),
+    [data.rateCardUnits, form.rateCardId],
   )
 
-  const toggleEmp = (id: string) =>
+  const addCrewRow = () => {
+    const first = availableCrewUnits[0]
+    setRows((r) => [
+      ...r,
+      {
+        key: nextKey,
+        unitCode: first?.unitCode ?? '',
+        description: first?.description ?? '',
+        uom: first?.uom ?? 'LF',
+        rateSnapshot: first?.rate ?? 0,
+        quantity: '',
+      },
+    ])
+    setNextKey((k) => k + 1)
+  }
+
+  const removeCrewRow = (key: number) => setRows((r) => r.filter((x) => x.key !== key))
+
+  const updateCrewRowUnit = (key: number, unit: RateCardUnit) => {
+    setRows((r) =>
+      r.map((x) =>
+        x.key === key
+          ? { ...x, unitCode: unit.unitCode, description: unit.description, uom: unit.uom, rateSnapshot: unit.rate }
+          : x,
+      ),
+    )
+  }
+
+  const updateCrewRowQty = (key: number, qty: string) => {
+    setRows((r) => r.map((x) => (x.key === key ? { ...x, quantity: qty } : x)))
+  }
+
+  const crewLineItems: LineItemInput[] = rows
+    .filter((r) => r.unitCode && parseFloat(r.quantity) > 0)
+    .map((r) => {
+      const qty = parseFloat(r.quantity)
+      return {
+        unitCode: r.unitCode,
+        description: r.description,
+        uom: r.uom,
+        quantity: qty,
+        rateSnapshot: r.rateSnapshot,
+        extendedTotal: Math.round(qty * r.rateSnapshot * 100) / 100,
+      }
+    })
+
+  const crewTotalRevenue = crewLineItems.reduce((s, li) => s + li.extendedTotal, 0)
+  const crewTotalLF = crewLineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)
+
+  const projectPdfs = pdfsForProject(form.projectId)
+
+const toggleEmp = (id: string) =>
     setEmpRows((rows) => rows.map((r) => (r.employeeId === id ? { ...r, checked: !r.checked } : r)))
   const setHours = (id: string, hrs: string) =>
-    setEmpRows((rows) => rows.map((r) => (r.employeeId === id ? { ...r, hours: hrs } : r)))
+    setEmpRows((rows) => rows.map((r) => (r.employeeId === id ? { ...r, hours: hrs, fromClock: false } : r)))
 
   const checkedRows = empRows.filter((r) => r.checked)
   const totalHours = checkedRows.reduce((s, r) => s + (parseFloat(r.hours) || 0), 0)
@@ -368,27 +755,77 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
     const emp = data.employees.find((e) => e.id === r.employeeId)
     return s + (emp ? (parseFloat(r.hours) || 0) * emp.hourlyRate : 0)
   }, 0)
+  const clockFilledCount = empRows.filter((r) => r.fromClock).length
 
-  const canSubmit = form.projectId && form.crewId && checkedRows.length > 0 && checkedRows.every((r) => parseFloat(r.hours) > 0)
+  const canSubmit = !!(form.projectId && form.crewId && checkedRows.length > 0 && checkedRows.every((r) => parseFloat(r.hours) > 0) && pendingPhotos.length > 0)
 
-  const submit = () => {
-    if (!canSubmit) return
-    addCrewDayEntry({
-      date: form.date,
-      projectId: form.projectId,
-      crewId: form.crewId,
-      footage: Math.round(parseFloat(form.footage) || 0),
+  const handlePhotoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? [])
+    if (files.length === 0) return
+    setCompressing(true)
+    try {
+      const newPhotos = await Promise.all(
+        files.map(async (file) => {
+          const preview = await compressImage(file)
+          return { key: Date.now().toString(36) + Math.random().toString(36).slice(2), preview, caption: '' }
+        })
+      )
+      setPendingPhotos((prev) => [...prev, ...newPhotos])
+    } finally {
+      setCompressing(false)
+      e.target.value = ''
+    }
+  }
+
+  const reset = () => {
+    setForm((f) => ({ ...f, footage: '', notes: '' }))
+    setRows([])
+    setEmpRows((rows) => rows.map((r) => ({ ...r, checked: false })))
+    setPendingPhotos([])
+  }
+
+  const submitOnly = async () => {
+    if (!canSubmit || submitting) return
+    setSubmitting(true)
+    try {
+      const entryId = addCrewDayEntry({
+        date: form.date, projectId: form.projectId, crewId: form.crewId,
+        footage: crewLineItems.length > 0 ? Math.round(crewTotalLF) : Math.round(parseFloat(form.footage) || 0),
+        notes: form.notes || undefined,
+        employees: checkedRows.map((r) => ({ employeeId: r.employeeId, hours: parseFloat(r.hours) })),
+        lineItems: crewLineItems.length > 0 ? crewLineItems : undefined,
+      })
+      await Promise.all(pendingPhotos.map(async (ph) => {
+        const blobKey = 'pb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
+        await saveBlob(blobKey, ph.preview)
+        addPhoto({ projectId: form.projectId, caption: ph.caption || 'Production photo', category: 'progress', date: form.date, uploadedBy: 'Field', url: 'idb:' + blobKey, productionEntryId: entryId })
+      }))
+      reset()
+      onClose()
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const submitAndRedline = () => {
+    if (!canSubmit || !selectedFileId || submitting) return
+    const pending: PendingProduction = {
+      type: 'crewDay',
+      date: form.date, projectId: form.projectId, crewId: form.crewId,
+      footage: crewLineItems.length > 0 ? Math.round(crewTotalLF) : Math.round(parseFloat(form.footage) || 0),
       notes: form.notes || undefined,
       employees: checkedRows.map((r) => ({ employeeId: r.employeeId, hours: parseFloat(r.hours) })),
-      equipmentIds: selectedEquipIds.length > 0 ? selectedEquipIds : undefined,
-    })
+      photos: pendingPhotos,
+    }
+    reset()
     onClose()
-    setForm((f) => ({ ...f, footage: '', notes: '' }))
-    setEmpRows(activeEmps.map((e) => ({ employeeId: e.id, checked: false, hours: '8' })))
-    setSelectedEquipIds(defaultEquipIds(form.crewId))
+    navigate(`/redline/${selectedFileId}`, { state: { pending } })
   }
 
   const selectedCrew = data.crews.find((c) => c.id === form.crewId)
+  const foremanEmp = selectedCrew?.foremanId
+    ? data.employees.find((e) => e.id === selectedCrew.foremanId)
+    : null
 
   return (
     <Modal
@@ -397,8 +834,11 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
       title="Log crew day"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={!canSubmit}>Save crew day</Button>
+          <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
+          <Button variant="secondary" onClick={submitOnly} disabled={!canSubmit || submitting}>{submitting ? 'Saving…' : 'Save only'}</Button>
+          <Button onClick={submitAndRedline} disabled={!canSubmit || !selectedFileId || submitting} className="gap-1.5">
+            <PenLine size={15} /> Save + Redline
+          </Button>
         </>
       }
     >
@@ -406,92 +846,256 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
         <Field label="Date">
           <Input type="date" value={form.date} onChange={(e) => setF('date', e.target.value)} />
         </Field>
-        <Field label="Footage placed (ft)" hint="Enter 0 for no-production days — costs still recorded">
-          <Input type="number" min="0" step="1" value={form.footage} onChange={(e) => setF('footage', e.target.value)} placeholder="0" />
-        </Field>
         <Field label="Project / job">
-          <Select value={form.projectId} onChange={(e) => setF('projectId', e.target.value)}>
+          <Select value={form.projectId} onChange={(e) => changeProject(e.target.value)}>
             {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
         </Field>
-        <Field label="Crew">
-          <Select value={form.crewId} onChange={(e) => changeCrew(e.target.value)}>
-            {data.crews.map((c) => {
-              const foreman = data.employees.find((e) => e.isForeman && e.defaultCrewId === c.id)
-              return (
-                <option key={c.id} value={c.id}>
-                  {c.name}{foreman ? ` — ${foreman.name}` : ''}
-                </option>
-              )
-            })}
-          </Select>
-        </Field>
+        <div className="sm:col-span-2">
+          <Field label="Crew / Foreman">
+            <Select value={form.crewId} onChange={(e) => changeCrew(e.target.value)}>
+              {data.crews.map((c) => {
+                const foreman = data.employees.find((e) => e.isForeman && e.defaultCrewId === c.id)
+                return (
+                  <option key={c.id} value={c.id}>
+                    {c.name}{foreman ? ` — ${foreman.name}` : ''}
+                  </option>
+                )
+              })}
+            </Select>
+          </Field>
+        </div>
+        <div className="sm:col-span-2">
+          <Field label="Rate card">
+            <Select value={form.rateCardId} onChange={(e) => changeRateCard(e.target.value)}>
+              <option value="">— Select rate card —</option>
+              {data.rateCards.map((rc) => (
+                <option key={rc.id} value={rc.id}>{rc.name}{(rc.divisions ?? []).length > 0 ? ` · ${rc.divisions.join(' + ')}` : ''}</option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
+        {/* Print selection */}
+        <div className="sm:col-span-2">
+          <div className={`rounded-lg border px-4 py-3 ${projectPdfs.length === 0 ? 'border-amber-200 bg-amber-50' : 'border-brand-100 bg-brand-50'}`}>
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <PenLine size={13} /> Select print to mark up
+            </p>
+            {projectPdfs.length === 0 ? (
+              <div className="flex flex-wrap items-center gap-2 text-xs text-amber-700">
+                <AlertCircle size={13} />
+                <span>No prints uploaded for this project.</span>
+                {form.projectId && (
+                  <Link to={`/projects/${form.projectId}`} onClick={onClose} className="font-semibold underline">
+                    Upload a print →
+                  </Link>
+                )}
+                <span className="text-amber-500">(You can still "Save only" without a print.)</span>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {projectPdfs.map((f) => (
+                  <label key={f.id} className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 transition ${selectedFileId === f.id ? 'bg-brand-100' : 'hover:bg-brand-50/80'}`}>
+                    <input
+                      type="radio"
+                      name="crew-file"
+                      checked={selectedFileId === f.id}
+                      onChange={() => setSelectedFileId(f.id)}
+                      className="accent-brand-600"
+                    />
+                    <FileText size={14} className="shrink-0 text-red-500" />
+                    <span className={`text-sm ${selectedFileId === f.id ? 'font-semibold text-brand-800' : 'text-slate-700'}`}>{f.name}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {selectedCrew && (
         <p className="mt-1 text-xs text-slate-400">
-          {selectedCrew.specialty} crew · {selectedCrew.status}
+          {workTypeLabel[selectedCrew.specialty]} crew
+          {(foremanEmp?.name ?? selectedCrew.foreman) ? ` · Foreman: ${foremanEmp?.name ?? selectedCrew.foreman}` : ''}
         </p>
       )}
 
-      {/* Equipment selection — crew's equipment pre-checked, others available to add */}
-      {data.equipment.filter((eq) => eq.active).length > 0 && (
-        <div className="mt-3 rounded-lg border border-purple-100 bg-purple-50 px-4 py-3">
-          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-purple-600">Equipment on site today</p>
-          <div className="space-y-1.5">
-            {data.equipment.filter((eq) => eq.active).map((eq) => {
-              const checked = selectedEquipIds.includes(eq.id)
-              const assignedToThisCrew = eq.crewId === form.crewId
-              return (
-                <label key={eq.id} className={`flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm transition-colors ${checked ? 'bg-purple-100' : 'hover:bg-purple-50/80'}`}>
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    onChange={() => toggleEquip(eq.id)}
-                    className="rounded border-purple-300 text-purple-600"
-                  />
-                  <span className={`flex-1 ${checked ? 'font-medium text-purple-900' : 'text-purple-700'}`}>
-                    {eq.name}
-                    <span className="ml-1.5 text-xs font-normal text-purple-400">· {eq.category}</span>
-                    {!assignedToThisCrew && eq.crewId && (
-                      <span className="ml-1.5 text-xs text-slate-400">
-                        ({data.crews.find((c) => c.id === eq.crewId)?.name ?? 'other crew'})
-                      </span>
-                    )}
-                  </span>
-                  {isAdmin && (
-                    <span className={`text-xs font-medium ${checked ? 'text-purple-700' : 'text-purple-400'}`}>
-                      {moneyExact(eq.monthlyCost / 21)}/day
-                    </span>
-                  )}
-                </label>
-              )
-            })}
+      {/* Rate card line items */}
+      <div className="mt-5">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Work units placed</p>
+          <Button variant="ghost" className="py-1 text-xs" onClick={addCrewRow} disabled={availableCrewUnits.length === 0}>
+            <Plus size={13} /> Add unit
+          </Button>
+        </div>
+
+        {!form.rateCardId && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            Select a rate card above to enable unit entry. Or enter raw footage below.
+          </p>
+        )}
+
+        {form.rateCardId && availableCrewUnits.length === 0 && (
+          <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+            No units in this rate card. Add units in <strong>Rate Cards</strong>, or use the footage field below.
+          </p>
+        )}
+
+        {rows.length === 0 && availableCrewUnits.length > 0 && (
+          <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+            No units added — enter raw footage below, or click "Add unit" to log by rate card code.
+          </p>
+        )}
+
+        {rows.length > 0 && (
+          <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="px-3 py-2 font-medium">Code</th>
+                  <th className="px-3 py-2 font-medium">Description</th>
+                  <th className="px-3 py-2 font-medium">UOM</th>
+                  <th className="px-3 py-2 text-right font-medium">Rate</th>
+                  <th className="px-3 py-2 text-right font-medium">Qty</th>
+                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  <th className="px-3 py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const qty = parseFloat(row.quantity) || 0
+                  const extended = qty * row.rateSnapshot
+                  return (
+                    <tr key={row.key} className="border-t border-slate-100">
+                      <td className="px-2 py-1.5">
+                        <Select
+                          className="text-xs"
+                          value={row.unitCode}
+                          onChange={(e) => {
+                            const unit = availableCrewUnits.find((u) => u.unitCode === e.target.value)
+                            if (unit) updateCrewRowUnit(row.key, unit)
+                          }}
+                        >
+                          {availableCrewUnits.map((u) => (
+                            <option key={u.id} value={u.unitCode}>
+                              {u.unitCode}{u.description ? ` — ${u.description}` : ''}
+                            </option>
+                          ))}
+                        </Select>
+                      </td>
+                      <td className="px-2 py-1.5 text-xs text-slate-600">{row.description}</td>
+                      <td className="px-2 py-1.5 text-xs text-slate-500">{row.uom}</td>
+                      <td className="px-2 py-1.5 text-right text-xs text-slate-500">{moneyExact(row.rateSnapshot)}</td>
+                      <td className="px-2 py-1.5">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="1"
+                          className="w-20 text-right text-xs"
+                          value={row.quantity}
+                          onChange={(e) => updateCrewRowQty(row.key, e.target.value)}
+                          placeholder="0"
+                        />
+                      </td>
+                      <td className="px-2 py-1.5 text-right text-xs font-medium text-slate-800">
+                        {moneyExact(extended)}
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <button onClick={() => removeCrewRow(row.key)} className="text-slate-300 hover:text-rose-500" aria-label="Remove">
+                          <X size={14} />
+                        </button>
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
           </div>
-          {isAdmin && selectedEquipIds.length > 0 && (
-            <div className="mt-2 flex items-center justify-between border-t border-purple-200 pt-2 text-sm font-semibold text-purple-700">
-              <span>Equipment total today</span>
-              <span>
-                {moneyExact(
-                  data.equipment
-                    .filter((eq) => selectedEquipIds.includes(eq.id))
-                    .reduce((s, eq) => s + eq.monthlyCost / 21, 0)
-                )}
-              </span>
+        )}
+
+        {crewLineItems.length > 0 && (
+          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5">
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-slate-500">Total LF placed</span>
+              <span className="font-semibold text-slate-800">{number(crewTotalLF)} ft</span>
             </div>
+            {isAdmin && (
+              <div className="mt-0.5 flex items-center justify-between text-sm">
+                <span className="text-slate-500">Total revenue</span>
+                <span className="font-semibold text-emerald-700">{money(crewTotalRevenue)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Fallback raw footage — only shown when no line items entered */}
+        {rows.length === 0 && (
+          <div className="mt-3">
+            <Field label="Footage placed (ft)" hint="Used when no rate card units are entered above">
+              <Input type="number" min="0" step="1" value={form.footage} onChange={(e) => setF('footage', e.target.value)} placeholder="0" />
+            </Field>
+          </div>
+        )}
+      </div>
+
+      {/* Equipment — auto-applied from crew assignment, no selection needed */}
+      {(() => {
+        const crewEquip = data.equipment.filter((eq) => eq.active && eq.crewId === form.crewId)
+        if (crewEquip.length === 0) return null
+        const dailyCost = crewEquip.reduce((s, eq) => s + eq.monthlyCost / daysInMonth(form.date || new Date().toISOString().slice(0, 10)), 0)
+        return (
+          <div className="mt-3 rounded-lg border border-purple-100 bg-purple-50 px-4 py-3">
+            <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-purple-600">
+              Equipment — auto-included for this crew
+            </p>
+            <div className="space-y-1">
+              {crewEquip.map((eq) => (
+                <div key={eq.id} className="flex items-center justify-between text-sm">
+                  <span className="text-purple-800">{eq.name}
+                    <span className="ml-1.5 text-xs font-normal text-purple-400">· {eq.category}</span>
+                  </span>
+                  {isAdmin && <span className="text-xs font-medium text-purple-600">{moneyExact(eq.monthlyCost / daysInMonth(form.date || new Date().toISOString().slice(0, 10)))}/day</span>}
+                </div>
+              ))}
+            </div>
+            {isAdmin && (
+              <div className="mt-2 flex items-center justify-between border-t border-purple-200 pt-2 text-sm font-semibold text-purple-700">
+                <span>Equipment total today</span>
+                <span>{moneyExact(dailyCost)}</span>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* Employee rows — filtered to this crew, hours pre-filled from time clock */}
+      <div className="mt-5">
+        <div className="mb-2 flex items-center justify-between">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Crew members worked today
+          </p>
+          {clockFilledCount > 0 && (
+            <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">
+              <Clock size={10} /> {clockFilledCount} hours from time clock
+            </span>
           )}
         </div>
-      )}
 
-      {/* Employee rows */}
-      <div className="mt-5">
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">Employees worked today</p>
-        {activeEmps.length === 0 ? (
-          <p className="text-sm text-slate-400">No active employees. Add employees first.</p>
+        {clockFilledCount > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+            <Clock size={12} className="shrink-0" />
+            Hours are pulled directly from the time clock and are read-only. To correct a clock entry, use the Time Clock page.
+          </div>
+        )}
+
+        {empRows.length === 0 ? (
+          <p className="text-sm text-slate-400">No active employees found. Add employees first.</p>
         ) : (
           <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
-            {activeEmps.map((emp) => {
-              const row = empRows.find((r) => r.employeeId === emp.id)!
+            {empRows.map((row) => {
+              const emp = data.employees.find((e) => e.id === row.employeeId)
+              if (!emp) return null
               return (
                 <div key={emp.id} className={`flex items-center gap-3 px-4 py-2.5 ${row.checked ? 'bg-brand-50/40' : ''}`}>
                   <input
@@ -506,19 +1110,32 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
                       <span className="ml-1.5 inline-flex items-center rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">Foreman</span>
                     )}
                     <span className="ml-1.5 text-xs text-slate-400">{emp.role}</span>
+                    {row.fromClock && (
+                      <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        <Clock size={8} /> clocked in
+                      </span>
+                    )}
                   </div>
                   {row.checked && (
-                    <div className="flex items-center gap-1.5">
-                      <Input
-                        type="number"
-                        min="0"
-                        step="0.5"
-                        className="w-20 text-right text-sm"
-                        value={row.hours}
-                        onChange={(e) => setHours(emp.id, e.target.value)}
-                      />
-                      <span className="text-xs text-slate-400">hrs</span>
-                    </div>
+                    row.fromClock ? (
+                      <span className="flex items-center gap-1 text-sm font-semibold text-emerald-700">
+                        <Clock size={13} />
+                        {row.hours} hrs
+                      </span>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <Input
+                          type="number"
+                          min="0"
+                          step="0.5"
+                          className="w-20 text-right text-sm border-amber-300"
+                          value={row.hours}
+                          onChange={(e) => setHours(emp.id, e.target.value)}
+                          placeholder="0"
+                        />
+                        <span className="text-xs text-amber-600">hrs*</span>
+                      </div>
+                    )
                   )}
                 </div>
               )
@@ -529,14 +1146,16 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
 
       {checkedRows.length > 0 && (
         <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
-          {(parseFloat(form.footage) || 0) === 0 && (
+          {crewLineItems.length === 0 && (parseFloat(form.footage) || 0) === 0 && (
             <p className="mb-2 text-xs font-semibold text-amber-600">
               No-production day — labor &amp; equipment costs will be recorded with $0 revenue.
             </p>
           )}
           <div className="flex items-center justify-between text-sm">
             <span className="text-slate-500">Footage</span>
-            <span className="font-medium text-slate-800">{number(parseFloat(form.footage) || 0)} ft</span>
+            <span className="font-medium text-slate-800">
+              {number(crewLineItems.length > 0 ? Math.round(crewTotalLF) : (parseFloat(form.footage) || 0))} ft
+            </span>
           </div>
           <div className="mt-1 flex items-center justify-between text-sm">
             <span className="text-slate-500">Employees</span>
@@ -560,6 +1179,298 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
           <Textarea rows={2} value={form.notes} onChange={(e) => setF('notes', e.target.value)} placeholder="Weather, delays, rework…" />
         </Field>
       </div>
+
+      {/* Photo picker — mandatory */}
+      <div className="mt-5">
+        <div className={`rounded-xl border-2 transition-colors ${pendingPhotos.length === 0 ? 'border-dashed border-rose-300 bg-rose-50/40' : 'border-emerald-200 bg-emerald-50/30'}`}>
+          <div className="flex items-center justify-between px-4 pt-3 pb-2">
+            <div className="flex items-center gap-2">
+              <Camera size={15} className={pendingPhotos.length === 0 ? 'text-rose-500' : 'text-emerald-600'} />
+              <p className={`text-sm font-semibold ${pendingPhotos.length === 0 ? 'text-rose-700' : 'text-emerald-800'}`}>
+                Site photos <span className="text-rose-500">*</span>
+                {pendingPhotos.length === 0
+                  ? <span className="ml-2 text-xs font-normal text-rose-500">At least 1 required</span>
+                  : <span className="ml-2 text-xs font-normal text-emerald-600">{pendingPhotos.length} photo{pendingPhotos.length > 1 ? 's' : ''} added</span>
+                }
+              </p>
+            </div>
+            <label className="cursor-pointer rounded-lg bg-white px-3 py-1.5 text-xs font-medium text-slate-700 ring-1 ring-slate-200 hover:bg-slate-50 transition">
+              {compressing ? 'Processing…' : '+ Add photos'}
+              <input type="file" accept="image/*" multiple className="hidden" onChange={handlePhotoSelect} disabled={compressing} />
+            </label>
+          </div>
+          {pendingPhotos.length === 0 ? (
+            <p className="px-4 pb-3 text-xs text-rose-400">Take or select at least one site photo before submitting.</p>
+          ) : (
+            <div className="flex flex-wrap gap-3 px-4 pb-4">
+              {pendingPhotos.map((ph) => (
+                <div key={ph.key} className="relative">
+                  <img src={ph.preview} alt="" className="h-20 w-20 rounded-lg object-cover shadow-sm" />
+                  <button
+                    type="button"
+                    onClick={() => setPendingPhotos((prev) => prev.filter((p) => p.key !== ph.key))}
+                    className="absolute -right-1.5 -top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-rose-500 text-xs font-bold text-white hover:bg-rose-600"
+                  >×</button>
+                  <input
+                    value={ph.caption}
+                    onChange={(e) => setPendingPhotos((prev) => prev.map((p) => p.key === ph.key ? { ...p, caption: e.target.value } : p))}
+                    placeholder="Caption…"
+                    className="mt-1 block w-20 truncate rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-600 placeholder-slate-300 focus:border-brand-400 focus:outline-none"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Edit entry modal — change project or crew on any existing production entry
+// ---------------------------------------------------------------------------
+
+function EditEntryModal({
+  entryId,
+  onClose,
+}: {
+  entryId: string
+  onClose: () => void
+}) {
+  const { data, patchProductionEntry } = useData()
+  const entry = data.production.find((e) => e.id === entryId)
+  const existingLineItems = useMemo(
+    () => data.productionLineItems.filter((li) => li.productionEntryId === entryId),
+    [data.productionLineItems, entryId],
+  )
+
+  const [projectId, setProjectId] = useState(entry?.projectId ?? '')
+  const [crewId, setCrewId]       = useState(entry?.crewId ?? '')
+
+  const hasUnits = (rcId: string) => data.rateCardUnits.some((u) => u.rateCardId === rcId)
+  const resolveRateCardEdit = (projId: string): string => {
+    const proj = data.projects.find((p) => p.id === projId)
+    const divs = workTypeDivisions(proj?.workTypes ?? [])
+    if (proj?.clientId && divs.length > 0) {
+      const m = data.rateCards.find((rc) => rc.clientId === proj.clientId && (rc.divisions ?? []).some((d) => divs.includes(d)) && hasUnits(rc.id))
+      if (m) return m.id
+    }
+    if (divs.length > 0) {
+      const m = data.rateCards.find((rc) => (rc.divisions ?? []).some((d) => divs.includes(d)) && hasUnits(rc.id))
+      if (m) return m.id
+    }
+    const any = data.rateCards.find((rc) => hasUnits(rc.id))
+    if (any) return any.id
+    return data.rateCards[0]?.id ?? ''
+  }
+
+  const [rateCardId, setRateCardId] = useState(() => resolveRateCardEdit(entry?.projectId ?? ''))
+  const [rows, setRows] = useState<LineItemRow[]>(() =>
+    existingLineItems.map((li, i) => ({
+      key: i,
+      unitCode: li.unitCode,
+      description: li.description,
+      uom: li.uom,
+      rateSnapshot: li.rateSnapshot,
+      quantity: String(li.quantity),
+    }))
+  )
+  const [nextKey, setNextKey] = useState(existingLineItems.length)
+
+  const availableEditUnits = useMemo(
+    () => data.rateCardUnits.filter((u) => u.rateCardId === rateCardId),
+    [data.rateCardUnits, rateCardId],
+  )
+
+  const addEditRow = () => {
+    const first = availableEditUnits[0]
+    setRows((r) => [
+      ...r,
+      { key: nextKey, unitCode: first?.unitCode ?? '', description: first?.description ?? '', uom: first?.uom ?? 'LF', rateSnapshot: first?.rate ?? 0, quantity: '' },
+    ])
+    setNextKey((k) => k + 1)
+  }
+
+  const removeEditRow = (key: number) => setRows((r) => r.filter((x) => x.key !== key))
+
+  const updateEditRowUnit = (key: number, unit: RateCardUnit) => {
+    setRows((r) =>
+      r.map((x) =>
+        x.key === key ? { ...x, unitCode: unit.unitCode, description: unit.description, uom: unit.uom, rateSnapshot: unit.rate } : x,
+      ),
+    )
+  }
+
+  const updateEditRowQty = (key: number, qty: string) => {
+    setRows((r) => r.map((x) => (x.key === key ? { ...x, quantity: qty } : x)))
+  }
+
+  const editLineItems: LineItemInput[] = rows
+    .filter((r) => r.unitCode && parseFloat(r.quantity) > 0)
+    .map((r) => {
+      const qty = parseFloat(r.quantity)
+      return { unitCode: r.unitCode, description: r.description, uom: r.uom, quantity: qty, rateSnapshot: r.rateSnapshot, extendedTotal: Math.round(qty * r.rateSnapshot * 100) / 100 }
+    })
+  const editTotalRevenue = editLineItems.reduce((s, li) => s + li.extendedTotal, 0)
+  const editTotalLF = editLineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)
+
+  if (!entry) return null
+
+  const save = () => {
+    const patch: { projectId?: string; crewId?: string; lineItems?: LineItemInput[] } = {}
+    if (projectId !== entry.projectId) patch.projectId = projectId
+    if (crewId    !== entry.crewId)    patch.crewId    = crewId
+    // Always save line items if any rows present (including when replacing existing ones)
+    if (editLineItems.length > 0) patch.lineItems = editLineItems
+    if (Object.keys(patch).length > 0) patchProductionEntry(entryId, patch)
+    onClose()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Edit production entry"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={save}>Save changes</Button>
+        </>
+      }
+    >
+      <p className="mb-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        Changing the project, crew, or unit codes will update all linked P&amp;L entries so revenue stays in sync.
+      </p>
+      <div className="space-y-4">
+        <Field label="Project">
+          <Select value={projectId} onChange={(e) => { setProjectId(e.target.value); setRateCardId(resolveRateCardEdit(e.target.value)) }}>
+            {data.projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Crew">
+          <Select value={crewId} onChange={(e) => setCrewId(e.target.value)}>
+            {data.crews.map((c) => {
+              const foreman = data.employees.find((e) => e.isForeman && e.defaultCrewId === c.id)
+              return (
+                <option key={c.id} value={c.id}>
+                  {c.name}{foreman ? ` — ${foreman.name}` : ''}
+                </option>
+              )
+            })}
+          </Select>
+        </Field>
+
+        {/* Line items editing */}
+        <div>
+          <div className="mb-2 flex items-center justify-between">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Unit codes / line items</p>
+            <div className="flex items-center gap-2">
+              <Select className="text-xs" value={rateCardId} onChange={(e) => setRateCardId(e.target.value)}>
+                <option value="">— Rate card —</option>
+                {data.rateCards.map((rc) => (
+                  <option key={rc.id} value={rc.id}>{rc.name}</option>
+                ))}
+              </Select>
+              <Button variant="ghost" className="py-1 text-xs" onClick={addEditRow} disabled={availableEditUnits.length === 0}>
+                <Plus size={13} /> Add
+              </Button>
+            </div>
+          </div>
+
+          {rows.length === 0 && (
+            <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+              {existingLineItems.length === 0
+                ? 'No unit codes on this entry. Add units above to associate revenue codes.'
+                : 'All units removed — saving will clear line items and use raw footage for revenue.'}
+            </p>
+          )}
+
+          {rows.length > 0 && (
+            <div className="overflow-x-auto rounded-lg border border-slate-200">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                    <th className="px-3 py-2 font-medium">Code</th>
+                    <th className="px-3 py-2 font-medium">UOM</th>
+                    <th className="px-3 py-2 text-right font-medium">Rate</th>
+                    <th className="px-3 py-2 text-right font-medium">Qty</th>
+                    <th className="px-3 py-2 text-right font-medium">Total</th>
+                    <th className="px-3 py-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row) => {
+                    const qty = parseFloat(row.quantity) || 0
+                    return (
+                      <tr key={row.key} className="border-t border-slate-100">
+                        <td className="px-2 py-1.5">
+                          <Select
+                            className="text-xs"
+                            value={row.unitCode}
+                            onChange={(e) => {
+                              const unit = availableEditUnits.find((u) => u.unitCode === e.target.value)
+                              if (unit) updateEditRowUnit(row.key, unit)
+                            }}
+                          >
+                            {availableEditUnits.length === 0 && <option value={row.unitCode}>{row.unitCode}</option>}
+                            {availableEditUnits.map((u) => (
+                              <option key={u.id} value={u.unitCode}>{u.unitCode}{u.description ? ` — ${u.description}` : ''}</option>
+                            ))}
+                          </Select>
+                        </td>
+                        <td className="px-2 py-1.5 text-xs text-slate-500">{row.uom}</td>
+                        <td className="px-2 py-1.5 text-right text-xs text-slate-500">{moneyExact(row.rateSnapshot)}</td>
+                        <td className="px-2 py-1.5">
+                          <Input
+                            type="number"
+                            min="0"
+                            step="1"
+                            className="w-20 text-right text-xs"
+                            value={row.quantity}
+                            onChange={(e) => updateEditRowQty(row.key, e.target.value)}
+                            placeholder="0"
+                          />
+                        </td>
+                        <td className="px-2 py-1.5 text-right text-xs font-medium text-slate-800">
+                          {moneyExact(qty * row.rateSnapshot)}
+                        </td>
+                        <td className="px-2 py-1.5">
+                          <button onClick={() => removeEditRow(row.key)} className="text-slate-300 hover:text-rose-500" aria-label="Remove">
+                            <X size={14} />
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {editLineItems.length > 0 && (
+            <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-500">LF placed</span>
+                <span className="font-semibold text-slate-700">{number(editTotalLF)} ft</span>
+              </div>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-500">Revenue</span>
+                <span className="font-semibold text-emerald-700">{money(editTotalRevenue)}</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+          <p className="font-semibold text-slate-600">Entry details (read-only)</p>
+          <p className="mt-1">Date: {formatDate(entry.date)}</p>
+          <p>Footage: {number(entry.footage)} ft · Hours: {entry.hours.toFixed ? entry.hours.toFixed(1) : entry.hours}</p>
+          {entry.notes && <p className="italic">{entry.notes}</p>}
+        </div>
+      </div>
     </Modal>
   )
 }
@@ -568,33 +1479,182 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
 // Production tab
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Export modal
+// ---------------------------------------------------------------------------
+
+function ExportModal({
+  onClose,
+  defaultProject,
+  defaultStart,
+  defaultEnd,
+}: {
+  onClose: () => void
+  defaultProject: string
+  defaultStart: string
+  defaultEnd: string
+}) {
+  const { data } = useData()
+  const [projectId, setProjectId] = useState(defaultProject)
+  const [dateStart, setDateStart] = useState(defaultStart)
+  const [dateEnd, setDateEnd]     = useState(defaultEnd)
+
+  const doExport = () => {
+    // Entries in scope
+    const entries = data.production.filter(
+      (e) => e.date >= dateStart && e.date <= dateEnd &&
+        (projectId === 'all' || e.projectId === projectId),
+    ).sort((a, b) => a.date.localeCompare(b.date))
+
+    const projectName = projectId === 'all'
+      ? 'All Projects'
+      : (data.projects.find((p) => p.id === projectId)?.name ?? 'Export')
+
+    // ── Sheet 1: Production Summary ──
+    const summaryRows = entries.map((e) => {
+      const proj  = data.projects.find((p) => p.id === e.projectId)
+      const crew  = data.crews.find((c) => c.id === e.crewId)
+      const items = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
+      const revenue = items.reduce((s, li) => s + li.extendedTotal, 0)
+      return {
+        Date:     e.date,
+        Project:  proj?.name ?? '',
+        Client:   proj?.client ?? '',
+        Crew:     crew?.name ?? '',
+        'Footage (ft)': e.footage,
+        'Hours':        e.hours,
+        'Revenue ($)':  revenue,
+        Notes:    e.notes ?? '',
+      }
+    })
+
+    // ── Sheet 2: Line Item Detail ──
+    const lineRows: Record<string, string | number>[] = []
+    for (const e of entries) {
+      const proj  = data.projects.find((p) => p.id === e.projectId)
+      const crew  = data.crews.find((c) => c.id === e.crewId)
+      const items = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
+      if (items.length === 0) continue
+      for (const li of items) {
+        lineRows.push({
+          Date:         e.date,
+          Project:      proj?.name ?? '',
+          Client:       proj?.client ?? '',
+          Crew:         crew?.name ?? '',
+          'Unit Code':  li.unitCode,
+          Description:  li.description,
+          UOM:          li.uom,
+          Quantity:     li.quantity,
+          'Rate ($)':   li.rateSnapshot,
+          'Total ($)':  li.extendedTotal,
+        })
+      }
+    }
+
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summaryRows),  'Production')
+    if (lineRows.length > 0) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(lineRows), 'Line Items')
+    }
+
+    const safeName = projectName.replace(/[^a-zA-Z0-9_-]/g, '_')
+    XLSX.writeFile(wb, `production_${safeName}_${dateStart}_${dateEnd}.xlsx`)
+    onClose()
+  }
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Export production to Excel"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={doExport}>
+            <Download size={15} /> Export
+          </Button>
+        </>
+      }
+    >
+      <div className="space-y-4">
+        <Field label="Project / Job">
+          <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
+            <option value="all">All projects</option>
+            {data.projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}{p.client ? ` — ${p.client}` : ''}</option>
+            ))}
+          </Select>
+        </Field>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="From">
+            <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} />
+          </Field>
+          <Field label="To">
+            <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} />
+          </Field>
+        </div>
+        {(() => {
+          const count = data.production.filter(
+            (e) => e.date >= dateStart && e.date <= dateEnd &&
+              (projectId === 'all' || e.projectId === projectId),
+          ).length
+          return (
+            <p className="text-sm text-slate-500">
+              <span className="font-semibold text-slate-700">{count}</span> production {count === 1 ? 'entry' : 'entries'} will be exported.
+            </p>
+          )
+        })()}
+      </div>
+    </Modal>
+  )
+}
+
 function ProductionTab() {
   const { data, deleteProduction } = useData()
+  const { isAdmin, activeEmployeeId } = useRole()
   const [open, setOpen] = useState(false)
+  const [exportOpen, setExportOpen] = useState(false)
+  const [editEntryId, setEditEntryId] = useState<string | null>(null)
   const [projectFilter, setProjectFilter] = useState('all')
   const today = new Date().toISOString().slice(0, 10)
-  const [dateStart, setDateStart] = useState(() => weekStart(today))
-  const [dateEnd, setDateEnd] = useState(() => weekEnd(today))
+  const [dateStart, setDateStart] = useState('2020-01-01')
+  const [dateEnd,   setDateEnd]   = useState(today)
 
-  const resetToThisWeek = () => {
+  const jumpToThisWeek = () => {
     const now = new Date().toISOString().slice(0, 10)
     setDateStart(weekStart(now))
     setDateEnd(weekEnd(now))
   }
+  const showAll = () => { setDateStart('2020-01-01'); setDateEnd(today) }
+
+  // In field mode, only show production entries the employee has a timecard for
+  const myProdIds = useMemo(() => {
+    if (isAdmin || !activeEmployeeId) return null
+    return new Set(
+      data.timecards
+        .filter((tc) => tc.employeeId === activeEmployeeId && tc.productionEntryId)
+        .map((tc) => tc.productionEntryId as string),
+    )
+  }, [isAdmin, activeEmployeeId, data.timecards])
 
   const entries = useMemo(() => {
     return [...data.production]
       .filter((e) =>
         e.date >= dateStart &&
         e.date <= dateEnd &&
-        (projectFilter === 'all' || e.projectId === projectFilter)
+        (projectFilter === 'all' || e.projectId === projectFilter) &&
+        (myProdIds === null || myProdIds.has(e.id))
       )
       .sort((a, b) => b.date.localeCompare(a.date))
-  }, [data.production, dateStart, dateEnd, projectFilter])
+  }, [data.production, dateStart, dateEnd, projectFilter, myProdIds])
 
   const footageInRange = entries.reduce((s, e) => s + e.footage, 0)
   const hoursInRange = entries.reduce((s, e) => s + e.hours, 0)
   const avgRate = hoursInRange > 0 ? footageInRange / hoursInRange : 0
+  const revenueInRange = useMemo(() => {
+    const ids = new Set(entries.map((e) => e.id))
+    return data.pnl.filter((p) => p.productionEntryId && ids.has(p.productionEntryId)).reduce((s, p) => s + p.revenue, 0)
+  }, [entries, data.pnl])
 
   const series = dailyProductionSeries(data).slice(-30).map((d) => ({ ...d, label: formatDateShort(d.date) }))
 
@@ -610,19 +1670,30 @@ function ProductionTab() {
           <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} className="w-40" />
           <span className="text-sm text-slate-400">to</span>
           <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} className="w-40" />
-          <button onClick={resetToThisWeek} className="text-sm font-medium text-brand-600 hover:text-brand-700">
+          <button onClick={jumpToThisWeek} className="text-sm font-medium text-brand-600 hover:text-brand-700">
             This week
           </button>
+          <button onClick={showAll} className="text-sm font-medium text-slate-500 hover:text-slate-700">
+            All time
+          </button>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus size={16} /> Log production
-        </Button>
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => setExportOpen(true)}>
+              <Download size={15} /> Export
+            </Button>
+            <Button onClick={() => setOpen(true)}>
+              <Plus size={16} /> Log production
+            </Button>
+          </div>
+        )}
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+      <div className={`grid gap-4 grid-cols-2 ${isAdmin ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
         <StatCard label="Footage" value={`${number(footageInRange)} ft`} hint="in selected range" />
-        <StatCard label="Crew-hours" value={number(hoursInRange)} hint="in selected range" />
-        <StatCard label="Avg rate" value={`${avgRate.toFixed(0)} ft/hr`} hint="footage per hour" />
+        <StatCard label="Crew-hours" value={hoursInRange.toFixed(1)} hint="in selected range" />
+        <StatCard label="Ft / Hr" value={avgRate.toFixed(0)} hint="avg pace" />
+        {isAdmin && <StatCard label="Revenue" value={money(revenueInRange)} hint="in selected range" />}
       </div>
 
       <Card className="mt-6">
@@ -641,59 +1712,106 @@ function ProductionTab() {
       </Card>
 
       <Card className="mt-6">
-        <CardHeader
-          title={`Production log · ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`}
-        />
-        <CardBody className="p-0">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">Production log</p>
+            <p className="text-xs text-slate-400">{entries.length} {entries.length === 1 ? 'entry' : 'entries'} in range</p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
-                <th className="px-5 py-2.5 font-medium">Date</th>
-                <th className="px-5 py-2.5 font-medium">Project</th>
-                <th className="px-5 py-2.5 font-medium">Crew</th>
-                <th className="px-5 py-2.5 text-right font-medium">Footage</th>
-                <th className="px-5 py-2.5 text-right font-medium">Hours</th>
-                <th className="px-5 py-2.5 text-right font-medium">Revenue</th>
-                <th className="px-5 py-2.5 font-medium">Notes</th>
-                <th className="px-5 py-2.5"></th>
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-4 py-3">Date</th>
+                <th className="px-4 py-3">Project</th>
+                <th className="px-4 py-3">Crew</th>
+                <th className="px-4 py-3 text-right">Footage</th>
+                <th className="px-4 py-3 text-right">Hours</th>
+                <th className="px-4 py-3 text-right">Ft/Hr</th>
+                {isAdmin && <th className="px-4 py-3 text-right">Revenue</th>}
+                {isAdmin && <th className="px-4 py-3 text-right">$/Ft</th>}
+                <th className="px-4 py-3">Notes</th>
+                <th className="px-4 py-3" />
               </tr>
             </thead>
-            <tbody>
-              {entries.slice(0, 100).map((e) => {
+            <tbody className="divide-y divide-slate-100">
+              {entries.map((e, i) => {
                 const project = data.projects.find((p) => p.id === e.projectId)
-                const crew = data.crews.find((c) => c.id === e.crewId)
+                const crew    = data.crews.find((c) => c.id === e.crewId)
+                const pnlEntry = data.pnl.find((p) => p.productionEntryId === e.id)
                 const entryItems = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
-                const revenue = entryItems.length > 0
-                  ? entryItems.reduce((s, li) => s + li.extendedTotal, 0)
-                  : null
+                const revenue = pnlEntry?.revenue ?? (entryItems.length > 0 ? entryItems.reduce((s, li) => s + li.extendedTotal, 0) : 0)
+                const ftPerHr = e.hours > 0 ? e.footage / e.hours : 0
+                const dollarPerFt = revenue > 0 && e.footage > 0 ? revenue / e.footage : 0
                 return (
-                  <tr key={e.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                    <td className="whitespace-nowrap px-5 py-2.5 text-slate-600">{formatDate(e.date)}</td>
-                    <td className="px-5 py-2.5 text-slate-700">{project?.name ?? '—'}</td>
-                    <td className="px-5 py-2.5 text-slate-700">{crew?.name ?? '—'}</td>
-                    <td className="px-5 py-2.5 text-right font-medium text-slate-800">{number(e.footage)} ft</td>
-                    <td className="px-5 py-2.5 text-right text-slate-600">{e.hours}</td>
-                    <td className="px-5 py-2.5 text-right text-slate-600">
-                      {revenue !== null ? <span className="text-emerald-700">{money(revenue)}</span> : <span className="text-slate-300">—</span>}
-                    </td>
-                    <td className="px-5 py-2.5 text-slate-400">{e.notes ?? ''}</td>
-                    <td className="px-5 py-2.5 text-right">
-                      <button onClick={() => deleteProduction(e.id)} className="text-slate-300 hover:text-rose-600" aria-label="Delete">
-                        <Trash2 size={15} />
-                      </button>
+                  <tr key={e.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-brand-50/20`}>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{formatDateShort(e.date)}</td>
+                    <td className="max-w-[140px] truncate px-4 py-2.5 font-medium text-slate-800">{project?.name ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-slate-600">{crew?.name ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-right font-mono font-semibold text-slate-800">{number(e.footage)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">{typeof e.hours === 'number' ? e.hours.toFixed(1) : e.hours}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-500">{ftPerHr > 0 ? ftPerHr.toFixed(0) : <span className="text-slate-300">—</span>}</td>
+                    {isAdmin && (
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold text-emerald-700">
+                        {revenue > 0 ? money(revenue) : <span className="font-normal text-slate-300">—</span>}
+                      </td>
+                    )}
+                    {isAdmin && (
+                      <td className="px-4 py-2.5 text-right font-mono text-slate-500">
+                        {dollarPerFt > 0 ? `$${dollarPerFt.toFixed(2)}` : <span className="text-slate-300">—</span>}
+                      </td>
+                    )}
+                    <td className="max-w-[120px] truncate px-4 py-2.5 text-xs text-slate-400">{e.notes ?? ''}</td>
+                    <td className="px-4 py-2.5">
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setEditEntryId(e.id)} className="rounded p-1 text-slate-300 hover:bg-brand-50 hover:text-brand-600" aria-label="Edit">
+                          <Pencil size={13} />
+                        </button>
+                        <button onClick={() => { if (confirm('Delete this production entry?')) deleteProduction(e.id) }} className="rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600" aria-label="Delete">
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 )
               })}
               {entries.length === 0 && (
-                <tr><td colSpan={8} className="px-5 py-10 text-center text-slate-400">No production logged.</td></tr>
+                <tr>
+                  <td colSpan={isAdmin ? 10 : 8} className="px-4 py-10 text-center text-slate-400">No production logged in this range.</td>
+                </tr>
               )}
             </tbody>
+            {entries.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
+                  <td colSpan={3} className="px-4 py-2.5">Total</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-700">{number(footageInRange)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-700">{hoursInRange.toFixed(1)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-500">{hoursInRange > 0 ? (footageInRange / hoursInRange).toFixed(0) : '—'}</td>
+                  {isAdmin && <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-700">{money(revenueInRange)}</td>}
+                  {isAdmin && (
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-500">
+                      {footageInRange > 0 ? `$${(revenueInRange / footageInRange).toFixed(2)}` : '—'}
+                    </td>
+                  )}
+                  <td colSpan={2} />
+                </tr>
+              </tfoot>
+            )}
           </table>
-        </CardBody>
+        </div>
       </Card>
 
       <ProductionModal open={open} onClose={() => setOpen(false)} />
+      {exportOpen && (
+        <ExportModal
+          onClose={() => setExportOpen(false)}
+          defaultProject={projectFilter}
+          defaultStart={dateStart}
+          defaultEnd={dateEnd}
+        />
+      )}
+      {editEntryId && <EditEntryModal entryId={editEntryId} onClose={() => setEditEntryId(null)} />}
     </>
   )
 }
@@ -704,30 +1822,52 @@ function ProductionTab() {
 
 function CrewDailyTab() {
   const { data, deleteCrewDayEntry } = useData()
-  const { isAdmin } = useRole()
+  const { isAdmin, activeEmployeeId } = useRole()
   const [open, setOpen] = useState(false)
+  const [editEntryId, setEditEntryId] = useState<string | null>(null)
   const [projectFilter, setProjectFilter] = useState('all')
   const today = new Date().toISOString().slice(0, 10)
-  const [dateStart, setDateStart] = useState(() => weekStart(today))
-  const [dateEnd, setDateEnd] = useState(() => weekEnd(today))
+  const [dateStart, setDateStart] = useState('2020-01-01')
+  const [dateEnd,   setDateEnd]   = useState(today)
 
-  const resetToThisWeek = () => {
+  const jumpToThisWeek = () => {
     const now = new Date().toISOString().slice(0, 10)
     setDateStart(weekStart(now))
     setDateEnd(weekEnd(now))
   }
+  const showAllDates = () => { setDateStart('2020-01-01'); setDateEnd(today) }
 
-  // Production entries that have crew-day timecards linked to them
+  // In field mode, only show entries the employee has a timecard for
+  const myProdIds = useMemo(() => {
+    if (isAdmin || !activeEmployeeId) return null
+    return new Set(
+      data.timecards
+        .filter((tc) => tc.employeeId === activeEmployeeId && tc.productionEntryId)
+        .map((tc) => tc.productionEntryId as string),
+    )
+  }, [isAdmin, activeEmployeeId, data.timecards])
+
   const crewEntries = useMemo(() => {
-    const entryIds = new Set(data.timecards.filter((t) => t.productionEntryId).map((t) => t.productionEntryId!))
     const list = data.production.filter((e) =>
-      entryIds.has(e.id) &&
       e.date >= dateStart &&
       e.date <= dateEnd &&
-      (projectFilter === 'all' || e.projectId === projectFilter)
+      (projectFilter === 'all' || e.projectId === projectFilter) &&
+      (myProdIds === null || myProdIds.has(e.id))
     )
     return [...list].sort((a, b) => b.date.localeCompare(a.date))
-  }, [data.production, data.timecards, dateStart, dateEnd, projectFilter])
+  }, [data.production, dateStart, dateEnd, projectFilter, myProdIds])
+
+  const crewTotalFootage = crewEntries.reduce((s, e) => s + e.footage, 0)
+  const crewTotalHours = useMemo(() =>
+    crewEntries.reduce((s, entry) => {
+      const tc = data.timecards.filter((t) => t.productionEntryId === entry.id)
+      return s + tc.reduce((ts, t) => ts + t.hours, 0)
+    }, 0),
+  [crewEntries, data.timecards])
+  const crewTotalRevenue = useMemo(() => {
+    const ids = new Set(crewEntries.map((e) => e.id))
+    return data.pnl.filter((p) => p.productionEntryId && ids.has(p.productionEntryId)).reduce((s, p) => s + p.revenue, 0)
+  }, [crewEntries, data.pnl])
 
   return (
     <>
@@ -740,102 +1880,129 @@ function CrewDailyTab() {
           <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} className="w-40" />
           <span className="text-sm text-slate-400">to</span>
           <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} className="w-40" />
-          <button onClick={resetToThisWeek} className="text-sm font-medium text-brand-600 hover:text-brand-700">
+          <button onClick={jumpToThisWeek} className="text-sm font-medium text-brand-600 hover:text-brand-700">
             This week
           </button>
+          <button onClick={showAllDates} className="text-sm font-medium text-slate-500 hover:text-slate-700">
+            All time
+          </button>
         </div>
-        <Button onClick={() => setOpen(true)}>
-          <Plus size={16} /> Log crew day
-        </Button>
+        {isAdmin && (
+          <Button onClick={() => setOpen(true)}>
+            <Plus size={16} /> Log crew day
+          </Button>
+        )}
+      </div>
+
+      <div className={`mb-4 grid gap-4 grid-cols-2 ${isAdmin ? 'sm:grid-cols-4' : 'sm:grid-cols-3'}`}>
+        <StatCard label="Footage" value={`${number(crewTotalFootage)} ft`} hint="in selected range" />
+        <StatCard label="Crew-hours" value={crewTotalHours.toFixed(1)} hint="in selected range" />
+        <StatCard label="Entries" value={String(crewEntries.length)} hint="crew days logged" />
+        {isAdmin && <StatCard label="Revenue" value={money(crewTotalRevenue)} hint="in selected range" />}
       </div>
 
       <Card>
-        <CardHeader
-          title={`Crew day log · ${crewEntries.length} ${crewEntries.length === 1 ? 'entry' : 'entries'}`}
-        />
-        <CardBody className="p-0">
-          {crewEntries.length === 0 ? (
-            <p className="px-5 py-10 text-center text-slate-400">
-              No crew days logged yet. Use "Log crew day" to record a full crew's work.
-            </p>
-          ) : (
-            <div className="divide-y divide-slate-100">
-              {crewEntries.slice(0, 50).map((entry) => {
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+          <div>
+            <p className="text-sm font-semibold text-slate-800">{isAdmin ? 'Crew day log' : 'My production'}</p>
+            <p className="text-xs text-slate-400">{crewEntries.length} {crewEntries.length === 1 ? 'entry' : 'entries'} in range</p>
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-4 py-3">Date</th>
+                <th className="px-4 py-3">Project</th>
+                <th className="px-4 py-3">Crew</th>
+                <th className="px-4 py-3 text-right">Employees</th>
+                <th className="px-4 py-3 text-right">Hours</th>
+                <th className="px-4 py-3 text-right">Footage</th>
+                {isAdmin && <th className="px-4 py-3 text-right">Revenue</th>}
+                {isAdmin && <th className="px-4 py-3 text-right">$/Ft</th>}
+                <th className="px-4 py-3">Notes</th>
+                {isAdmin && <th className="px-4 py-3" />}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {crewEntries.map((entry, i) => {
                 const project = data.projects.find((p) => p.id === entry.projectId)
                 const crew = data.crews.find((c) => c.id === entry.crewId)
                 const foreman = data.employees.find((e) => e.isForeman && e.defaultCrewId === entry.crewId)
                 const entryTimecards = data.timecards.filter((t) => t.productionEntryId === entry.id)
                 const totalHours = entryTimecards.reduce((s, t) => s + t.hours, 0)
-                const totalLabor = entryTimecards.reduce((s, t) => s + t.laborCost, 0)
-
+                const pnlEntry = data.pnl.find((p) => p.productionEntryId === entry.id)
+                const entryItems = data.productionLineItems.filter((li) => li.productionEntryId === entry.id)
+                const revenue = pnlEntry?.revenue ?? (entryItems.length > 0 ? entryItems.reduce((s, li) => s + li.extendedTotal, 0) : 0)
+                const dollarPerFt = revenue > 0 && entry.footage > 0 ? revenue / entry.footage : 0
                 return (
-                  <div key={entry.id} className="px-5 py-3">
-                    {/* Header row */}
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1 min-w-0">
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
-                          <span className="whitespace-nowrap text-xs text-slate-400">{formatDate(entry.date)}</span>
-                          <span className="font-medium text-slate-800">{project?.name ?? '—'}</span>
-                          <span className="text-sm text-slate-500">{crew?.name ?? '—'}</span>
-                          {foreman && (
-                            <span className="text-xs text-slate-400">· {foreman.name}</span>
-                          )}
+                  <tr key={entry.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-brand-50/20`}>
+                    <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{formatDateShort(entry.date)}</td>
+                    <td className="max-w-[140px] truncate px-4 py-2.5 font-medium text-slate-800">{project?.name ?? '—'}</td>
+                    <td className="px-4 py-2.5 text-slate-600">
+                      {crew?.name ?? '—'}
+                      {foreman && <span className="ml-1.5 text-xs text-slate-400">· {foreman.name}</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">{entryTimecards.length}</td>
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">{totalHours.toFixed(1)}</td>
+                    <td className="px-4 py-2.5 text-right font-mono font-semibold text-slate-800">{number(entry.footage)}</td>
+                    {isAdmin && (
+                      <td className="px-4 py-2.5 text-right font-mono font-semibold text-emerald-700">
+                        {revenue > 0 ? money(revenue) : <span className="font-normal text-slate-300">—</span>}
+                      </td>
+                    )}
+                    {isAdmin && (
+                      <td className="px-4 py-2.5 text-right font-mono text-slate-500">
+                        {dollarPerFt > 0 ? `$${dollarPerFt.toFixed(2)}` : <span className="text-slate-300">—</span>}
+                      </td>
+                    )}
+                    <td className="max-w-[120px] truncate px-4 py-2.5 text-xs text-slate-400">{entry.notes ?? ''}</td>
+                    {isAdmin && (
+                      <td className="px-4 py-2.5">
+                        <div className="flex items-center justify-end gap-1">
+                          <button onClick={() => setEditEntryId(entry.id)} className="rounded p-1 text-slate-300 hover:bg-brand-50 hover:text-brand-600" aria-label="Edit" title="Change project or crew">
+                            <Pencil size={13} />
+                          </button>
+                          <button onClick={() => { if (confirm('Delete this crew day entry and all linked timecards?')) deleteCrewDayEntry(entry.id) }} className="rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600" aria-label="Delete">
+                            <Trash2 size={13} />
+                          </button>
                         </div>
-                        <div className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-sm">
-                          <span className="flex items-center gap-1 text-slate-500">
-                            <Users size={12} />{entryTimecards.length} employees
-                          </span>
-                          <span className="text-slate-500">{totalHours.toFixed(1)} hrs total</span>
-                          {entry.footage > 0 && (
-                            <span className="font-medium text-slate-700">{number(entry.footage)} ft</span>
-                          )}
-                          {isAdmin && totalLabor > 0 && (
-                            <span className="font-medium text-emerald-700">{moneyExact(totalLabor)} labor</span>
-                          )}
-                          {entry.notes && (
-                            <span className="text-xs text-slate-400 italic">{entry.notes}</span>
-                          )}
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => { if (confirm('Delete this crew day entry?')) deleteCrewDayEntry(entry.id) }}
-                        className="mt-0.5 text-slate-300 hover:text-rose-600"
-                        aria-label="Delete"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-
-                    {/* Employee breakdown */}
-                    <div className="mt-2 ml-0 divide-y divide-slate-50 rounded-lg border border-slate-100 bg-slate-50/60">
-                      {entryTimecards.map((tc) => {
-                        const emp = data.employees.find((e) => e.id === tc.employeeId)
-                        return (
-                          <div key={tc.id} className="flex items-center gap-3 px-3 py-1.5 text-sm">
-                            <span className="flex-1 text-slate-700">
-                              {emp?.name ?? '—'}
-                              {emp?.isForeman && (
-                                <span className="ml-1.5 inline-flex items-center rounded bg-brand-100 px-1 py-0.5 text-[10px] font-semibold text-brand-700">FM</span>
-                              )}
-                              <span className="ml-1 text-xs text-slate-400">{emp?.role}</span>
-                            </span>
-                            <span className="text-slate-600">{tc.hours.toFixed(1)} hrs</span>
-                            {isAdmin && (
-                              <span className="w-20 text-right text-slate-500">{moneyExact(tc.laborCost)}</span>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
+                      </td>
+                    )}
+                  </tr>
                 )
               })}
-            </div>
-          )}
-        </CardBody>
+              {crewEntries.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 10 : 7} className="px-4 py-10 text-center text-slate-400">
+                    {isAdmin ? 'No crew days logged yet. Use "Log crew day" to record a full crew\'s work.' : 'No production entries found for you yet.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+            {crewEntries.length > 0 && (
+              <tfoot>
+                <tr className="border-t-2 border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
+                  <td colSpan={3} className="px-4 py-2.5">Total</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-500">—</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-700">{crewTotalHours.toFixed(1)}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-700">{number(crewTotalFootage)}</td>
+                  {isAdmin && <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-700">{money(crewTotalRevenue)}</td>}
+                  {isAdmin && (
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-500">
+                      {crewTotalFootage > 0 ? `$${(crewTotalRevenue / crewTotalFootage).toFixed(2)}` : '—'}
+                    </td>
+                  )}
+                  <td colSpan={isAdmin ? 2 : 1} />
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
       </Card>
 
       <CrewDayModal open={open} onClose={() => setOpen(false)} />
+      {editEntryId && <EditEntryModal entryId={editEntryId} onClose={() => setEditEntryId(null)} />}
     </>
   )
 }
@@ -845,15 +2012,15 @@ function CrewDailyTab() {
 // ---------------------------------------------------------------------------
 
 export function Production() {
-  const [tab, setTab] = useState<'production' | 'crew'>('production')
+  const [tab, setTab] = useState<'crew' | 'production'>('crew')
   return (
     <div>
       <PageHeader
         title="Production Tracking"
-        description="Daily footage placed by crew (rate-card driven) and crew labor entry."
+        description="Log daily crew work and footage placed. Hours are pulled from the time clock automatically."
       />
       <div className="mb-6 flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 w-fit">
-        {(['production', 'crew'] as const).map((t) => (
+        {(['crew', 'production'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -861,11 +2028,11 @@ export function Production() {
               tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
             }`}
           >
-            {t === 'production' ? 'Production' : 'Crew Entry'}
+            {t === 'crew' ? 'Crew Day Entry' : 'Rate Card Log'}
           </button>
         ))}
       </div>
-      {tab === 'production' ? <ProductionTab /> : <CrewDailyTab />}
+      {tab === 'crew' ? <CrewDailyTab /> : <ProductionTab />}
     </div>
   )
 }

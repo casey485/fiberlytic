@@ -8,9 +8,10 @@ import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
 import { money } from '../lib/format'
+import { daysInMonth } from '../lib/analytics'
 import type { Equipment, EquipmentCategory } from '../types'
 
-const WORKING_DAYS = 21
+const TODAY = new Date().toISOString().slice(0, 10)
 
 const CATEGORIES: EquipmentCategory[] = [
   'Bore Rig',
@@ -70,7 +71,7 @@ function EquipmentModal({
   const set = <K extends keyof EqForm>(k: K, v: EqForm[K]) => setForm((f) => ({ ...f, [k]: v }))
 
   const monthly = parseFloat(form.monthlyCost) || 0
-  const daily = monthly / WORKING_DAYS
+  const daily = monthly / daysInMonth(TODAY)
 
   const valid = form.name.trim() && monthly > 0
 
@@ -132,7 +133,7 @@ function EquipmentModal({
         <Field label="Daily cost (auto)">
           <div className="flex h-10 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-700">
             {daily > 0 ? money(daily) : '—'}
-            {daily > 0 && <span className="ml-1.5 text-xs font-normal text-slate-400">/ working day · {WORKING_DAYS} working days/mo</span>}
+            {daily > 0 && <span className="ml-1.5 text-xs font-normal text-slate-400">/ day · {daysInMonth(TODAY)} days this month</span>}
           </div>
         </Field>
         <div className="sm:col-span-2">
@@ -192,7 +193,7 @@ export function EquipmentPage() {
   }
 
   const totalMonthly = data.equipment.filter((e) => e.active).reduce((s, e) => s + e.monthlyCost, 0)
-  const totalDaily = totalMonthly / WORKING_DAYS
+  const totalDaily = totalMonthly / daysInMonth(TODAY)
 
   // Group equipment by crew for the summary cards
   const byCrew = new Map<string | null, Equipment[]>()
@@ -264,7 +265,7 @@ export function EquipmentPage() {
               <tbody>
                 {data.equipment.map((eq) => {
                   const crew = data.crews.find((c) => c.id === eq.crewId)
-                  const daily = eq.monthlyCost / WORKING_DAYS
+                  const daily = eq.monthlyCost / daysInMonth(TODAY)
                   return (
                     <tr key={eq.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                       <td className="px-5 py-3">
@@ -346,7 +347,7 @@ export function EquipmentPage() {
                 const activeItems = items.filter((e) => e.active)
                 if (activeItems.length === 0) return null
                 const crewMonthly = activeItems.reduce((s, e) => s + e.monthlyCost, 0)
-                const crewDaily = crewMonthly / WORKING_DAYS
+                const crewDaily = crewMonthly / daysInMonth(TODAY)
                 return (
                   <div key={crewId} className="rounded-xl border border-slate-200 bg-white p-4">
                     <p className="text-sm font-semibold text-slate-800">{crew?.name ?? 'Unknown crew'}</p>
@@ -356,7 +357,7 @@ export function EquipmentPage() {
                       {activeItems.map((e) => (
                         <li key={e.id} className="flex items-center justify-between text-xs text-slate-600">
                           <span>{e.name}</span>
-                          <span className="font-medium">{money(e.monthlyCost / WORKING_DAYS)}/day</span>
+                          <span className="font-medium">{money(e.monthlyCost / daysInMonth(TODAY))}/day</span>
                         </li>
                       ))}
                     </ul>

@@ -121,25 +121,25 @@ const clients: Client[] = [
 const projects: Project[] = [
   {
     id: 'proj-maple', name: 'Maple Grove FTTH Phase 2', client: 'Maple Grove Utilities', location: 'Maple Grove, MN',
-    status: 'active', workType: 'aerial', startDate: daysAgo(40), dueDate: daysFromNow(55),
+    status: 'active', workTypes: ['aerial'], startDate: daysAgo(40), dueDate: daysFromNow(55),
     contractValue: 612000, budget: 430000, footageGoal: 48000, footageComplete: 0,
     crewIds: ['crew-alpha'], notes: 'Pole make-ready coordinated with city; 2 strand attach permits pending.',
   },
   {
     id: 'proj-downtown', name: 'Downtown Conduit Backbone', client: 'Metro Broadband', location: 'Cedar Rapids, IA',
-    status: 'active', workType: 'underground', startDate: daysAgo(30), dueDate: daysFromNow(70),
+    status: 'active', workTypes: ['underground'], startDate: daysAgo(30), dueDate: daysFromNow(70),
     contractValue: 845000, budget: 640000, footageGoal: 22000, footageComplete: 0,
     crewIds: ['crew-bravo'], notes: 'Heavy rock zone near 3rd Ave slowing trench rate.',
   },
   {
     id: 'proj-cedar', name: 'Cedar Falls Aerial Expansion', client: 'Cedar Falls Telecom', location: 'Cedar Falls, IA',
-    status: 'active', workType: 'directional_bore', startDate: daysAgo(22), dueDate: daysFromNow(90),
+    status: 'active', workTypes: ['directional_bore'], startDate: daysAgo(22), dueDate: daysFromNow(90),
     contractValue: 980000, budget: 760000, footageGoal: 65000, footageComplete: 0,
     crewIds: ['crew-charlie'], notes: '',
   },
   {
     id: 'proj-westside', name: 'Westside Splice & Test', client: 'Metro Broadband', location: 'Cedar Rapids, IA',
-    status: 'active', workType: 'splicing', startDate: daysAgo(15), dueDate: daysFromNow(20),
+    status: 'active', workTypes: ['splicing'], startDate: daysAgo(15), dueDate: daysFromNow(20),
     contractValue: 268000, budget: 195000, footageGoal: 30000, footageComplete: 0,
     crewIds: ['crew-splice'], notes: 'OTDR test reports due to client weekly.',
   },
@@ -147,20 +147,20 @@ const projects: Project[] = [
     // Essentia project — linked to rate card system
     id: 'proj-essentia', name: 'Essentia Underground Phase 1', client: 'Essentia', clientId: 'client-essentia',
     location: 'Brainerd, MN',
-    status: 'active', workType: 'underground', startDate: daysAgo(14), dueDate: daysFromNow(60),
+    status: 'active', workTypes: ['underground'], startDate: daysAgo(14), dueDate: daysFromNow(60),
     contractValue: 185000, budget: 140000, footageGoal: 15000, footageComplete: 0,
     crewIds: [], retentionPct: 0.10,
     notes: 'Rate card driven. Use Production → Rate Card Lookup to log line items.',
   },
   {
     id: 'proj-riverside', name: 'Riverside MDU Buildout', client: 'Riverside Housing Authority', location: 'Davenport, IA',
-    status: 'planning', workType: 'mdu', startDate: daysFromNow(10), dueDate: daysFromNow(120),
+    status: 'planning', workTypes: ['mdu'], startDate: daysFromNow(10), dueDate: daysFromNow(120),
     contractValue: 412000, budget: 310000, footageGoal: 18000, footageComplete: 0,
     crewIds: [], notes: 'Awaiting riser access agreements from property manager.',
   },
   {
     id: 'proj-hillcrest', name: 'Hillcrest Directional Bore', client: 'Hillcrest Fiber Co-op', location: 'Dubuque, IA',
-    status: 'complete', workType: 'directional_bore', startDate: daysAgo(120), dueDate: daysAgo(20),
+    status: 'complete', workTypes: ['directional_bore'], startDate: daysAgo(120), dueDate: daysAgo(20),
     contractValue: 224000, budget: 168000, footageGoal: 12000, footageComplete: 12000,
     crewIds: [], notes: 'Closed out. Final as-builts delivered.',
   },
@@ -172,7 +172,7 @@ const rateCards: RateCard[] = [
   {
     id: 'rc-essentia-ug',
     clientId: 'client-essentia',
-    division: 'Underground',
+    divisions: ['Underground'],
     name: 'Essentia Underground 2025',
     effectiveDate: '2025-01-01',
   },
@@ -370,5 +370,8 @@ export function generateSeedData(): AppData {
     timecards: [],
     jobExpenses: [],
     equipment: [],
+    projectFiles: [],
+    annotations: [],
+    clockEntries: [],
   }
 }

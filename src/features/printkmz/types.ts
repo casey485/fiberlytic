@@ -151,6 +151,8 @@ export interface PrintSession {
   /** Default map center used to seed object positions. */
   center: LngLat
   objects: DetectedObject[]
+  /** Optional link to a Fiberlytic project so field crews can access this print. */
+  projectId?: string
 }
 
 // --- Display metadata --------------------------------------------------------

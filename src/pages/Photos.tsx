@@ -6,6 +6,9 @@ import { Card } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
+import { PhotoImg } from '../components/PhotoImg'
+import { compressImage } from '../lib/imageCompress'
+import { saveBlob } from '../lib/fileStore'
 import { formatDate } from '../lib/format'
 import type { BadgeTone } from '../lib/format'
 import type { PhotoCategory } from '../types'
@@ -69,7 +72,7 @@ export function Photos() {
             return (
               <Card key={photo.id} className="group overflow-hidden">
                 <div className="relative aspect-[4/3] bg-slate-100">
-                  <img src={photo.url} alt={photo.caption} className="h-full w-full object-cover" loading="lazy" />
+                  <PhotoImg url={photo.url} alt={photo.caption} className="h-full w-full object-cover" loading="lazy" />
                   <div className="absolute left-2 top-2">
                     <Badge tone={meta.tone}>{meta.label}</Badge>
                   </div>
@@ -107,22 +110,37 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
     category: 'progress' as PhotoCategory,
     date: today,
     uploadedBy: 'Office',
-    url: '',
+    preview: '',
+    blobKey: '',
   })
+  const [compressing, setCompressing] = useState(false)
   const set = (k: keyof typeof form, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
-  const onFile = (file: File | undefined) => {
+  const onFile = async (file: File | undefined) => {
     if (!file) return
-    const reader = new FileReader()
-    reader.onload = () => set('url', String(reader.result))
-    reader.readAsDataURL(file)
+    setCompressing(true)
+    try {
+      const compressed = await compressImage(file)
+      const key = 'pb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
+      setForm((f) => ({ ...f, preview: compressed, blobKey: key }))
+    } finally {
+      setCompressing(false)
+    }
   }
 
-  const submit = () => {
-    if (!form.projectId || !form.url) return
-    addPhoto({ ...form, caption: form.caption || 'Untitled photo' })
+  const submit = async () => {
+    if (!form.projectId || !form.preview || !form.blobKey) return
+    await saveBlob(form.blobKey, form.preview)
+    addPhoto({
+      projectId: form.projectId,
+      caption: form.caption || 'Untitled photo',
+      category: form.category,
+      date: form.date,
+      uploadedBy: form.uploadedBy,
+      url: 'idb:' + form.blobKey,
+    })
     onClose()
-    setForm((f) => ({ ...f, caption: '', url: '' }))
+    setForm((f) => ({ ...f, caption: '', preview: '', blobKey: '' }))
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -134,7 +152,7 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={submit} disabled={!form.url}>Save photo</Button>
+          <Button onClick={submit} disabled={!form.preview || compressing}>{compressing ? 'Processing…' : 'Save photo'}</Button>
         </>
       }
     >
@@ -148,8 +166,8 @@ function UploadModal({ open, onClose }: { open: boolean; onClose: () => void }) 
             className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-brand-50 file:px-3 file:py-2 file:text-sm file:font-medium file:text-brand-700 hover:file:bg-brand-100"
           />
         </Field>
-        {form.url && (
-          <img src={form.url} alt="preview" className="max-h-48 w-full rounded-lg object-cover" />
+        {form.preview && (
+          <img src={form.preview} alt="preview" className="max-h-48 w-full rounded-lg object-cover" />
         )}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="sm:col-span-2">

@@ -23,10 +23,17 @@ function ClientModal({
   onClose,
 }: {
   initial?: Client
-  onSave: (name: string) => void
+  onSave: (name: string, divisions: RateCardDivision[]) => void
   onClose: () => void
 }) {
   const [name, setName] = useState(initial?.name ?? '')
+  const [divisions, setDivisions] = useState<RateCardDivision[]>(initial?.divisions ?? [])
+
+  const toggleDiv = (d: RateCardDivision) =>
+    setDivisions((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d])
+
+  const valid = name.trim().length > 0
+
   return (
     <Modal
       open
@@ -35,13 +42,39 @@ function ClientModal({
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => { if (name.trim()) { onSave(name.trim()); onClose() } }}>Save</Button>
+          <Button disabled={!valid} onClick={() => { if (valid) { onSave(name.trim(), divisions); onClose() } }}>Save</Button>
         </>
       }
     >
-      <Field label="Client name">
-        <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Essentia" autoFocus />
-      </Field>
+      <div className="flex flex-col gap-4">
+        <Field label="Client name">
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Essentia" autoFocus />
+        </Field>
+        <Field label="Work divisions" hint="Select all that apply">
+          <div className="flex gap-2 pt-1">
+            {DIVISIONS.map((d) => {
+              const active = divisions.includes(d)
+              return (
+                <button
+                  key={d}
+                  type="button"
+                  onClick={() => toggleDiv(d)}
+                  className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                    active
+                      ? d === 'Underground'
+                        ? 'border-blue-600 bg-blue-600 text-white'
+                        : 'border-cyan-600 bg-cyan-600 text-white'
+                      : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+                  }`}
+                >
+                  <span className={`h-2 w-2 rounded-full ${active ? 'bg-white' : d === 'Underground' ? 'bg-blue-400' : 'bg-cyan-400'}`} />
+                  {d}
+                </button>
+              )
+            })}
+          </div>
+        </Field>
+      </div>
     </Modal>
   )
 }
@@ -50,7 +83,7 @@ function ClientModal({
 // Rate card modal
 // ---------------------------------------------------------------------------
 
-type RcForm = { name: string; division: RateCardDivision; effectiveDate: string }
+type RcForm = { name: string; divisions: RateCardDivision[]; effectiveDate: string }
 
 function RateCardModal({
   initial,
@@ -64,10 +97,17 @@ function RateCardModal({
   const today = new Date().toISOString().slice(0, 10)
   const [form, setForm] = useState<RcForm>({
     name: initial?.name ?? '',
-    division: initial?.division ?? 'Underground',
+    divisions: initial?.divisions ?? [],
     effectiveDate: initial?.effectiveDate ?? today,
   })
   const set = <K extends keyof RcForm>(k: K, v: RcForm[K]) => setForm((f) => ({ ...f, [k]: v }))
+
+  const toggleDiv = (d: RateCardDivision) =>
+    set('divisions', form.divisions.includes(d)
+      ? form.divisions.filter((x) => x !== d)
+      : [...form.divisions, d])
+
+  const valid = form.name.trim().length > 0
 
   return (
     <Modal
@@ -77,21 +117,42 @@ function RateCardModal({
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={() => { if (form.name.trim()) { onSave(form); onClose() } }}>Save</Button>
+          <Button disabled={!valid} onClick={() => { if (valid) { onSave(form); onClose() } }}>Save</Button>
         </>
       }
     >
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2">
           <Field label="Card name">
-            <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Essentia Underground 2025" autoFocus />
+            <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="e.g. Essentia 2025" autoFocus />
           </Field>
         </div>
-        <Field label="Division">
-          <Select value={form.division} onChange={(e) => set('division', e.target.value as RateCardDivision)}>
-            {DIVISIONS.map((d) => <option key={d} value={d}>{d}</option>)}
-          </Select>
-        </Field>
+        <div className="sm:col-span-2">
+          <Field label="Divisions" hint="Select all that apply">
+            <div className="flex gap-2 pt-1">
+              {DIVISIONS.map((d) => {
+                const active = form.divisions.includes(d)
+                return (
+                  <button
+                    key={d}
+                    type="button"
+                    onClick={() => toggleDiv(d)}
+                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
+                      active
+                        ? d === 'Underground'
+                          ? 'border-blue-600 bg-blue-600 text-white'
+                          : 'border-cyan-600 bg-cyan-600 text-white'
+                        : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+                    }`}
+                  >
+                    <span className={`h-2 w-2 rounded-full ${active ? 'bg-white' : d === 'Underground' ? 'bg-blue-400' : 'bg-cyan-400'}`} />
+                    {d}
+                  </button>
+                )
+              })}
+            </div>
+          </Field>
+        </div>
         <Field label="Effective date">
           <Input type="date" value={form.effectiveDate} onChange={(e) => set('effectiveDate', e.target.value)} />
         </Field>
@@ -194,7 +255,9 @@ function RateCardRow({
           <div>
             <span className="font-medium text-slate-800">{card.name}</span>
             <span className="ml-2">
-              <Badge tone={card.division === 'Underground' ? 'blue' : 'cyan'}>{card.division}</Badge>
+              {(card.divisions ?? []).map((d) => (
+                <Badge key={d} tone={d === 'Underground' ? 'blue' : 'cyan'}>{d}</Badge>
+              ))}
             </span>
           </div>
           <span className="ml-2 text-xs text-slate-400">Effective {formatDate(card.effectiveDate)} · {units.length} units</span>
@@ -305,7 +368,14 @@ export function RateCards() {
         return (
           <Card key={client.id} className="mb-6">
             <CardHeader
-              title={client.name}
+              title={
+                <span className="flex items-center gap-2">
+                  {client.name}
+                  {(client.divisions ?? []).map((d) => (
+                    <Badge key={d} tone={d === 'Underground' ? 'blue' : 'cyan'}>{d}</Badge>
+                  ))}
+                </span>
+              }
               subtitle={`${cards.length} rate card${cards.length !== 1 ? 's' : ''}`}
               action={
                 <div className="flex items-center gap-2">
@@ -352,21 +422,21 @@ export function RateCards() {
 
       {/* Dialogs */}
       {dialog?.type === 'addClient' && (
-        <ClientModal onSave={(name) => addClient({ name })} onClose={close} />
+        <ClientModal onSave={(name, divisions) => addClient({ name, divisions })} onClose={close} />
       )}
       {dialog?.type === 'editClient' && (
-        <ClientModal initial={dialog.client} onSave={(name) => updateClient(dialog.client.id, { name })} onClose={close} />
+        <ClientModal initial={dialog.client} onSave={(name, divisions) => updateClient(dialog.client.id, { name, divisions })} onClose={close} />
       )}
       {dialog?.type === 'addCard' && (
         <RateCardModal
-          onSave={(f) => addRateCard({ clientId: dialog.clientId, name: f.name, division: f.division, effectiveDate: f.effectiveDate })}
+          onSave={(f) => addRateCard({ clientId: dialog.clientId, name: f.name, divisions: f.divisions, effectiveDate: f.effectiveDate })}
           onClose={close}
         />
       )}
       {dialog?.type === 'editCard' && (
         <RateCardModal
           initial={dialog.card}
-          onSave={(f) => updateRateCard(dialog.card.id, { name: f.name, division: f.division, effectiveDate: f.effectiveDate })}
+          onSave={(f) => updateRateCard(dialog.card.id, { name: f.name, divisions: f.divisions, effectiveDate: f.effectiveDate })}
           onClose={close}
         />
       )}

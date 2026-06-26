@@ -12,7 +12,7 @@
 export type ProjectStatus = 'planning' | 'active' | 'on_hold' | 'complete'
 
 /** The kind of fiber work — drives default production units and crew matching. */
-export type WorkType = 'aerial' | 'underground' | 'directional_bore' | 'splicing' | 'mdu'
+export type WorkType = 'aerial' | 'underground' | 'directional_bore' | 'splicing' | 'mdu' | 'cable_plow'
 
 export interface Project {
   id: string
@@ -20,9 +20,11 @@ export interface Project {
   client: string
   /** Optional FK → Client.id; links to rate cards for this project. */
   clientId?: string
+  /** Geofence polygon vertices as [lng, lat] pairs (Mapbox order). */
+  boundary?: [number, number][]
   location: string
   status: ProjectStatus
-  workType: WorkType
+  workTypes: WorkType[]
   startDate: string
   /** Target completion date. */
   dueDate: string
@@ -62,15 +64,18 @@ export interface CrewMember {
 export interface Crew {
   id: string
   name: string
+  /** Display name of the foreman (kept for backward compat). */
   foreman: string
+  /** FK → Employee.id — links to the foreman's employee record. */
+  foremanId?: string
   specialty: WorkType
   status: CrewStatus
   /** Project the crew is currently working, if any. */
   currentProjectId: string | null
-  /** Crew-level default pay — used as a fallback when no members are defined. */
+  /** Crew-level default pay — used as a fallback when individual employee rates are unavailable. */
   payType: PayType
   payAmount: number
-  /** Individual workers; labor cost is summed across active members. */
+  /** Individual workers from legacy setup — no longer managed in crew setup UI. */
   members: CrewMember[]
   /** @deprecated legacy fields kept so older saved data still loads. */
   size?: number
@@ -131,8 +136,10 @@ export interface Photo {
   category: PhotoCategory
   date: string
   uploadedBy: string
-  /** Image URL. Seed data uses remote placeholders; uploads use data URLs. */
+  /** Image URL. Use "idb:<key>" for blobs stored in IndexedDB; direct URLs otherwise. */
   url: string
+  /** When set, this photo was taken during a production entry. */
+  productionEntryId?: string
 }
 
 export type InvoiceStatus = 'draft' | 'sent' | 'paid' | 'overdue'
@@ -165,12 +172,14 @@ export type UOM = 'LF' | 'EA' | 'SQFT'
 export interface Client {
   id: string
   name: string
+  /** Which divisions this client has work in — drives rate card guidance. */
+  divisions?: RateCardDivision[]
 }
 
 export interface RateCard {
   id: string
   clientId: string
-  division: RateCardDivision
+  divisions: RateCardDivision[]
   name: string
   effectiveDate: string
 }
@@ -285,6 +294,72 @@ export interface Equipment {
 }
 
 // ---------------------------------------------------------------------------
+// Project Files — PDFs and KMZ plans attached to a project
+// ---------------------------------------------------------------------------
+
+export type ProjectFileType = 'pdf' | 'kmz' | 'other'
+
+export interface ProjectFile {
+  id: string
+  projectId: string
+  name: string
+  fileType: ProjectFileType
+  /** File size in bytes (before base64 encoding). */
+  size: number
+  uploadedAt: string
+  /**
+   * Legacy field — present only in data saved before the IndexedDB migration.
+   * New files store their blob in IndexedDB (see src/lib/fileStore.ts); this
+   * field is auto-migrated to IndexedDB on first load and then removed.
+   */
+  dataUrl?: string
+}
+
+// ---------------------------------------------------------------------------
+// Redline annotations — markup drawn on top of project PDFs
+// ---------------------------------------------------------------------------
+
+export type AnnotationTool = 'pen' | 'line' | 'arrow' | 'rect' | 'ellipse' | 'text'
+
+export interface AnnotationShape {
+  id: string
+  fileId: string       // FK → ProjectFile.id
+  page: number         // 1-based PDF page number
+  tool: AnnotationTool
+  color: string        // CSS hex color
+  strokeWidth: number  // in SVG viewBox units (0–1000 per page axis)
+  // pen: list of [x, y] in natural PDF point coordinates
+  points?: [number, number][]
+  // line / arrow / rect / ellipse: start + end corners
+  x1?: number; y1?: number; x2?: number; y2?: number
+  // text
+  text?: string
+  createdAt: string
+}
+
+// ---------------------------------------------------------------------------
+// Clock-in / geofence entries
+// ---------------------------------------------------------------------------
+
+export interface ClockEntry {
+  id: string
+  employeeId: string
+  projectId: string
+  /** FK → Crew.id — associates this entry with a crew for cost roll-up */
+  crewId?: string
+  /** ISO datetime string */
+  clockIn: string
+  /** ISO datetime string — undefined while still clocked in */
+  clockOut?: string
+  /** GPS lat at clock-in (0 for manual entries) */
+  lat: number
+  /** GPS lng at clock-in (0 for manual entries) */
+  lng: number
+  /** True when the entry was typed in manually rather than captured via GPS */
+  manual?: boolean
+}
+
+// ---------------------------------------------------------------------------
 // Top-level persisted application state
 // ---------------------------------------------------------------------------
 
@@ -311,4 +386,10 @@ export interface AppData {
   jobExpenses: JobExpense[]
   // Equipment
   equipment: Equipment[]
+  // Project files (PDFs, KMZ plans)
+  projectFiles: ProjectFile[]
+  // Redline annotations keyed by file + page
+  annotations: AnnotationShape[]
+  // Clock-in / geofence records
+  clockEntries: ClockEntry[]
 }

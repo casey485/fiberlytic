@@ -9,7 +9,7 @@ import { StatCard } from '../components/ui/StatCard'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
 import { money, moneyExact, percent, formatDate, formatDateShort } from '../lib/format'
-import { weekStart, weekEnd, computeMetrics } from '../lib/analytics'
+import { weekStart, weekEnd, computeMetrics, daysInMonth } from '../lib/analytics'
 import type { JobExpense } from '../types'
 
 // ---------------------------------------------------------------------------
@@ -182,35 +182,62 @@ function WeeklyView() {
       .sort((a, b) => a.date.localeCompare(b.date))
   }, [data.jobExpenses, wStart, wEnd, projectFilter])
 
-  const totalRevenue = revenueRows.reduce((s, r) => s + r.total, 0)
+  // Production entries in this week — source of truth for the P&L production section
+  const productionRows = useMemo(() => {
+    const pnlByEntryId = new Map(
+      data.pnl.filter((p) => p.productionEntryId).map((p) => [p.productionEntryId!, p])
+    )
+    return data.production
+      .filter((pe) =>
+        pe.date >= wStart && pe.date <= wEnd &&
+        (projectFilter === 'all' || pe.projectId === projectFilter)
+      )
+      .map((pe) => {
+        const pnlEntry = pnlByEntryId.get(pe.id)
+        const proj = data.projects.find((p) => p.id === pe.projectId)
+        const crew = data.crews.find((c) => c.id === pe.crewId)
+        return {
+          id: pe.id,
+          date: pe.date,
+          projectName: proj?.name ?? '—',
+          crewName: crew?.name,
+          footage: pe.footage,
+          revenue: pnlEntry?.revenue ?? 0,
+          retentionPct: proj?.retentionPct ?? 0.10,
+        }
+      })
+      .sort((a, b) => a.date.localeCompare(b.date))
+  }, [data.production, data.pnl, data.projects, data.crews, wStart, wEnd, projectFilter])
+
+  const totalRevenue = weekMetrics.revenue
   const totalLabor = laborRows.reduce((s, tc) => s + tc.laborCost, 0) + pnlLaborRows.reduce((s, e) => s + e.laborCost, 0)
   const totalExpenses = expenseRows.reduce((s, ex) => s + ex.amount, 0)
-  const ebitda = totalRevenue - totalLabor - weeklyEquipment - totalExpenses
-  const margin = totalRevenue > 0 ? ebitda / totalRevenue : 0
 
-  // Retention (per selected project, or average if multiple)
+  // Retention: per selected project, or revenue-weighted average across all projects active this week
   const retentionPct = useMemo(() => {
     if (projectFilter !== 'all') {
       const proj = data.projects.find((p) => p.id === projectFilter)
-      return proj?.retentionPct ?? 0
+      return proj?.retentionPct ?? 0.10
     }
-    // Average weighted retention across projects that appear in this week
     const projIds = new Set([
+      ...productionRows.map((r) => data.projects.find((p) => p.name === r.projectName)?.id).filter(Boolean) as string[],
       ...revenueRows.map((r) => r.projectId),
       ...laborRows.map((tc) => tc.jobId),
       ...pnlLaborRows.map((e) => e.projectId),
-      ...weekEquipmentDetail.map(({ crew }) => crew.currentProjectId).filter(Boolean) as string[],
       ...expenseRows.map((ex) => ex.jobId),
     ])
-    if (projIds.size === 0) return 0
-    const rates = [...projIds].map((id) => data.projects.find((p) => p.id === id)?.retentionPct ?? 0)
+    if (projIds.size === 0) return 0.10
+    const rates = [...projIds].map((id) => data.projects.find((p) => p.id === id)?.retentionPct ?? 0.10)
     return rates.reduce((s, r) => s + r, 0) / rates.length
-  }, [data.projects, projectFilter, revenueRows, laborRows, expenseRows])
+  }, [data.projects, projectFilter, productionRows, revenueRows, laborRows, pnlLaborRows, expenseRows])
 
-  const retentionHeld = totalRevenue * retentionPct
-  const netCash = totalRevenue - retentionHeld - totalLabor - weeklyEquipment - totalExpenses
+  // Revenue waterfall: gross → retained → net → EBITDA
+  const retentionHeld = Math.round(totalRevenue * retentionPct)
+  const netRevenue = totalRevenue - retentionHeld
+  const ebitda = netRevenue - totalLabor - weeklyEquipment - totalExpenses
+  const margin = netRevenue > 0 ? ebitda / netRevenue : 0
 
-  const hasData = revenueRows.length > 0 || laborRows.length > 0 || pnlLaborRows.length > 0 || weeklyEquipment > 0 || expenseRows.length > 0
+  const hasData = productionRows.length > 0 || weekMetrics.revenue > 0 || revenueRows.length > 0 || laborRows.length > 0 || pnlLaborRows.length > 0 || weeklyEquipment > 0 || expenseRows.length > 0
 
   return (
     <div>
@@ -239,30 +266,32 @@ function WeeklyView() {
       </div>
 
       {/* Summary stats */}
-      <div className="mb-6 grid grid-cols-2 gap-4 xl:grid-cols-5">
-        <StatCard label="Gross Revenue" value={money(totalRevenue)} />
+      <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-6">
+        <StatCard label="Gross Revenue" value={money(totalRevenue)} hint="before retention" />
+        <StatCard label={`Retained (${Math.round(retentionPct * 100)}%)`} value={`(${money(retentionHeld)})`} />
+        <StatCard label="Net Revenue" value={money(netRevenue)} hint="after retention" />
         <StatCard label="Total Labor" value={money(totalLabor)} />
         <StatCard label="Equipment" value={money(weeklyEquipment)} />
-        <StatCard label="Expenses" value={money(totalExpenses)} />
         <StatCard
           label="EBITDA"
           value={money(ebitda)}
           trend={{ value: percent(margin, 1), positive: ebitda >= 0 }}
-          hint="margin"
+          hint="net rev − costs"
         />
       </div>
 
       {isAdmin && totalRevenue > 0 && (
         <div className="mb-6 rounded-lg border border-slate-200 bg-white p-5">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Cash Position</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">P&L Waterfall</p>
           <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm xl:grid-cols-4">
             <PnlRow label="Gross Revenue" value={money(totalRevenue)} />
-            <PnlRow label={`Retention (${percent(retentionPct)})`} value={`(${money(retentionHeld)})`} tone="neg" />
+            <PnlRow label={`Retainage Held (${Math.round(retentionPct * 100)}%)`} value={`(${money(retentionHeld)})`} tone="neg" />
+            <PnlRow label="Net Revenue" value={money(netRevenue)} tone="pos" />
             <PnlRow label="Labor" value={`(${money(totalLabor)})`} tone="neg" />
             <PnlRow label="Equipment" value={`(${money(weeklyEquipment)})`} tone="neg" />
             <PnlRow label="Expenses" value={`(${money(totalExpenses)})`} tone="neg" />
             <div className="col-span-2 mt-2 border-t border-slate-200 pt-2 xl:col-span-4">
-              <PnlRow label="Net Cash Position" value={money(netCash)} tone={netCash >= 0 ? 'pos' : 'neg'} bold />
+              <PnlRow label="EBITDA" value={money(ebitda)} tone={ebitda >= 0 ? 'pos' : 'neg'} bold />
             </div>
           </div>
         </div>
@@ -275,12 +304,80 @@ function WeeklyView() {
         </Card>
       )}
 
-      {/* Revenue section */}
+      {/* Production section — all entries logged this week */}
+      {productionRows.length > 0 && (
+        <Card className="mb-4">
+          <CardHeader
+            title="Production"
+            subtitle={`${productionRows.length} entr${productionRows.length !== 1 ? 'ies' : 'y'} · ${productionRows.reduce((s, pe) => s + pe.footage, 0).toLocaleString()} LF${isAdmin ? ` · ${money(totalRevenue)} gross` : ''}`}
+          />
+          <CardBody className="p-0">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="px-5 py-2.5 font-medium">Date</th>
+                  <th className="px-5 py-2.5 font-medium">Project</th>
+                  <th className="px-5 py-2.5 font-medium">Crew</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Footage</th>
+                  {isAdmin && <th className="px-5 py-2.5 text-right font-medium">Gross Rev</th>}
+                  {isAdmin && <th className="px-5 py-2.5 text-right font-medium">Retained</th>}
+                  {isAdmin && <th className="px-5 py-2.5 text-right font-medium">Net Rev</th>}
+                </tr>
+              </thead>
+              <tbody>
+                {productionRows.map((pe) => {
+                  const retained = Math.round(pe.revenue * pe.retentionPct)
+                  const net = pe.revenue - retained
+                  return (
+                    <tr key={pe.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(pe.date)}</td>
+                      <td className="px-5 py-2.5 font-medium text-slate-800">{pe.projectName}</td>
+                      <td className="px-5 py-2.5">
+                        {pe.crewName
+                          ? <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{pe.crewName}</span>
+                          : <span className="text-slate-400">—</span>}
+                      </td>
+                      <td className="px-5 py-2.5 text-right text-slate-700">{pe.footage.toLocaleString()} LF</td>
+                      {isAdmin && <td className="px-5 py-2.5 text-right text-slate-600">{money(pe.revenue)}</td>}
+                      {isAdmin && (
+                        <td className="px-5 py-2.5 text-right text-amber-600">
+                          {retained > 0 ? `(${money(retained)})` : '—'}
+                          {pe.retentionPct > 0 && <span className="ml-1 text-xs text-slate-400">{Math.round(pe.retentionPct * 100)}%</span>}
+                        </td>
+                      )}
+                      {isAdmin && <td className="px-5 py-2.5 text-right font-medium text-emerald-700">{money(net)}</td>}
+                    </tr>
+                  )
+                })}
+              </tbody>
+              {isAdmin && (
+                <tfoot>
+                  <tr className="border-t-2 border-slate-200 bg-slate-50">
+                    <td colSpan={3} className="px-5 py-2.5 text-right text-sm font-semibold text-slate-700">Totals</td>
+                    <td className="px-5 py-2.5 text-right font-bold text-slate-700">
+                      {productionRows.reduce((s, pe) => s + pe.footage, 0).toLocaleString()} LF
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-semibold text-slate-600">{money(totalRevenue)}</td>
+                    <td className="px-5 py-2.5 text-right font-semibold text-amber-600">
+                      ({money(productionRows.reduce((s, pe) => s + Math.round(pe.revenue * pe.retentionPct), 0))})
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-bold text-emerald-700">
+                      {money(productionRows.reduce((s, pe) => s + pe.revenue - Math.round(pe.revenue * pe.retentionPct), 0))}
+                    </td>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </CardBody>
+        </Card>
+      )}
+
+      {/* Rate Card Detail — only shown when line items were submitted */}
       {revenueRows.length > 0 && (
         <Card className="mb-4">
           <CardHeader
-            title="Revenue"
-            subtitle={`${revenueRows.length} line items · ${money(totalRevenue)}`}
+            title="Rate Card Detail"
+            subtitle={`${revenueRows.length} line item${revenueRows.length !== 1 ? 's' : ''}`}
           />
           <CardBody className="p-0">
             <table className="w-full text-sm">
@@ -308,12 +405,6 @@ function WeeklyView() {
                   </tr>
                 ))}
               </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-200 bg-slate-50">
-                  <td colSpan={6} className="px-5 py-2.5 text-right text-sm font-semibold text-slate-700">Total Revenue</td>
-                  <td className="px-5 py-2.5 text-right font-bold text-emerald-700">{money(totalRevenue)}</td>
-                </tr>
-              </tfoot>
             </table>
           </CardBody>
         </Card>
@@ -408,7 +499,7 @@ function WeeklyView() {
               </thead>
               <tbody>
                 {weekEquipmentDetail.map(({ eq, crew }) => {
-                  const daily = eq.monthlyCost / 21
+                  const daily = eq.monthlyCost / daysInMonth(wStart)
                   // Count weekdays in this week where equipment was deployed
                   let weekDays = 0
                   const d = new Date(wStart + 'T12:00:00')

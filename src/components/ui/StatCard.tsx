@@ -14,19 +14,19 @@ export function StatCard({
   trend?: { value: string; positive: boolean }
 }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-700 dark:bg-slate-800">
       <div className="flex items-center justify-between">
-        <p className="text-sm font-medium text-slate-500">{label}</p>
+        <p className="text-sm font-medium text-slate-500 dark:text-slate-400">{label}</p>
         {icon && <div className="text-brand-500">{icon}</div>}
       </div>
-      <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">{value}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">{value}</p>
       <div className="mt-1 flex items-center gap-2">
         {trend && (
           <span className={trend.positive ? 'text-xs font-medium text-emerald-600' : 'text-xs font-medium text-rose-600'}>
             {trend.positive ? '▲' : '▼'} {trend.value}
           </span>
         )}
-        {hint && <span className="text-xs text-slate-400">{hint}</span>}
+        {hint && <span className="text-xs text-slate-400 dark:text-slate-500">{hint}</span>}
       </div>
     </div>
   )

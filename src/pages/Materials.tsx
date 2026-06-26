@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { Plus, Trash2, AlertTriangle, Minus } from 'lucide-react'
 import { useData } from '../store/DataContext'
+import { useRole } from '../store/RoleContext'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card, CardBody } from '../components/ui/Card'
 import { StatCard } from '../components/ui/StatCard'
@@ -21,6 +22,7 @@ const CATEGORIES: { value: MaterialCategory; label: string }[] = [
 
 export function Materials() {
   const { data, addMaterial, updateMaterial, deleteMaterial } = useData()
+  const { isAdmin } = useRole()
   const [open, setOpen] = useState(false)
   const [catFilter, setCatFilter] = useState<MaterialCategory | 'all'>('all')
 
@@ -35,6 +37,90 @@ export function Materials() {
   const adjust = (id: string, current: number, delta: number) =>
     updateMaterial(id, { quantityOnHand: Math.max(0, current + delta) })
 
+  // ── Field view — simplified checkout list, no prices ─────────────────────────
+  if (!isAdmin) {
+    return (
+      <div>
+        <PageHeader
+          title="Materials"
+          description="Check materials in or out. Contact your admin to add new items."
+        />
+
+        <div className="mb-4 flex flex-wrap gap-2">
+          {(['all', ...CATEGORIES.map((c) => c.value)] as const).map((c) => (
+            <button
+              key={c}
+              onClick={() => setCatFilter(c as MaterialCategory | 'all')}
+              className={`rounded-full px-3 py-1 text-sm font-medium transition ${
+                catFilter === c ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {c === 'all' ? 'All' : CATEGORIES.find((x) => x.value === c)?.label}
+            </button>
+          ))}
+        </div>
+
+        <Card>
+          <CardBody className="p-0">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="px-5 py-2.5 font-medium">Material</th>
+                  <th className="px-5 py-2.5 text-right font-medium">Available</th>
+                  <th className="px-5 py-2.5 text-center font-medium">Check out / in</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((m) => {
+                  const low = m.quantityOnHand <= m.reorderLevel
+                  return (
+                    <tr key={m.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className="px-5 py-2.5">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-slate-800">{m.name}</span>
+                          {low && <Badge tone="amber">Low stock</Badge>}
+                        </div>
+                        <span className="text-xs capitalize text-slate-400">{m.category}</span>
+                      </td>
+                      <td className="px-5 py-2.5 text-right">
+                        <span className={low ? 'font-semibold text-amber-600' : 'font-medium text-slate-800'}>
+                          {number(m.quantityOnHand)}
+                        </span>
+                        <span className="text-xs text-slate-400"> {m.unit}</span>
+                      </td>
+                      <td className="px-5 py-2.5">
+                        <div className="flex items-center justify-center gap-2">
+                          <button
+                            onClick={() => adjust(m.id, m.quantityOnHand, -getStep(m.unit))}
+                            className="flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-100"
+                            aria-label="Check out"
+                          >
+                            <Minus size={11} /> Out
+                          </button>
+                          <button
+                            onClick={() => adjust(m.id, m.quantityOnHand, getStep(m.unit))}
+                            className="flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-100"
+                            aria-label="Return"
+                          >
+                            <Plus size={11} /> Return
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                })}
+                {filtered.length === 0 && (
+                  <tr><td colSpan={3} className="px-5 py-10 text-center text-slate-400">No materials in this category.</td></tr>
+                )}
+              </tbody>
+            </table>
+          </CardBody>
+        </Card>
+      </div>
+    )
+  }
+
+  // ── Admin view ──────────────────────────────────────────────────────────────
   return (
     <div>
       <PageHeader

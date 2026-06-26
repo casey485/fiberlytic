@@ -94,6 +94,10 @@ export const printStore = {
     setState({ ...state, sessions: state.sessions.filter((s) => s.id !== id) })
   },
 
+  updateSession(id: string, patch: Partial<PrintSession>) {
+    patchSession(id, (s) => ({ ...s, ...patch }))
+  },
+
   setObjects(sessionId: string, objects: DetectedObject[]) {
     patchSession(sessionId, (s) => ({ ...s, objects }))
   },

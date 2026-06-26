@@ -38,9 +38,9 @@ export function MapView({
   selectedId: string | null
   drawingId: string | null
   onSelect: (id: string) => void
-  onMove: (id: string, pos: LngLat) => void
-  onAppendVertex: (id: string, pos: LngLat) => void
-  onPathChange: (id: string, path: LngLat[]) => void
+  onMove?: (id: string, pos: LngLat) => void
+  onAppendVertex?: (id: string, pos: LngLat) => void
+  onPathChange?: (id: string, path: LngLat[]) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<mapboxgl.Map | null>(null)
@@ -87,7 +87,7 @@ export function MapView({
     map.on('click', (e) => {
       const id = drawingIdRef.current
       if (!id) return
-      onAppendRef.current(id, { lng: e.lngLat.lng, lat: e.lngLat.lat })
+      onAppendRef.current?.(id, { lng: e.lngLat.lng, lat: e.lngLat.lat })
     })
 
     mapRef.current = map
@@ -121,7 +121,7 @@ export function MapView({
       let marker = markers.get(obj.id)
       if (!marker) {
         const el = document.createElement('div')
-        const m = new mapboxgl.Marker({ element: el, draggable: true })
+        const m = new mapboxgl.Marker({ element: el, draggable: !!onMove })
           .setLngLat([obj.position.lng, obj.position.lat])
           .addTo(map)
         el.addEventListener('click', (e) => {
@@ -130,7 +130,7 @@ export function MapView({
         })
         m.on('dragend', () => {
           const ll = m.getLngLat()
-          onMoveRef.current(obj.id, { lng: ll.lng, lat: ll.lat })
+          onMoveRef.current?.(obj.id, { lng: ll.lng, lat: ll.lat })
         })
         markers.set(obj.id, m)
         marker = m
@@ -176,7 +176,7 @@ export function MapView({
         const ll = m.getLngLat()
         const next = [...(objects.find((o) => o.id === drawingId)?.path ?? [])]
         next[idx] = { lng: ll.lng, lat: ll.lat }
-        onPathChange(drawingId!, next)
+        onPathChange?.(drawingId!, next)
       })
       vertexMarkersRef.current.push(m)
     })
