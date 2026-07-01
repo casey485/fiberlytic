@@ -1,0 +1,87 @@
+{
+  "toolbar": {
+    "select": "Select / Pan",
+    "addWork": "Add Work",
+    "point": "Point",
+    "line": "Line",
+    "multiLine": "Multi-Line",
+    "polygon": "Polygon",
+    "rectangle": "Rectangle",
+    "circle": "Circle",
+    "freehand": "Freehand",
+    "text": "Text",
+    "callout": "Callout",
+    "arrow": "Arrow",
+    "measure": "Measure",
+    "split": "Split (select 2)",
+    "merge": "Merge (select 2)",
+    "moreShapes": "More shapes",
+    "cloud": "Cloud",
+    "highlight": "Highlight",
+    "ellipse": "Ellipse",
+    "vertexEdit": "Vertex Edit",
+    "snap": "Snap to vertex",
+    "layerManager": "Layer Manager",
+    "undo": "Undo",
+    "redo": "Redo",
+    "delete": "Delete",
+    "save": "Save",
+    "advancedTools": "Advanced Tools",
+    "exportReport": "Export Report (PDF)",
+    "exporting": "Exporting…"
+  },
+  "addWork": {
+    "chooseType": "Add Work — Choose a Type",
+    "title": "Add Work — {{type}}",
+    "steps": {
+      "details": "Details",
+      "photos": "Photos",
+      "billing": "Billing"
+    },
+    "cancel": "Cancel",
+    "back": "Back",
+    "next": "Next",
+    "save": "Save",
+    "saving": "Saving…",
+    "field": {
+      "name": "Name",
+      "namePlaceholder": "Work item name",
+      "comments": "Comments",
+      "commentsRequired": "Notes required for this work type",
+      "commentsOptional": "Optional notes",
+      "status": "Status",
+      "crew": "Crew",
+      "unassigned": "Unassigned",
+      "quantity": "Quantity",
+      "gps": "GPS",
+      "captureGps": "Capture GPS",
+      "capturingGps": "Capturing…",
+      "gpsError": "Couldn't get location"
+    },
+    "photos": {
+      "tagNextPhotoAs": "Tag next photo as",
+      "takePhoto": "Take Photo",
+      "upload": "Upload"
+    },
+    "billing": {
+      "notRequired": "Billing codes not required",
+      "searchPlaceholder": "Search billing codes by name or unit code…",
+      "recentlyUsed": "Recently Used",
+      "favorites": "Favorites",
+      "allCategories": "All Categories",
+      "noFavorites": "No favorites yet.",
+      "noRecent": "No recently used codes yet.",
+      "noUnits": "No rate card units found for this project's client."
+    }
+  },
+  "workObjectPanel": {
+    "tabs": {
+      "details": "Details",
+      "photos": "Photos",
+      "billing": "Billing",
+      "inspection": "Inspection",
+      "history": "History",
+      "attachments": "Attachments"
+    }
+  }
+}

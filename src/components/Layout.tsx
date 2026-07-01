@@ -23,10 +23,13 @@ import {
   Moon,
   Wallet,
   Map,
+  Languages,
 } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { useTheme } from '../store/ThemeContext'
+import { useLocale } from '../store/LocaleContext'
+import { LOCALES } from '../i18n'
 
 const adminNav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
@@ -132,6 +135,24 @@ function ThemeToggle() {
   )
 }
 
+function LocaleToggle() {
+  const { locale, setLocale } = useLocale()
+  return (
+    <label className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-slate-500 transition hover:bg-white/8 hover:text-slate-300">
+      <Languages size={14} className="shrink-0" />
+      <select
+        value={locale}
+        onChange={(e) => setLocale(e.target.value as typeof locale)}
+        className="w-full cursor-pointer border-none bg-transparent text-xs font-medium text-slate-500 outline-none hover:text-slate-300"
+      >
+        {LOCALES.map((l) => (
+          <option key={l.code} value={l.code} className="bg-[#141414] text-slate-200">{l.label}</option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function FieldEmployeeChip() {
   const { isAdmin, activeEmployeeId, setActiveEmployee } = useRole()
   const { data } = useData()
@@ -189,6 +210,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         <div className="space-y-0.5 border-t border-[#1e1e1e] p-2">
           <FieldEmployeeChip />
           <ThemeToggle />
+          <LocaleToggle />
           <RoleToggle />
           <button
             onClick={onReset}
@@ -216,6 +238,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             <div className="space-y-0.5 border-t border-[#1e1e1e] p-2">
               <FieldEmployeeChip />
               <ThemeToggle />
+              <LocaleToggle />
               <RoleToggle />
             </div>
           </aside>

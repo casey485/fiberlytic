@@ -1,0 +1,87 @@
+{
+  "toolbar": {
+    "select": "Seleccionar / Desplazar",
+    "addWork": "Agregar Trabajo",
+    "point": "Punto",
+    "line": "Línea",
+    "multiLine": "Línea Múltiple",
+    "polygon": "Polígono",
+    "rectangle": "Rectángulo",
+    "circle": "Círculo",
+    "freehand": "Mano Alzada",
+    "text": "Texto",
+    "callout": "Llamada",
+    "arrow": "Flecha",
+    "measure": "Medir",
+    "split": "Dividir (selecciona 2)",
+    "merge": "Combinar (selecciona 2)",
+    "moreShapes": "Más formas",
+    "cloud": "Nube",
+    "highlight": "Resaltado",
+    "ellipse": "Elipse",
+    "vertexEdit": "Editar Vértices",
+    "snap": "Ajustar al vértice",
+    "layerManager": "Administrador de Capas",
+    "undo": "Deshacer",
+    "redo": "Rehacer",
+    "delete": "Eliminar",
+    "save": "Guardar",
+    "advancedTools": "Herramientas Avanzadas",
+    "exportReport": "Exportar Informe (PDF)",
+    "exporting": "Exportando…"
+  },
+  "addWork": {
+    "chooseType": "Agregar Trabajo — Elige un Tipo",
+    "title": "Agregar Trabajo — {{type}}",
+    "steps": {
+      "details": "Detalles",
+      "photos": "Fotos",
+      "billing": "Facturación"
+    },
+    "cancel": "Cancelar",
+    "back": "Atrás",
+    "next": "Siguiente",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "field": {
+      "name": "Nombre",
+      "namePlaceholder": "Nombre del ítem de trabajo",
+      "comments": "Comentarios",
+      "commentsRequired": "Notas requeridas para este tipo de trabajo",
+      "commentsOptional": "Notas opcionales",
+      "status": "Estado",
+      "crew": "Cuadrilla",
+      "unassigned": "Sin asignar",
+      "quantity": "Cantidad",
+      "gps": "GPS",
+      "captureGps": "Capturar GPS",
+      "capturingGps": "Capturando…",
+      "gpsError": "No se pudo obtener la ubicación"
+    },
+    "photos": {
+      "tagNextPhotoAs": "Etiquetar la próxima foto como",
+      "takePhoto": "Tomar Foto",
+      "upload": "Subir"
+    },
+    "billing": {
+      "notRequired": "Códigos de facturación no requeridos",
+      "searchPlaceholder": "Buscar códigos de facturación por nombre o código de unidad…",
+      "recentlyUsed": "Usados Recientemente",
+      "favorites": "Favoritos",
+      "allCategories": "Todas las Categorías",
+      "noFavorites": "Aún no hay favoritos.",
+      "noRecent": "Aún no hay códigos usados recientemente.",
+      "noUnits": "No se encontraron unidades de tarifa para el cliente de este proyecto."
+    }
+  },
+  "workObjectPanel": {
+    "tabs": {
+      "details": "Detalles",
+      "photos": "Fotos",
+      "billing": "Facturación",
+      "inspection": "Inspección",
+      "history": "Historial",
+      "attachments": "Adjuntos"
+    }
+  }
+}

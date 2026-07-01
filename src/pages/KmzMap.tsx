@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -94,6 +95,7 @@ function latlngsLengthFt(pts: [number, number][]): number {
 }
 
 export function KmzMap() {
+  const { t } = useTranslation()
   const { projectId } = useParams<{ projectId: string }>()
   const nav = useNavigate()
   const location = useLocation()
@@ -1992,7 +1994,7 @@ export function KmzMap() {
                 disabled={exportingReport}
                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5 disabled:opacity-40 transition"
               >
-                <Download size={12} /> {exportingReport ? 'Exporting…' : 'Export Report (PDF)'}
+                <Download size={12} /> {exportingReport ? t('toolbar.exporting') : t('toolbar.exportReport')}
               </button>
             }
           />

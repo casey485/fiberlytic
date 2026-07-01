@@ -4,6 +4,7 @@
  * Handles: feature metadata, status/crew workflow, photo attachments, billing.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import {
   X, Save, Trash2, Camera, ImagePlus, ChevronDown, Plus, Check,
   DollarSign, Image, Lock, Unlock, Send, CheckCircle2, Move, Spline,
@@ -113,6 +114,7 @@ interface Props {
 }
 
 export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editMode = 'none', onSetEditMode }: Props) {
+  const { t } = useTranslation()
   const {
     data, updateMarkup, deleteMarkup, addMarkup,
     addMarkupPhoto, deleteMarkupPhoto,
@@ -341,19 +343,19 @@ export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editM
 
       {/* Tab bar */}
       <div className="flex shrink-0 overflow-x-auto border-b border-[#1e1e1e]">
-        {(['notes', 'photos', 'billing', 'inspection', 'history', 'attachments'] as const).map((t) => (
+        {(['notes', 'photos', 'billing', 'inspection', 'history', 'attachments'] as const).map((tabKey) => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
+            key={tabKey}
+            onClick={() => setTab(tabKey)}
             className={`shrink-0 px-2.5 py-2 text-[10px] font-semibold uppercase tracking-wider transition ${
-              tab === t ? 'border-b-2 border-brand-500 text-brand-400' : 'text-slate-600 hover:text-slate-400'
+              tab === tabKey ? 'border-b-2 border-brand-500 text-brand-400' : 'text-slate-600 hover:text-slate-400'
             }`}
           >
-            {t === 'notes' ? 'Details' : t}
-            {t === 'billing' && billingTotal > 0 ? ` ($${billingTotal.toFixed(0)})` : ''}
-            {t === 'photos' && photos.length > 0 ? ` (${photos.length})` : ''}
-            {t === 'inspection' && inspections.length > 0 ? ` (${inspections.length})` : ''}
-            {t === 'attachments' && attachments.length > 0 ? ` (${attachments.length})` : ''}
+            {t(`workObjectPanel.tabs.${tabKey === 'notes' ? 'details' : tabKey}`)}
+            {tabKey === 'billing' && billingTotal > 0 ? ` ($${billingTotal.toFixed(0)})` : ''}
+            {tabKey === 'photos' && photos.length > 0 ? ` (${photos.length})` : ''}
+            {tabKey === 'inspection' && inspections.length > 0 ? ` (${inspections.length})` : ''}
+            {tabKey === 'attachments' && attachments.length > 0 ? ` (${attachments.length})` : ''}
           </button>
         ))}
       </div>

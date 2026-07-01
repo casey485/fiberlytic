@@ -6,6 +6,7 @@
  * Details/Photos/Billing operate on it before Save.
  */
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Camera, ImagePlus, Trash2, Search, X, MapPin, Star, Clock, Check } from 'lucide-react'
 import { Modal } from './ui/Modal'
 import { Button, Field, Input, Select, Textarea } from './ui/Form'
@@ -39,6 +40,7 @@ function PhotoThumb({ photoId }: { photoId: string }) {
 }
 
 export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }: Props) {
+  const { t } = useTranslation()
   const {
     data, updateMarkup, addMarkupPhoto, deleteMarkupPhoto, addMarkupVideo,
     addMarkupBilling, deleteMarkupBilling, updateMarkupBilling,
@@ -91,7 +93,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   // ── Step 1: Type (no markup yet — map isn't clickable behind a blocking modal, which is fine here) ──
   if (!markupId) {
     return (
-      <Modal open={open} onClose={onClose} title="Add Work — Choose a Type" size="lg">
+      <Modal open={open} onClose={onClose} title={t('addWork.chooseType')} size="lg">
         <AddWorkTypeGrid onSelect={onPickType} />
       </Modal>
     )
@@ -169,18 +171,18 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
     <Modal
       open={open}
       onClose={onClose}
-      title={`Add Work — ${typeDef?.label ?? 'Work Object'}`}
+      title={t('addWork.title', { type: typeDef?.label ?? 'Work Object' })}
       size="lg"
       footer={
         <div className="flex w-full items-center justify-between">
           <Button variant="ghost" onClick={() => (stepIdx === 0 ? onClose() : setStep(steps[stepIdx - 1]))}>
-            {stepIdx === 0 ? 'Cancel' : 'Back'}
+            {stepIdx === 0 ? t('addWork.cancel') : t('addWork.back')}
           </Button>
           <Button
             onClick={() => (stepIdx === steps.length - 1 ? handleSave() : setStep(steps[stepIdx + 1]))}
             disabled={savingBilling}
           >
-            {stepIdx === steps.length - 1 ? (savingBilling ? 'Saving…' : 'Save') : 'Next'}
+            {stepIdx === steps.length - 1 ? (savingBilling ? t('addWork.saving') : t('addWork.save')) : t('addWork.next')}
           </Button>
         </div>
       }
@@ -190,29 +192,29 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
         {steps.map((s, i) => (
           <span key={s} className={i <= stepIdx ? 'text-brand-400' : 'text-slate-600'}>
             {i > 0 && <span className="mx-1.5 text-slate-700">/</span>}
-            {s}
+            {t(`addWork.steps.${s}`)}
           </span>
         ))}
       </div>
 
       {step === 'details' && (
         <div className="space-y-3">
-          <Field label="Name">
+          <Field label={t('addWork.field.name')}>
             <Input
               value={markup.featureName ?? markup.label ?? ''}
               onChange={(e) => patchMarkup({ featureName: e.target.value, label: e.target.value })}
-              placeholder={typeDef?.label ?? 'Work item name'}
+              placeholder={typeDef?.label ?? t('addWork.field.namePlaceholder')}
             />
           </Field>
-          <Field label="Comments">
+          <Field label={t('addWork.field.comments')}>
             <Textarea
               value={markup.notes ?? ''}
               onChange={(e) => patchMarkup({ notes: e.target.value })}
-              placeholder={typeDef?.requiresNotes ? 'Notes required for this work type' : 'Optional notes'}
+              placeholder={typeDef?.requiresNotes ? t('addWork.field.commentsRequired') : t('addWork.field.commentsOptional')}
             />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Status">
+            <Field label={t('addWork.field.status')}>
               <Select
                 value={markup.status}
                 onChange={(e) => patchMarkup({ status: e.target.value as MarkupStatus })}
@@ -222,33 +224,33 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
                 ))}
               </Select>
             </Field>
-            <Field label="Crew">
+            <Field label={t('addWork.field.crew')}>
               <Select
                 value={markup.crewId ?? ''}
                 onChange={(e) => patchMarkup({ crewId: e.target.value || null })}
               >
-                <option value="">Unassigned</option>
+                <option value="">{t('addWork.field.unassigned')}</option>
                 {data.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </Select>
             </Field>
           </div>
-          <Field label={`Quantity${typeDef ? ` (${typeDef.defaultUnit})` : ''}`}>
+          <Field label={`${t('addWork.field.quantity')}${typeDef ? ` (${typeDef.defaultUnit})` : ''}`}>
             <Input
               type="number"
               value={markup.quantity ?? ''}
               onChange={(e) => patchMarkup({ quantity: e.target.value === '' ? null : Number(e.target.value) })}
             />
           </Field>
-          <Field label="GPS">
+          <Field label={t('addWork.field.gps')}>
             <div className="flex items-center gap-2">
               <Button type="button" variant="secondary" onClick={captureGps} disabled={gpsStatus === 'capturing'}>
                 <MapPin size={13} className="mr-1.5" />
-                {gpsStatus === 'capturing' ? 'Capturing…' : 'Capture GPS'}
+                {gpsStatus === 'capturing' ? t('addWork.field.capturingGps') : t('addWork.field.captureGps')}
               </Button>
               {markup.capturedLat != null && markup.capturedLng != null && (
                 <span className="text-[11px] text-slate-500">{markup.capturedLat.toFixed(5)}, {markup.capturedLng.toFixed(5)}</span>
               )}
-              {gpsStatus === 'error' && <span className="text-[11px] text-red-400">Couldn't get location</span>}
+              {gpsStatus === 'error' && <span className="text-[11px] text-red-400">{t('addWork.field.gpsError')}</span>}
             </div>
           </Field>
         </div>
@@ -292,7 +294,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
               </div>
             ))}
           </div>
-          <Field label="Tag next photo as">
+          <Field label={t('addWork.photos.tagNextPhotoAs')}>
             <Select
               value={photoPhaseOverride ?? nextRequiredPhase ?? 'other'}
               onChange={(e) => setPhotoPhaseOverride(e.target.value as PhotoProofType)}
@@ -314,10 +316,10 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
           />
           <div className="flex gap-2">
             <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
-              <Camera size={13} className="mr-1.5" /> Take Photo
+              <Camera size={13} className="mr-1.5" /> {t('addWork.photos.takePhoto')}
             </Button>
             <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
-              <ImagePlus size={13} className="mr-1.5" /> Upload
+              <ImagePlus size={13} className="mr-1.5" /> {t('addWork.photos.upload')}
             </Button>
           </div>
         </div>
@@ -331,7 +333,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
               checked={billingSkipped}
               onChange={(e) => setBillingSkipped(e.target.checked)}
             />
-            Billing codes not required
+            {t('addWork.billing.notRequired')}
           </label>
 
           {!billingSkipped && (
@@ -353,7 +355,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
                 <Input
                   value={billingSearch}
                   onChange={(e) => setBillingSearch(e.target.value)}
-                  placeholder="Search billing codes by name or unit code…"
+                  placeholder={t('addWork.billing.searchPlaceholder')}
                   className="pl-7"
                 />
               </div>
@@ -369,7 +371,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
                     >
                       {v === 'recent' && <Clock size={11} />}
                       {v === 'favorites' && <Star size={11} />}
-                      {v === 'recent' ? 'Recently Used' : v === 'favorites' ? 'Favorites' : 'All Categories'}
+                      {v === 'recent' ? t('addWork.billing.recentlyUsed') : v === 'favorites' ? t('addWork.billing.favorites') : t('addWork.billing.allCategories')}
                     </button>
                   ))}
                 </div>
@@ -395,7 +397,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
                 ))}
                 {filteredUnits.length === 0 && (
                   <li className="text-[11px] text-slate-600">
-                    {billingView === 'favorites' ? 'No favorites yet.' : billingView === 'recent' ? 'No recently used codes yet.' : "No rate card units found for this project's client."}
+                    {billingView === 'favorites' ? t('addWork.billing.noFavorites') : billingView === 'recent' ? t('addWork.billing.noRecent') : t('addWork.billing.noUnits')}
                   </li>
                 )}
               </ul>
