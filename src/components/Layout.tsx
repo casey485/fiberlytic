@@ -9,7 +9,6 @@ import {
   Package,
   Image,
   FileText,
-  ScanText,
   CreditCard,
   HardHat,
   Wrench,
@@ -45,7 +44,6 @@ const adminNav = [
   { to: '/materials', label: 'Materials', icon: Package },
   { to: '/photos', label: 'Photos', icon: Image },
   { to: '/invoicing', label: 'Invoicing', icon: FileText },
-  { to: '/print-reader', label: 'Print Reader', icon: ScanText },
 ]
 
 const fieldNav = [

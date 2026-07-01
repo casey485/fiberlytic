@@ -10,8 +10,6 @@ import { DailyPnL } from './pages/DailyPnL'
 import { Materials } from './pages/Materials'
 import { Photos } from './pages/Photos'
 import { Invoicing } from './pages/Invoicing'
-import { PrintReader } from './pages/PrintReader'
-import { PrintReview } from './pages/PrintReview'
 import { ProjectPrints } from './pages/ProjectPrints'
 import { RateCards } from './pages/RateCards'
 import { Employees } from './pages/Employees'
@@ -74,8 +72,6 @@ export default function App() {
           <Route path="/equipment"  element={<AdminRoute element={<EquipmentPage />} />} />
           <Route path="/photos"     element={<AdminRoute element={<Photos />} />} />
           <Route path="/invoicing"  element={<AdminRoute element={<Invoicing />} />} />
-          <Route path="/print-reader"            element={<AdminRoute element={<PrintReader />} />} />
-          <Route path="/print-reader/:sessionId" element={<PrintReview />} />
           <Route path="/project-prints"          element={<ProjectPrints />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
