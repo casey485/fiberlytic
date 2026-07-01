@@ -83,5 +83,9 @@
       "history": "History",
       "attachments": "Attachments"
     }
+  },
+  "pdfPrintMode": {
+    "badge": "PDF Print Mode",
+    "page": "Page {{n}} / {{total}}"
   }
 }

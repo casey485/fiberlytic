@@ -313,6 +313,8 @@ export interface ProjectFile {
    * field is auto-migrated to IndexedDB on first load and then removed.
    */
   dataUrl?: string
+  /** PDF Print Mode page scale, e.g. 50 for "1 inch = 50 feet". Unset until the user sets it in Print Mode's Advanced Tools menu. */
+  pdfScaleFeetPerInch?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -572,6 +574,12 @@ export interface FieldMarkup {
 
   // Geometry
   geometry: MarkupGeometry
+  /** Which coordinate space `geometry`'s numbers are in — defaults to 'latlng' for every existing record. 'pdfPage' means the numbers are native PDF page-point units (72/inch), scoped to sourceProjectFileId + pageIndex below, not real-world coordinates. */
+  coordSpace?: 'latlng' | 'pdfPage'
+  /** FK -> ProjectFile.id — which PDF this markup was drawn on, when coordSpace === 'pdfPage'. */
+  sourceProjectFileId?: string | null
+  /** Which page (0-indexed) of sourceProjectFileId this markup was drawn on, when coordSpace === 'pdfPage'. */
+  pageIndex?: number
   /** Device GPS captured at Details-step time — distinct from the drawn geometry above. */
   capturedLat?: number | null
   capturedLng?: number | null

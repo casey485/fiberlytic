@@ -83,5 +83,9 @@
       "history": "Histórico",
       "attachments": "Anexos"
     }
+  },
+  "pdfPrintMode": {
+    "badge": "Modo de Impressão PDF",
+    "page": "Página {{n}} / {{total}}"
   }
 }

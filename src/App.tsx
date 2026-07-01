@@ -19,6 +19,7 @@ import { ClockIn } from './pages/ClockIn'
 import { PayStubs } from './pages/PayStubs'
 import { KmzProduction } from './pages/KmzProduction'
 import { KmzMap } from './pages/KmzMap'
+import { PdfPrintMode } from './pages/PdfPrintMode'
 import { Login } from './pages/Login'
 import { SetupWizard } from './pages/SetupWizard'
 import { useRole } from './store/RoleContext'
@@ -62,6 +63,7 @@ export default function App() {
           <Route path="/materials" element={<Materials />} />
           <Route path="/kmz" element={<KmzProduction />} />
           <Route path="/kmz/:projectId" element={<KmzMap />} />
+          <Route path="/kmz/:projectId/print/:fileId" element={<PdfPrintMode />} />
 
           {/* Admin-only routes */}
           <Route path="/crews"      element={<AdminRoute element={<Crews />} />} />

@@ -26,7 +26,8 @@ interface Props {
   canVertexEdit: boolean
   snapEnabled: boolean
   onToggleSnap: () => void
-  onOpenLayerManager: () => void
+  /** Omitted (undefined) in PDF Print Mode — a single PDF page has no layers to manage. */
+  onOpenLayerManager?: () => void
   onUndo: () => void
   onRedo: () => void
   onDelete: () => void
@@ -152,9 +153,11 @@ export function FieldMapToolbar({
       <ToolbarButton active={snapEnabled} title={t('toolbar.snap')} onClick={onToggleSnap}>
         <Magnet size={15} />
       </ToolbarButton>
-      <ToolbarButton title={t('toolbar.layerManager')} onClick={onOpenLayerManager}>
-        <Layers size={15} />
-      </ToolbarButton>
+      {onOpenLayerManager && (
+        <ToolbarButton title={t('toolbar.layerManager')} onClick={onOpenLayerManager}>
+          <Layers size={15} />
+        </ToolbarButton>
+      )}
 
       <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
 
