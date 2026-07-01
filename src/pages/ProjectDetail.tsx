@@ -1,6 +1,6 @@
 import { useRef, useMemo, useState, useEffect } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, MapPin, Calendar, Users, Trash2, Upload, FileText, File, Download, X, Pencil, Loader2, RotateCcw } from 'lucide-react'
+import { ArrowLeft, MapPin, Calendar, Users, Trash2, Upload, FileText, Download, X, Pencil, Loader2, RotateCcw, Map as MapIcon } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { loadBlob } from '../lib/fileStore'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -35,7 +35,7 @@ function formatBytes(bytes: number): string {
 export function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
-  const { data, deleteProject, updateProject, addProjectFile, deleteProjectFile } = useData()
+  const { data, deleteProject, updateProject, updateCrew, addProjectFile, deleteProjectFile } = useData()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [editingBoundary, setEditingBoundary] = useState(false)
@@ -189,6 +189,52 @@ export function ProjectDetail() {
         <StatCard label="Budget used" value={percent(budgetUsed, 0)} hint={`of ${money(project.budget)}`} />
       </div>
 
+      {/* ── Crew Assignment ── */}
+      <Card className="mt-6">
+        <CardHeader
+          title="Crew Assignment"
+          subtitle="Assign one or more crews — they'll see this project in their field view immediately"
+        />
+        <CardBody>
+          {data.crews.length === 0 ? (
+            <p className="text-sm text-slate-400 italic">No crews yet — add one in the Crews page.</p>
+          ) : (
+            <div className="flex flex-wrap gap-2">
+              {data.crews.map((crew) => {
+                const assigned = project.crewIds.includes(crew.id)
+                const foreman = crew.foremanId
+                  ? data.employees.find((e) => e.id === crew.foremanId)?.name
+                  : crew.foreman
+                return (
+                  <button
+                    key={crew.id}
+                    onClick={() => {
+                      if (assigned) {
+                        updateProject(project.id, { crewIds: project.crewIds.filter((c) => c !== crew.id) })
+                        if (crew.currentProjectId === project.id) updateCrew(crew.id, { currentProjectId: null, status: 'idle' })
+                      } else {
+                        updateProject(project.id, { crewIds: [...project.crewIds, crew.id] })
+                        updateCrew(crew.id, { currentProjectId: project.id, status: 'active' })
+                      }
+                    }}
+                    className={`flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                      assigned
+                        ? 'border-brand-500 bg-brand-50 text-brand-700'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span className={`h-2 w-2 rounded-full shrink-0 ${assigned ? 'bg-brand-500' : 'bg-slate-300'}`} />
+                    <span>{crew.name}</span>
+                    {foreman && <span className="text-xs font-normal text-slate-400">· {foreman}</span>}
+                    {assigned && <span className="text-xs font-normal text-brand-500">✓ Assigned</span>}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
       {/* ── Project Files ── */}
       <Card className="mt-6">
         <CardHeader
@@ -237,20 +283,21 @@ export function ProjectDetail() {
                     <td className="px-5 py-3">
                       {f.fileType === 'pdf' ? (
                         <Link
-                          to={`/redline/${f.id}`}
+                          to={`/kmz/${id}`}
+                          state={{ openPdfFileId: f.id }}
                           className="flex items-center gap-2 font-medium text-brand-600 hover:text-brand-700"
                         >
                           <FileText size={16} />
                           {f.name}
                         </Link>
                       ) : (
-                        <button
-                          onClick={() => openFile(f.id, f.name)}
-                          className="flex items-center gap-2 font-medium text-brand-600 hover:text-brand-700"
+                        <Link
+                          to={`/kmz/${id}`}
+                          className="flex items-center gap-2 font-medium text-emerald-600 hover:text-emerald-700"
                         >
-                          <File size={16} />
+                          <MapIcon size={16} />
                           {f.name}
-                        </button>
+                        </Link>
                       )}
                     </td>
                     <td className="px-5 py-3">
@@ -268,20 +315,30 @@ export function ProjectDetail() {
                       <div className="flex items-center justify-end gap-2">
                         {f.fileType === 'pdf' ? (
                           <Link
-                            to={`/redline/${f.id}`}
+                            to={`/kmz/${id}`}
+                            state={{ openPdfFileId: f.id }}
                             className="text-slate-300 hover:text-brand-600"
-                            title="Open in Redline"
+                            title="Open in Field Map"
                           >
                             <Pencil size={14} />
                           </Link>
                         ) : (
-                          <button
-                            onClick={() => openFile(f.id, f.name)}
-                            className="text-slate-300 hover:text-brand-600"
-                            title="Download"
-                          >
-                            <Download size={14} />
-                          </button>
+                          <>
+                            <Link
+                              to={`/kmz/${id}`}
+                              className="text-slate-300 hover:text-emerald-600"
+                              title="Open in Field Map"
+                            >
+                              <MapIcon size={14} />
+                            </Link>
+                            <button
+                              onClick={() => openFile(f.id, f.name)}
+                              className="text-slate-300 hover:text-brand-600"
+                              title="Download"
+                            >
+                              <Download size={14} />
+                            </button>
+                          </>
                         )}
                         <button
                           onClick={() => {

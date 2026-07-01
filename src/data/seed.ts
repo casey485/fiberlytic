@@ -373,5 +373,18 @@ export function generateSeedData(): AppData {
     projectFiles: [],
     annotations: [],
     clockEntries: [],
+    kmzUploads: [],
+    mapFeatures: [],
+    featureProduction: [],
+    fieldMarkups: [],
+    markupPhotos: [],
+    markupBilling: [],
+    aerialLashFiberRuns: [],
+    fieldMapOverlays: [],
+    favoriteUnitCodes: [],
+    markupVideos: [],
+    markupInspections: [],
+    markupAttachments: [],
+    markupHistory: [],
   }
 }

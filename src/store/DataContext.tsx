@@ -1,14 +1,27 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type {
   AppData,
+  AerialLashFiberRun,
   AnnotationShape,
   Client,
   ClockEntry,
   Crew,
   Employee,
   Equipment,
+  FeatureProductionEntry,
+  FeatureStatus,
+  FieldMarkup,
+  GeoreferencedOverlay,
   Invoice,
   JobExpense,
+  KmzUpload,
+  MapFeature,
+  MarkupAttachment,
+  MarkupBilling,
+  MarkupHistoryEntry,
+  MarkupInspection,
+  MarkupPhoto,
+  MarkupVideo,
   Material,
   Photo,
   ProductionEntry,
@@ -66,12 +79,21 @@ function migrateData(raw: AppData): AppData {
 
   // Materials are customer-provided — zero historical material costs.
   // Also drop any P&L entry whose production entry was deleted (orphan cleanup).
+  // Additionally remove legacy (no productionEntryId) entries for any date+project that
+  // already has a production-linked PnL entry — those are seed duplicates that inflate margin.
+  const linkedDateProjects = new Set(
+    (raw.pnl ?? [])
+      .filter((e) => e.productionEntryId && productionIds.has(e.productionEntryId))
+      .map((e) => `${e.date}|${e.projectId}`)
+  )
   const pnl = (raw.pnl ?? [])
     .map((e) => ({ ...e, materialCost: 0 }))
     .filter((e) => {
       if (e.productionEntryId) return productionIds.has(e.productionEntryId)
-      // Legacy entries have no productionEntryId — keep only if a production entry
-      // still exists for the same date + project
+      // Legacy entries have no productionEntryId — drop if the same date+project already
+      // has a real production-linked entry (prevents double-counting revenue)
+      if (linkedDateProjects.has(`${e.date}|${e.projectId}`)) return false
+      // Keep only if a production entry still exists for the same date + project
       return productionDateProject.has(`${e.date}|${e.projectId}`)
     })
   // Ensure DRILL CREW 1 exists — create it if no crew with "drill" in the name is found
@@ -208,6 +230,18 @@ function migrateData(raw: AppData): AppData {
     projectFiles: raw.projectFiles ?? [],
     annotations: raw.annotations ?? [],
     clockEntries: raw.clockEntries ?? [],
+    kmzUploads: raw.kmzUploads ?? [],
+    mapFeatures: raw.mapFeatures ?? [],
+    featureProduction: raw.featureProduction ?? [],
+    fieldMarkups: raw.fieldMarkups ?? [],
+    markupPhotos: raw.markupPhotos ?? [],
+    markupBilling: raw.markupBilling ?? [],
+    fieldMapOverlays: raw.fieldMapOverlays ?? [],
+    favoriteUnitCodes: raw.favoriteUnitCodes ?? [],
+    markupVideos: raw.markupVideos ?? [],
+    markupInspections: raw.markupInspections ?? [],
+    markupAttachments: raw.markupAttachments ?? [],
+    markupHistory: raw.markupHistory ?? [],
   }
 }
 
@@ -224,6 +258,47 @@ function loadData(): AppData {
 /** Minimal id generator — fine for a single-user local prototype. */
 let counter = 0
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(counter++).toString(36)}`
+
+// ---------------------------------------------------------------------------
+// Work Object audit log — a real, field-level history entry per mutation.
+// Centralized here (rather than at UI call sites) so no mutation path is missed.
+// ---------------------------------------------------------------------------
+
+function historyEntry(
+  markupId: string,
+  action: MarkupHistoryEntry['action'],
+  actor: string | null,
+  extra?: { field?: string; oldValue?: string | null; newValue?: string | null },
+): MarkupHistoryEntry {
+  return { id: newId('mhist'), markupId, timestamp: new Date().toISOString(), actor, action, ...extra }
+}
+
+/** Fields excluded from field-level diffing — either noise (auto-managed timestamps) or handled as their own dedicated action (lockedAt). */
+const HISTORY_DIFF_SKIP = new Set<keyof FieldMarkup>(['updatedAt', 'createdAt', 'lockedAt', 'id'])
+
+function stringifyHistoryValue(v: unknown): string | null {
+  if (v == null) return null
+  if (typeof v === 'object') return '(updated)' // geometry and other object fields aren't usefully diffable as text
+  return String(v)
+}
+
+/** Diff a markup update patch into history entries: dedicated lock/unlock entries, plus one field_changed entry per other changed field. */
+function diffMarkupUpdate(markupId: string, before: FieldMarkup, patch: Partial<FieldMarkup>, actor: string | null): MarkupHistoryEntry[] {
+  const entries: MarkupHistoryEntry[] = []
+  if ('lockedAt' in patch && patch.lockedAt !== before.lockedAt) {
+    entries.push(historyEntry(markupId, patch.lockedAt ? 'locked' : 'unlocked', actor))
+  }
+  for (const key of Object.keys(patch) as (keyof FieldMarkup)[]) {
+    if (HISTORY_DIFF_SKIP.has(key)) continue
+    const oldVal = before[key]
+    const newVal = patch[key]
+    if (oldVal === newVal) continue
+    entries.push(historyEntry(markupId, 'field_changed', actor, {
+      field: key, oldValue: stringifyHistoryValue(oldVal), newValue: stringifyHistoryValue(newVal),
+    }))
+  }
+  return entries
+}
 
 export type LineItemInput = Omit<ProductionLineItem, 'id' | 'productionEntryId'>
 
@@ -248,7 +323,7 @@ interface DataContextValue {
   addPhoto: (p: Omit<Photo, 'id'>) => Photo
   deletePhoto: (id: string) => void
   // Invoices
-  addInvoice: (i: Omit<Invoice, 'id'>) => void
+  addInvoice: (i: Omit<Invoice, 'id'>) => string
   updateInvoice: (id: string, patch: Partial<Invoice>) => void
   deleteInvoice: (id: string) => void
   // Clients
@@ -282,7 +357,7 @@ interface DataContextValue {
     lineItems?: LineItemInput[]
   }) => string
   deleteCrewDayEntry: (productionEntryId: string) => void
-  patchProductionEntry: (id: string, patch: { projectId?: string; crewId?: string; lineItems?: LineItemInput[] }) => void
+  patchProductionEntry: (id: string, patch: { date?: string; projectId?: string; crewId?: string; footage?: number; notes?: string; lineItems?: LineItemInput[] }) => void
   // Job expenses
   addJobExpense: (e: Omit<JobExpense, 'id'>) => void
   deleteJobExpense: (id: string) => void
@@ -294,14 +369,53 @@ interface DataContextValue {
   addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => void
   deleteProjectFile: (id: string) => void
   // Annotations (redline markup)
-  addAnnotation: (a: Omit<AnnotationShape, 'id'>) => void
+  addAnnotation: (a: Omit<AnnotationShape, 'id'>) => string
+  updateAnnotation: (id: string, patch: Partial<AnnotationShape>) => void
   deleteAnnotation: (id: string) => void
   clearAnnotations: (fileId: string, page: number) => void
+  setAnnotationsForPage: (fileId: string, page: number, shapes: AnnotationShape[]) => void
   // Clock-in / geofence
   addClockIn: (entry: Omit<ClockEntry, 'id'>) => ClockEntry
   clockOut: (id: string) => void
   deleteClockEntry: (id: string) => void
   updateClockEntry: (id: string, patch: Partial<Omit<ClockEntry, 'id'>>) => void
+  // KMZ production workflow
+  addKmzUpload: (upload: Omit<KmzUpload, 'id'>, features: Omit<MapFeature, 'kmzUploadId' | 'projectId'>[]) => KmzUpload
+  deleteKmzUpload: (id: string) => void
+  deleteMapFeature: (id: string) => void
+  setFeatureStatus: (featureId: string, status: FeatureStatus) => void
+  updateMapFeature: (id: string, patch: Partial<MapFeature>) => void
+  addFeatureProduction: (entry: Omit<FeatureProductionEntry, 'id'>) => string
+  deleteFeatureProduction: (id: string) => void
+  // Field markup system
+  addMarkup: (m: Omit<FieldMarkup, 'id' | 'createdAt'>) => string
+  updateMarkup: (id: string, patch: Partial<FieldMarkup>, actor?: string | null) => void
+  deleteMarkup: (id: string) => void
+  addMarkupPhoto: (p: Omit<MarkupPhoto, 'id'>, actor?: string | null) => string
+  deleteMarkupPhoto: (id: string, actor?: string | null) => void
+  addMarkupBilling: (b: Omit<MarkupBilling, 'id'>, actor?: string | null) => string
+  updateMarkupBilling: (id: string, patch: Partial<MarkupBilling>) => void
+  deleteMarkupBilling: (id: string, actor?: string | null) => void
+  // Work Object videos
+  addMarkupVideo: (v: Omit<MarkupVideo, 'id'>) => string
+  deleteMarkupVideo: (id: string) => void
+  // Work Object inspections
+  addMarkupInspection: (i: Omit<MarkupInspection, 'id' | 'createdAt'>) => string
+  updateMarkupInspection: (id: string, patch: Partial<MarkupInspection>) => void
+  deleteMarkupInspection: (id: string) => void
+  // Work Object attachments
+  addMarkupAttachment: (a: Omit<MarkupAttachment, 'id'>) => string
+  deleteMarkupAttachment: (id: string) => void
+  // Aerial lash fiber runs
+  addAerialLashFiberRun: (run: Omit<AerialLashFiberRun, 'id' | 'createdAt'>) => string
+  updateAerialLashFiberRun: (id: string, patch: Partial<AerialLashFiberRun>) => void
+  deleteAerialLashFiberRun: (id: string) => void
+  // Field Map georeferenced overlays
+  addFieldMapOverlay: (overlay: Omit<GeoreferencedOverlay, 'id' | 'createdAt'>) => string
+  updateFieldMapOverlay: (id: string, patch: Partial<GeoreferencedOverlay>) => void
+  deleteFieldMapOverlay: (id: string) => void
+  // Favorite billing unit codes
+  toggleFavoriteUnitCode: (unitCode: string) => void
   // Misc
   resetData: () => void
 }
@@ -455,10 +569,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
             ? lineItems.map((li) => ({ ...li, id: newId('pli'), productionEntryId: entry.id }))
             : []
 
+          // Remove any legacy seed P&L entries for the same date+project that have no
+          // productionEntryId — they duplicate revenue once a real entry is logged
+          const pnlBase = d.pnl.filter(
+            (p) => p.productionEntryId || !(p.date === entry.date && p.projectId === entry.projectId)
+          )
+
           return {
             ...d,
             production,
-            pnl: [...d.pnl, pnlLine],
+            pnl: [...pnlBase, pnlLine],
             productionLineItems: [...d.productionLineItems, ...newLineItems],
             projects: recomputeFootage(d.projects, production),
           }
@@ -510,7 +630,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
 
       addInvoice(i) {
-        setData((d) => ({ ...d, invoices: [{ ...i, id: newId('inv') }, ...d.invoices] }))
+        const id = newId('inv')
+        setData((d) => ({ ...d, invoices: [{ ...i, id }, ...d.invoices] }))
+        return id
       },
       updateInvoice(id, patch) {
         setData((d) => ({ ...d, invoices: d.invoices.map((i) => (i.id === id ? { ...i, ...patch } : i)) }))
@@ -660,10 +782,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
             ? lineItems.map((li) => ({ ...li, id: newId('pli'), productionEntryId: entry.id }))
             : []
 
+          // Remove any legacy seed P&L entries for the same date+project that have no
+          // productionEntryId — they duplicate revenue once a real entry is logged
+          const pnlBase = d.pnl.filter(
+            (p) => p.productionEntryId || !(p.date === entry.date && p.projectId === entry.projectId)
+          )
+
           return {
             ...d,
             production,
-            pnl: [...d.pnl, pnlLine],
+            pnl: [...pnlBase, pnlLine],
             timecards: [...d.timecards, ...timecards],
             productionLineItems: [...d.productionLineItems, ...newLineItems],
             projects: recomputeFootage(d.projects, production),
@@ -692,32 +820,40 @@ export function DataProvider({ children }: { children: ReactNode }) {
       patchProductionEntry(id, patch) {
         setData((d) => {
           const { lineItems: newLineItems, ...entryPatch } = patch
-          const hasNewLineItems = newLineItems && newLineItems.length > 0
+          const lineItemsUpdated = newLineItems !== undefined
+          const hasNewLineItems = lineItemsUpdated && newLineItems!.length > 0
 
-          // Recompute footage from LF line items when replacing them
+          // When line items are provided, derive footage from LF quantities
           const footagePatch = hasNewLineItems
-            ? { footage: Math.round(newLineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)) }
+            ? { footage: Math.round(newLineItems!.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)) }
             : {}
 
           const production = d.production.map((e) =>
             e.id !== id ? e : { ...e, ...entryPatch, ...footagePatch },
           )
-          // Cascade project change to linked timecards, pnl, and photos
+          // Cascade project/date changes to linked timecards, pnl, and photos
           const timecards = patch.projectId
             ? d.timecards.map((t) => t.productionEntryId === id ? { ...t, jobId: patch.projectId! } : t)
             : d.timecards
-          // If new line items provided, update pnl revenue + replace line item records
-          let pnl = patch.projectId
-            ? d.pnl.map((e) => e.productionEntryId === id ? { ...e, projectId: patch.projectId! } : e)
-            : d.pnl
-          if (hasNewLineItems) {
-            const newRevenue = Math.round(newLineItems.reduce((s, li) => s + li.extendedTotal, 0))
+          let pnl = d.pnl.map((e) => {
+            if (e.productionEntryId !== id) return e
+            return {
+              ...e,
+              ...(patch.projectId ? { projectId: patch.projectId } : {}),
+              ...(patch.date ? { date: patch.date } : {}),
+            }
+          })
+          // Update pnl revenue when line items change (including clearing all)
+          if (lineItemsUpdated) {
+            const newRevenue = hasNewLineItems
+              ? Math.round(newLineItems!.reduce((s, li) => s + li.extendedTotal, 0))
+              : 0
             pnl = pnl.map((e) => e.productionEntryId === id ? { ...e, revenue: newRevenue } : e)
           }
-          const productionLineItems = hasNewLineItems
+          const productionLineItems = lineItemsUpdated
             ? [
                 ...d.productionLineItems.filter((li) => li.productionEntryId !== id),
-                ...newLineItems.map((li) => ({ ...li, id: newId('pli'), productionEntryId: id })),
+                ...(hasNewLineItems ? newLineItems!.map((li) => ({ ...li, id: newId('pli'), productionEntryId: id })) : []),
               ]
             : d.productionLineItems
           const photos = patch.projectId
@@ -764,13 +900,32 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
 
       addAnnotation(a) {
-        setData((d) => ({ ...d, annotations: [...d.annotations, { ...a, id: newId('ann') }] }))
+        const id = newId('ann')
+        setData((d) => ({ ...d, annotations: [...d.annotations, { ...a, id }] }))
+        return id
+      },
+      updateAnnotation(id, patch) {
+        setData((d) => ({ ...d, annotations: d.annotations.map((a) => a.id === id ? { ...a, ...patch } : a) }))
       },
       deleteAnnotation(id) {
-        setData((d) => ({ ...d, annotations: d.annotations.filter((a) => a.id !== id) }))
+        setData((d) => ({
+          ...d,
+          annotations: d.annotations.filter((a) => a.id !== id),
+          markupBilling: (d.markupBilling ?? []).filter((b) => b.markupId !== id),
+          markupPhotos: (d.markupPhotos ?? []).filter((p) => p.markupId !== id),
+        }))
       },
       clearAnnotations(fileId, page) {
         setData((d) => ({ ...d, annotations: d.annotations.filter((a) => !(a.fileId === fileId && a.page === page)) }))
+      },
+      setAnnotationsForPage(fileId, page, shapes) {
+        setData((d) => ({
+          ...d,
+          annotations: [
+            ...d.annotations.filter((a) => !(a.fileId === fileId && a.page === page)),
+            ...shapes,
+          ],
+        }))
       },
 
       addClockIn(entry) {
@@ -794,6 +949,264 @@ export function DataProvider({ children }: { children: ReactNode }) {
           ...d,
           clockEntries: (d.clockEntries ?? []).map((e) => e.id !== id ? e : { ...e, ...patch }),
         }))
+      },
+
+      // --- KMZ production workflow ---
+      addKmzUpload(upload, features) {
+        const uploadId = newId('kmzu')
+        const rec: KmzUpload = { ...upload, id: uploadId }
+        const storedFeatures: MapFeature[] = features.map((f) => ({
+          ...f,
+          kmzUploadId: uploadId,
+          projectId:   upload.projectId,
+        }))
+        setData((d) => ({
+          ...d,
+          kmzUploads:  [...(d.kmzUploads ?? []),  rec],
+          mapFeatures: [...(d.mapFeatures ?? []),  ...storedFeatures],
+        }))
+        return rec
+      },
+      deleteKmzUpload(id) {
+        setData((d) => ({
+          ...d,
+          kmzUploads:       (d.kmzUploads ?? []).filter((u) => u.id !== id),
+          mapFeatures:      (d.mapFeatures ?? []).filter((f) => f.kmzUploadId !== id),
+          featureProduction:(d.featureProduction ?? []).filter((e) => {
+            const feature = (d.mapFeatures ?? []).find((f) => f.id === e.mapFeatureId)
+            return feature?.kmzUploadId !== id
+          }),
+        }))
+      },
+      deleteMapFeature(id) {
+        setData((d) => ({
+          ...d,
+          mapFeatures:       (d.mapFeatures ?? []).filter((f) => f.id !== id),
+          featureProduction: (d.featureProduction ?? []).filter((e) => e.mapFeatureId !== id),
+        }))
+      },
+      setFeatureStatus(featureId, status) {
+        setData((d) => ({
+          ...d,
+          mapFeatures: (d.mapFeatures ?? []).map((f) =>
+            f.id === featureId ? { ...f, status } : f,
+          ),
+        }))
+      },
+      updateMapFeature(id, patch) {
+        setData((d) => ({
+          ...d,
+          mapFeatures: (d.mapFeatures ?? []).map((f) =>
+            f.id === id ? { ...f, ...patch } : f,
+          ),
+        }))
+      },
+      addFeatureProduction(entry) {
+        const id = newId('fpe')
+        const rec: FeatureProductionEntry = { ...entry, id }
+        setData((d) => ({
+          ...d,
+          featureProduction: [...(d.featureProduction ?? []), rec],
+          // Bubble status up to the feature (unless entry says not_started)
+          mapFeatures: entry.status !== 'not_started'
+            ? (d.mapFeatures ?? []).map((f) =>
+                f.id === entry.mapFeatureId ? { ...f, status: entry.status } : f,
+              )
+            : (d.mapFeatures ?? []),
+        }))
+        return id
+      },
+      deleteFeatureProduction(id) {
+        setData((d) => ({
+          ...d,
+          featureProduction: (d.featureProduction ?? []).filter((e) => e.id !== id),
+        }))
+      },
+
+      // ── Field markup ─────────────────────────────────────────────────────────
+      addMarkup(m) {
+        const id = newId('mkp')
+        setData((d) => ({
+          ...d,
+          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: new Date().toISOString() }],
+          markupHistory: [...(d.markupHistory ?? []), historyEntry(id, 'created', m.createdBy ?? null)],
+        }))
+        return id
+      },
+      updateMarkup(id, patch, actor = null) {
+        setData((d) => {
+          const before = (d.fieldMarkups ?? []).find((m) => m.id === id)
+          const newEntries = before ? diffMarkupUpdate(id, before, patch, actor) : []
+          return {
+            ...d,
+            fieldMarkups: (d.fieldMarkups ?? []).map((m) =>
+              m.id === id ? { ...m, ...patch, updatedAt: new Date().toISOString() } : m,
+            ),
+            markupHistory: newEntries.length ? [...(d.markupHistory ?? []), ...newEntries] : (d.markupHistory ?? []),
+          }
+        })
+      },
+      deleteMarkup(id) {
+        setData((d) => ({
+          ...d,
+          fieldMarkups: (d.fieldMarkups ?? []).filter((m) => m.id !== id),
+          markupPhotos: (d.markupPhotos ?? []).filter((p) => p.markupId !== id),
+          markupBilling: (d.markupBilling ?? []).filter((b) => b.markupId !== id),
+          markupVideos: (d.markupVideos ?? []).filter((v) => v.markupId !== id),
+          markupInspections: (d.markupInspections ?? []).filter((i) => i.markupId !== id),
+          markupAttachments: (d.markupAttachments ?? []).filter((a) => a.markupId !== id),
+          markupHistory: (d.markupHistory ?? []).filter((h) => h.markupId !== id),
+        }))
+        // Blobs in IndexedDB are cleaned up lazily — orphaned blobs are small and rarely accumulate
+      },
+      addMarkupPhoto(p, actor = null) {
+        const id = newId('mkph')
+        setData((d) => ({
+          ...d,
+          markupPhotos: [...(d.markupPhotos ?? []), { ...p, id }],
+          markupHistory: [...(d.markupHistory ?? []), historyEntry(p.markupId, 'photo_added', actor)],
+        }))
+        return id
+      },
+      deleteMarkupPhoto(id, actor = null) {
+        setData((d) => {
+          const photo = (d.markupPhotos ?? []).find((p) => p.id === id)
+          return {
+            ...d,
+            markupPhotos: (d.markupPhotos ?? []).filter((p) => p.id !== id),
+            markupHistory: photo ? [...(d.markupHistory ?? []), historyEntry(photo.markupId, 'photo_removed', actor)] : (d.markupHistory ?? []),
+          }
+        })
+        void deleteBlob(`mkp-${id}`)
+      },
+      addMarkupBilling(b, actor = null) {
+        const id = newId('mkpb')
+        setData((d) => ({
+          ...d,
+          markupBilling: [...(d.markupBilling ?? []), { ...b, id }],
+          markupHistory: [...(d.markupHistory ?? []), historyEntry(b.markupId, 'billing_added', actor)],
+        }))
+        return id
+      },
+      updateMarkupBilling(id, patch) {
+        setData((d) => ({
+          ...d,
+          markupBilling: (d.markupBilling ?? []).map((b) => b.id === id ? { ...b, ...patch } : b),
+        }))
+      },
+      deleteMarkupBilling(id, actor = null) {
+        setData((d) => {
+          const billing = (d.markupBilling ?? []).find((b) => b.id === id)
+          return {
+            ...d,
+            markupBilling: (d.markupBilling ?? []).filter((b) => b.id !== id),
+            markupHistory: billing ? [...(d.markupHistory ?? []), historyEntry(billing.markupId, 'billing_removed', actor)] : (d.markupHistory ?? []),
+          }
+        })
+      },
+
+      // ── Work Object videos ────────────────────────────────────────────────
+      addMarkupVideo(v) {
+        const id = newId('mkpv')
+        setData((d) => ({ ...d, markupVideos: [...(d.markupVideos ?? []), { ...v, id }] }))
+        return id
+      },
+      deleteMarkupVideo(id) {
+        setData((d) => ({ ...d, markupVideos: (d.markupVideos ?? []).filter((v) => v.id !== id) }))
+        void deleteBlob(`mkp-${id}`)
+      },
+
+      // ── Work Object inspections ───────────────────────────────────────────
+      addMarkupInspection(i) {
+        const id = newId('mkpi')
+        setData((d) => ({
+          ...d,
+          markupInspections: [...(d.markupInspections ?? []), { ...i, id, createdAt: new Date().toISOString() }],
+          markupHistory: [...(d.markupHistory ?? []), historyEntry(i.markupId, 'inspection_added', i.createdBy ?? null)],
+        }))
+        return id
+      },
+      updateMarkupInspection(id, patch) {
+        setData((d) => ({
+          ...d,
+          markupInspections: (d.markupInspections ?? []).map((i) => (i.id === id ? { ...i, ...patch } : i)),
+        }))
+      },
+      deleteMarkupInspection(id) {
+        setData((d) => ({ ...d, markupInspections: (d.markupInspections ?? []).filter((i) => i.id !== id) }))
+      },
+
+      // ── Work Object attachments ───────────────────────────────────────────
+      addMarkupAttachment(a) {
+        const id = newId('mkpa')
+        setData((d) => ({ ...d, markupAttachments: [...(d.markupAttachments ?? []), { ...a, id }] }))
+        return id
+      },
+      deleteMarkupAttachment(id) {
+        setData((d) => ({ ...d, markupAttachments: (d.markupAttachments ?? []).filter((a) => a.id !== id) }))
+        void deleteBlob(`mkp-${id}`)
+      },
+
+      // ── Aerial lash fiber runs ────────────────────────────────────────────
+      addAerialLashFiberRun(run) {
+        const id = newId('alf')
+        setData((d) => ({
+          ...d,
+          aerialLashFiberRuns: [...(d.aerialLashFiberRuns ?? []), { ...run, id, createdAt: new Date().toISOString() }],
+        }))
+        return id
+      },
+      updateAerialLashFiberRun(id, patch) {
+        setData((d) => ({
+          ...d,
+          aerialLashFiberRuns: (d.aerialLashFiberRuns ?? []).map((r) =>
+            r.id === id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r,
+          ),
+        }))
+      },
+      deleteAerialLashFiberRun(id) {
+        setData((d) => ({
+          ...d,
+          aerialLashFiberRuns: (d.aerialLashFiberRuns ?? []).filter((r) => r.id !== id),
+          // Cascade-delete pole photos (markupId starts with `alf:<id>:`)
+          markupPhotos: (d.markupPhotos ?? []).filter((p) => !p.markupId.startsWith(`alf:${id}:`)),
+        }))
+      },
+
+      // ── Field Map georeferenced overlays ──────────────────────────────────
+      addFieldMapOverlay(overlay) {
+        const id = newId('geo')
+        setData((d) => ({
+          ...d,
+          fieldMapOverlays: [...(d.fieldMapOverlays ?? []), { ...overlay, id, createdAt: new Date().toISOString() }],
+        }))
+        return id
+      },
+      updateFieldMapOverlay(id, patch) {
+        setData((d) => ({
+          ...d,
+          fieldMapOverlays: (d.fieldMapOverlays ?? []).map((o) => (o.id === id ? { ...o, ...patch } : o)),
+        }))
+      },
+      deleteFieldMapOverlay(id) {
+        setData((d) => ({
+          ...d,
+          fieldMapOverlays: (d.fieldMapOverlays ?? []).filter((o) => o.id !== id),
+        }))
+        // Blob cleanup is lazy, matching deleteMarkup's orphaned-blob convention above.
+      },
+
+      // ── Favorite billing unit codes ────────────────────────────────────────
+      toggleFavoriteUnitCode(unitCode) {
+        setData((d) => {
+          const current = d.favoriteUnitCodes ?? []
+          return {
+            ...d,
+            favoriteUnitCodes: current.includes(unitCode)
+              ? current.filter((c) => c !== unitCode)
+              : [...current, unitCode],
+          }
+        })
       },
 
       resetData() {

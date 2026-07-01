@@ -698,7 +698,7 @@ export function ClockIn() {
                         const proj = data.projects.find((p)  => p.id  === e.projectId)
                         const hrs  = hrsNum(e.clockIn, e.clockOut)
                         return (
-                          <tr key={e.id} className="border-b border-slate-50 hover:bg-slate-50/50">
+                          <tr key={e.id} className="border-b border-[#1e1e1e] hover:bg-white/5">
                             <td className="px-4 py-2.5">
                               <span className="font-medium text-slate-700">{emp?.name ?? '—'}</span>
                               {e.manual && (

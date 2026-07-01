@@ -175,7 +175,7 @@ function renderBoundary(
 
       marker.on('click', (e) => {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        ;(e as any).originalEvent?.stopPropagation()
+        (e as any).originalEvent?.stopPropagation()
         const next = boundaryRef.current.filter((_, j) => j !== i)
         onChange(next)
         renderBoundary(L, map, next, readOnly, onChange, markersRef, shapeRef, boundaryRef)

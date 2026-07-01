@@ -319,21 +319,44 @@ export interface ProjectFile {
 // Redline annotations — markup drawn on top of project PDFs
 // ---------------------------------------------------------------------------
 
-export type AnnotationTool = 'pen' | 'line' | 'arrow' | 'rect' | 'ellipse' | 'text'
+export type AnnotationTool =
+  | 'pen' | 'line' | 'arrow'
+  | 'rect' | 'ellipse' | 'cloud' | 'highlight'
+  | 'text' | 'callout'
+  | 'polyline' | 'polygon' | 'pin'
 
 export interface AnnotationShape {
   id: string
-  fileId: string       // FK → ProjectFile.id
-  page: number         // 1-based PDF page number
+  fileId: string
+  page: number
   tool: AnnotationTool
-  color: string        // CSS hex color
-  strokeWidth: number  // in SVG viewBox units (0–1000 per page axis)
-  // pen: list of [x, y] in natural PDF point coordinates
+  color: string
+  strokeWidth: number
   points?: [number, number][]
-  // line / arrow / rect / ellipse: start + end corners
   x1?: number; y1?: number; x2?: number; y2?: number
-  // text
   text?: string
+  // text / callout / pin formatting
+  fontSize?: number
+  fontFamily?: string
+  fontBold?: boolean
+  fontItalic?: boolean
+  fontUnderline?: boolean
+  fontStrikethrough?: boolean
+  // fill (rect / ellipse / cloud / highlight / callout / polygon)
+  fillColor?: string
+  fillOpacity?: number
+  // per-shape opacity
+  opacity?: number
+  // stroke style
+  lineStyle?: 'solid' | 'dashed' | 'dotted'
+  // visibility toggle (false = hidden but not deleted)
+  visible?: boolean
+  // session / author tracking
+  sessionId?: string
+  author?: string
+  // field audit — label and notes stored on the annotation itself
+  label?: string
+  notes?: string
   createdAt: string
 }
 
@@ -357,6 +380,387 @@ export interface ClockEntry {
   lng: number
   /** True when the entry was typed in manually rather than captured via GPS */
   manual?: boolean
+}
+
+// ---------------------------------------------------------------------------
+// KMZ Production Workflow — live job tracking from imported KMZ/KML files
+// ---------------------------------------------------------------------------
+
+export type FeatureStatus = 'not_started' | 'in_progress' | 'complete' | 'issue' | 'rework'
+export type FeatureType   = 'point' | 'line' | 'polygon'
+
+export const FEATURE_STATUS_META: Record<FeatureStatus, { label: string; color: string; tw: string }> = {
+  not_started: { label: 'Not Started', color: '#6b7280', tw: 'bg-slate-500' },
+  in_progress:  { label: 'In Progress', color: '#f59e0b', tw: 'bg-amber-400' },
+  complete:     { label: 'Complete',    color: '#22c55e', tw: 'bg-green-500' },
+  issue:        { label: 'Issue',       color: '#ef4444', tw: 'bg-red-500'   },
+  rework:       { label: 'Rework',      color: '#f97316', tw: 'bg-orange-500'},
+}
+
+/** Metadata record for one KMZ/KML file imported into a project. */
+export interface KmzUpload {
+  id: string
+  projectId: string
+  fileName: string
+  uploadedAt: string
+  featureCount: number
+}
+
+/** One geographic feature parsed from a KMZ/KML import. */
+export interface MapFeature {
+  id: string
+  projectId: string
+  kmzUploadId: string
+  layerName: string
+  featureType: FeatureType
+  name: string | null
+  description: string | null
+  /** JSON-stringified GeoJSON Geometry object (Point / LineString / Polygon). */
+  geometryGeoJson: string
+  styleColor: string | null
+  iconHref: string | null   // resolved icon URL or data URI for Point features
+  extendedData: Record<string, string> | null
+  calculatedLengthFt: number | null
+  fiberCount: number | null
+  feederName: string | null
+  workType: string | null
+  installType: string | null
+  status: FeatureStatus
+  assignedCrewId: string | null
+}
+
+/** Production entry recorded against one map feature by a crew. */
+export interface FeatureProductionEntry {
+  id: string
+  projectId: string
+  mapFeatureId: string
+  crewId: string
+  crewName: string
+  date: string            // YYYY-MM-DD
+  workType: string | null
+  unitCode: string | null
+  footageCompleted: number
+  rockFootage: number
+  handholes: number
+  quantity: number
+  rate: number
+  revenueAmount: number
+  laborCost: number
+  equipmentCost: number
+  materialCost: number
+  totalCost: number
+  profit: number
+  notes: string | null
+  status: FeatureStatus
+  installType: string | null
+  restorationNeeded: boolean
+  crewMemberIds: string[]
+}
+
+// ---------------------------------------------------------------------------
+// Field Markup — crew/supervisor redlines with photos, billing, and workflow
+// ---------------------------------------------------------------------------
+
+/** Drawing and feature-drop tools available in the field markup system. */
+export type MarkupTool =
+  // Drawing
+  | 'pen' | 'line' | 'dashed_line' | 'dotted_line'
+  | 'multi_line' | 'measure' | 'point'
+  | 'arrow' | 'double_arrow'
+  | 'rect' | 'circle' | 'ellipse' | 'polygon' | 'cloud' | 'highlight'
+  | 'text' | 'callout'
+  // Feature drops (point markers)
+  | 'handhole' | 'bore' | 'bore_pit' | 'aerial_cable' | 'underground_conduit'
+  | 'fiber_pull' | 'splice_point' | 'dtap' | 'pole' | 'pedestal' | 'vault'
+  | 'cabinet' | 'slack_loop' | 'restoration' | 'rock' | 'asphalt' | 'concrete'
+  | 'traffic_control' | 'material_issue' | 'qc_issue' | 'completed_work' | 'hold'
+  // Structure markers — circular labeled markers placed on the field map
+  | 'struct_s' | 'struct_m' | 'struct_l' | 'struct_xl'
+  | 'struct_fp' | 'struct_lv' | 'struct_xlv'
+  | 'struct_ped' | 'struct_cab' | 'struct_hh'
+
+export type MarkupStatus = 'pending' | 'in_progress' | 'complete' | 'qc_needed' | 'rejected' | 'approved' | 'billed'
+export type MarkupLayer  = 'crew' | 'supervisor' | 'qc' | 'as_built' | 'production' | 'billing'
+
+export const MARKUP_STATUS_META: Record<MarkupStatus, { label: string; color: string }> = {
+  pending:     { label: 'Pending',     color: '#6b7280' },
+  in_progress: { label: 'In Progress', color: '#f59e0b' },
+  complete:    { label: 'Complete',    color: '#22c55e' },
+  qc_needed:   { label: 'QC Needed',   color: '#a855f7' },
+  rejected:    { label: 'Rejected',    color: '#ef4444' },
+  approved:    { label: 'Approved',    color: '#06b6d4' },
+  billed:      { label: 'Billed',      color: '#10b981' },
+}
+
+export const MARKUP_LAYER_META: Record<MarkupLayer, { label: string; color: string }> = {
+  crew:        { label: 'Crew Markup',      color: '#ef4444' },
+  supervisor:  { label: 'Supervisor Notes', color: '#f97316' },
+  qc:          { label: 'QC Notes',         color: '#a855f7' },
+  as_built:    { label: 'As-Built',         color: '#06b6d4' },
+  production:  { label: 'Production',       color: '#22c55e' },
+  billing:     { label: 'Billing',          color: '#10b981' },
+}
+
+/** Geometry for one markup item — varies by tool. */
+export interface MarkupGeometry {
+  latlngs?: [number, number][]                    // pen, line, arrow, polygon, polyline
+  bounds?:  [[number, number], [number, number]]  // rect
+  center?:  [number, number]                      // circle, text, callout, feature drops
+  radius?:  number                                // circle (meters)
+}
+
+/** One photo attached to a markup item. Blob is stored in IndexedDB under key `mkp-<id>`. */
+export interface MarkupPhoto {
+  id: string
+  markupId: string
+  caption: string | null
+  takenAt: string          // ISO datetime
+  uploadedBy: string | null
+  lat: number | null
+  lng: number | null
+  /** Which required-photo phase this satisfies (e.g. 'before', 'depth_proof') — null for free-form uploads. */
+  phase?: PhotoProofType | null
+}
+
+/** One billing line tied to a markup item. */
+export interface MarkupBilling {
+  id: string
+  markupId: string
+  date?: string | null
+  crewId?: string | null
+  rateCode: string
+  description: string
+  unitType: string
+  quantity: number
+  rate: number
+  total: number             // quantity × rate
+  billable: boolean
+  invoiceStatus: 'not_billed' | 'invoiced' | 'approved' | 'paid'
+  notes: string | null
+  /** FK → Invoice.id — set once this billing line has been pulled into an invoice's line items. */
+  invoiceId?: string | null
+}
+
+/** One pole checkpoint in an aerial lash fiber run. Photos stored as MarkupPhoto with markupId = `alf:<runId>:<poleNumber>`. */
+export interface AerialPole {
+  poleNumber: number
+  lat: number
+  lng: number
+  tickMark: string | null
+  notes: string | null
+  crewName: string | null
+  dateTime: string | null    // ISO datetime
+  completed: boolean
+}
+
+/** One aerial lash fiber production run — a pole-to-pole line with per-pole tick marks. */
+export interface AerialLashFiberRun {
+  id: string
+  projectId: string
+  status: 'in_progress' | 'complete'
+  poles: AerialPole[]
+  notes: string | null
+  totalFootage: number
+  totalPoles: number
+  color: string
+  colorCode: string
+  createdAt: string
+  updatedAt: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Work Objects — the 16-type catalog surfaced in the Add Work modal
+// (defined in full in src/lib/workObjectTypes.ts; the type ids and photo
+// proof enum live here alongside the rest of the domain model)
+// ---------------------------------------------------------------------------
+
+export type WorkObjectTypeId =
+  | 'aerial_strand' | 'directional_drill' | 'distribution_fiber' | 'feeder_fiber'
+  | 'drop' | 'plowing' | 'sub_ducting' | 'trenching'
+  | 'handhole_vault' | 'pole' | 'anchor_down_guy' | 'splicing'
+  | 'restoration' | 'qa_qc' | 'utility_conflict' | 'damage_report'
+
+/** Which proof/phase a field photo documents — required set varies by WorkObjectTypeId. */
+export type PhotoProofType =
+  | 'before' | 'during' | 'after'
+  | 'rock_proof' | 'depth_proof' | 'restoration_proof' | 'handhole_proof' | 'pole_anchor_proof'
+  | 'other'
+
+export const PHOTO_PROOF_META: Record<PhotoProofType, { label: string }> = {
+  before:             { label: 'Before' },
+  during:             { label: 'During' },
+  after:              { label: 'After' },
+  rock_proof:         { label: 'Rock Proof' },
+  depth_proof:        { label: 'Depth Proof' },
+  restoration_proof:  { label: 'Restoration Proof' },
+  handhole_proof:     { label: 'Handhole Proof' },
+  pole_anchor_proof:  { label: 'Pole / Anchor Proof' },
+  other:              { label: 'Other' },
+}
+
+/** One markup item: a drawing, annotation, or feature-drop on the field map. */
+export interface FieldMarkup {
+  id: string
+  projectId: string
+
+  // Tool and visual style
+  tool: MarkupTool
+  /** Sub-category chosen from the toolbar dropdown (e.g. 'measurement_line', 'bore_arrow'). */
+  subtype?: string
+  /** The Add Work modal's Step 1 type selection — supersedes the coarser `workType` below for new markups. */
+  workObjectType?: WorkObjectTypeId
+  color: string
+  weight: number
+  fillColor: string | null
+  fillOpacity: number
+  opacity: number
+
+  // Geometry
+  geometry: MarkupGeometry
+  /** Device GPS captured at Details-step time — distinct from the drawn geometry above. */
+  capturedLat?: number | null
+  capturedLng?: number | null
+
+  // Content
+  label: string | null
+  fontSize: number
+  /** Text/callout formatting — read by markupLayer.ts's text/callout rendering, unused by other tools. */
+  fontFamily?: string
+  fontBold?: boolean
+  fontItalic?: boolean
+  fontUnderline?: boolean
+  fontStrikethrough?: boolean
+
+  // Feature metadata (for feature-drop tools)
+  featureType: string | null
+  featureName: string | null
+  notes: string | null
+
+  // Measurements
+  lengthFt: number | null
+  quantity: number | null
+
+  // Field color code preset (key from MARKUP_COLOR_CODES, e.g. 'backbone_fiber_overlash')
+  colorCode?: string
+
+  // Smart construction markup fields
+  workType?: 'underground' | 'aerial' | 'splicing' | 'general'
+  assetType?: string        // e.g. "Conduit", "Strand", "Splice Closure"
+  assetCategory?: string   // e.g. "Conduit", "Bore / Trench", "Structures"
+  size?: string             // e.g. "2\"", "1.25\"", "1\""
+  material?: string
+  unit?: string             // e.g. "Feet", "Each"
+  costCode?: string
+  billingCode?: string
+  isBillable?: boolean
+  isProductionItem?: boolean
+  isQCRequired?: boolean
+
+  // Workflow
+  status: MarkupStatus
+  layer: MarkupLayer
+  crewId: string | null
+
+  /** Stroke style, decoupled from `tool` — falls back to the tool-based dash lookup when unset (older records). */
+  lineStyle?: 'solid' | 'dashed' | 'dotted'
+  /** Offline sync state — inert placeholder until the sync queue (Phase 10) is wired; every record is 'local' today. */
+  syncStatus?: 'local' | 'pending' | 'synced' | 'error'
+
+  // Audit
+  createdBy: string | null
+  createdAt: string          // ISO datetime
+  updatedAt: string | null
+  lockedAt: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Work Object attachments — video, inspection forms, generic files, and a
+// real field-level audit log, alongside the existing MarkupPhoto/MarkupBilling.
+// ---------------------------------------------------------------------------
+
+/** One video attached to a Work Object. Blob stored in IndexedDB under key `mkp-<id>` (same store as photos). */
+export interface MarkupVideo {
+  id: string
+  markupId: string
+  caption: string | null
+  takenAt: string // ISO datetime
+}
+
+export type InspectionResult = 'pass' | 'fail' | 'na'
+
+export interface InspectionItem {
+  id: string
+  label: string
+  result: InspectionResult
+  notes: string | null
+}
+
+/** One inspection pass over a Work Object. Multiple are allowed (e.g. re-inspection after rework). */
+export interface MarkupInspection {
+  id: string
+  markupId: string
+  items: InspectionItem[]
+  overallResult: 'pass' | 'fail' | 'pending'
+  notes: string | null
+  createdBy: string | null
+  createdAt: string // ISO datetime
+}
+
+/** A generic file attached to a Work Object (not a photo/video) — reports, permits, etc. Blob stored under key `mkp-<id>`. */
+export interface MarkupAttachment {
+  id: string
+  markupId: string
+  fileName: string
+  mimeType: string
+  uploadedAt: string // ISO datetime
+}
+
+export type MarkupHistoryAction =
+  | 'created' | 'field_changed'
+  | 'photo_added' | 'photo_removed'
+  | 'billing_added' | 'billing_removed'
+  | 'inspection_added'
+  | 'locked' | 'unlocked'
+
+/** A real, field-level audit log entry for a Work Object — written centrally by DataContext's mutation methods. */
+export interface MarkupHistoryEntry {
+  id: string
+  markupId: string
+  timestamp: string // ISO datetime
+  actor: string | null
+  action: MarkupHistoryAction
+  /** Set only for 'field_changed' entries. */
+  field?: string
+  oldValue?: string | null
+  newValue?: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Field Map overlays — georeferenced PDF/scanned-plan images anchored onto
+// the Field Map so PDF plans render alongside KMZ features on one map.
+// ---------------------------------------------------------------------------
+
+export interface GeoreferenceControlPoint {
+  /** Pixel position on the source page image. */
+  px: { x: number; y: number }
+  lat: number
+  lng: number
+}
+
+export interface GeoreferencedOverlay {
+  id: string
+  projectId: string
+  /** FK → ProjectFile.id — the PDF this overlay was rendered from, if any. */
+  sourceProjectFileId?: string | null
+  /** IndexedDB key (via src/lib/fileStore.ts) for the rendered page image. */
+  imageBlobKey: string
+  pageIndex: number
+  naturalWidth: number
+  naturalHeight: number
+  controlPoints: GeoreferenceControlPoint[]
+  opacity: number
+  visible: boolean
+  createdAt: string
 }
 
 // ---------------------------------------------------------------------------
@@ -392,4 +796,22 @@ export interface AppData {
   annotations: AnnotationShape[]
   // Clock-in / geofence records
   clockEntries: ClockEntry[]
+  // KMZ production workflow
+  kmzUploads: KmzUpload[]
+  mapFeatures: MapFeature[]
+  featureProduction: FeatureProductionEntry[]
+  // Field markup system
+  fieldMarkups: FieldMarkup[]
+  markupPhotos: MarkupPhoto[]
+  markupBilling: MarkupBilling[]
+  aerialLashFiberRuns: AerialLashFiberRun[]
+  // Georeferenced PDF/plan overlays on the Field Map
+  fieldMapOverlays: GeoreferencedOverlay[]
+  // Favorited billing unit codes (RateCardUnit.unitCode), surfaced in the Add Work billing step
+  favoriteUnitCodes: string[]
+  // Work Object attachments — video, inspections, generic files, audit log
+  markupVideos: MarkupVideo[]
+  markupInspections: MarkupInspection[]
+  markupAttachments: MarkupAttachment[]
+  markupHistory: MarkupHistoryEntry[]
 }

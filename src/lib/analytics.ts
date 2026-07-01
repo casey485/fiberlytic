@@ -1,4 +1,4 @@
-import type { AppData, PnLEntry, Project, Timecard, Equipment, WorkType, RateCardDivision } from '../types'
+import type { AppData, PnLEntry, Project, Timecard, Equipment, WorkType, RateCardDivision, InvoiceLineItem } from '../types'
 
 /** Maps project work types to the division labels used on rate cards. */
 export function workTypeDivisions(wts: WorkType[]): RateCardDivision[] {
@@ -244,10 +244,10 @@ export function computeMetrics(
   const getD = (d: string) => { if (!byDate.has(d)) byDate.set(d, zeroRow()); return byDate.get(d)! }
   const getP = (p: string) => { if (!byProject.has(p)) byProject.set(p, zeroRow()); return byProject.get(p)! }
 
-  const bump = (date: string, pid: string, field: keyof Omit<MetricsRow, 'profit'>, amount: number) => {
+  const bump = (date: string, pid: string | null, field: keyof Omit<MetricsRow, 'profit'>, amount: number) => {
     if (amount === 0) return
     getD(date)[field] += amount
-    getP(pid)[field] += amount
+    if (pid) getP(pid)[field] += amount
   }
 
   // Timecard entry IDs — skip pnl.laborCost when real timecards exist for the same production entry
@@ -306,7 +306,11 @@ export function computeMetrics(
   for (const [crewId, crewEquip] of equipByCrew) {
     const crew = data.crews.find((c) => c.id === crewId)
     const crewProjectId = crew?.currentProjectId ?? crewLastProject.get(crewId) ?? null
-    if (!crewProjectId || !inProj(crewProjectId)) continue
+    // If crew has a project but it's outside the filter scope, skip entirely
+    if (crewProjectId && !inProj(crewProjectId)) continue
+    // If no project AND filtering to a specific project, skip (can't attribute cost to that project)
+    if (!crewProjectId && projectId) continue
+    // crewProjectId may be null here — equipment still counts in date totals, just not in byProject
 
     // Start from the earliest deployedFrom among the crew's equipment, or startDate if none set
     const deployedDates = crewEquip.map((eq) => eq.deployedFrom).filter((d): d is string => Boolean(d)).sort()
@@ -349,4 +353,48 @@ export function computeMetrics(
     margin: totalRevenue > 0 ? profit / totalRevenue : 0,
     byDate, byProject,
   }
+}
+
+/** Distinct billing unit codes most recently used across all Work Objects, most-recent first. */
+export function recentUnitCodes(data: AppData, limit = 8): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  const entries = data.markupBilling ?? []
+  for (let i = entries.length - 1; i >= 0 && out.length < limit; i--) {
+    const code = entries[i].rateCode
+    if (code && !seen.has(code)) { seen.add(code); out.push(code) }
+  }
+  return out
+}
+
+/**
+ * Group a project's billed-but-not-yet-invoiced MarkupBilling lines into invoice
+ * line items, mirroring Invoicing.tsx's buildLinesFromSession for Print Reader
+ * sessions. Returns the source billing ids too, so the caller can mark them
+ * `invoiceId` once the invoice is actually created.
+ */
+export function billableMarkupLines(data: AppData, projectId: string): { lines: InvoiceLineItem[]; sourceBillingIds: string[] } {
+  const markupIds = new Set(data.fieldMarkups.filter((m) => m.projectId === projectId).map((m) => m.id))
+  const eligible = (data.markupBilling ?? []).filter(
+    (b) => markupIds.has(b.markupId) && b.invoiceStatus === 'invoiced' && !b.invoiceId,
+  )
+  const byKey = new Map<string, { description: string; quantity: number; unitPrice: number; ids: string[] }>()
+  for (const b of eligible) {
+    const key = `${b.rateCode}|${b.description}`
+    const existing = byKey.get(key)
+    if (existing) {
+      existing.quantity += b.quantity
+      existing.ids.push(b.id)
+    } else {
+      byKey.set(key, { description: `${b.description} (${b.rateCode})`, quantity: b.quantity, unitPrice: b.rate, ids: [b.id] })
+    }
+  }
+  const lines: InvoiceLineItem[] = []
+  const sourceBillingIds: string[] = []
+  let i = 0
+  for (const v of byKey.values()) {
+    lines.push({ id: `mb-line-${i++}`, description: v.description, quantity: v.quantity, unitPrice: v.unitPrice })
+    sourceBillingIds.push(...v.ids)
+  }
+  return { lines, sourceBillingIds }
 }

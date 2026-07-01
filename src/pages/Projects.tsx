@@ -49,12 +49,14 @@ export function Projects() {
       if (crew.foremanId === activeEmployeeId) myCrewIds.add(crew.id)
       if (crew.members.some((m) => m.employeeId === activeEmployeeId && m.active)) myCrewIds.add(crew.id)
     }
-    return new Set(
-      data.crews
-        .filter((c) => myCrewIds.has(c.id) && c.currentProjectId)
-        .map((c) => c.currentProjectId as string),
-    )
-  }, [isAdmin, activeEmployeeId, data.employees, data.crews])
+    const fromCurrentProject = data.crews
+      .filter((c) => myCrewIds.has(c.id) && c.currentProjectId)
+      .map((c) => c.currentProjectId as string)
+    const fromCrewIds = data.projects
+      .filter((p) => [...myCrewIds].some((cid) => p.crewIds.includes(cid)))
+      .map((p) => p.id)
+    return new Set([...fromCurrentProject, ...fromCrewIds])
+  }, [isAdmin, activeEmployeeId, data.employees, data.crews, data.projects])
 
   const filtered = useMemo(() => {
     let list = filter === 'all' ? data.projects : data.projects.filter((p) => p.status === filter)

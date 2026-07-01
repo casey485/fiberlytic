@@ -8,6 +8,7 @@ import { StatCard } from '../components/ui/StatCard'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
 import { money, moneyExact, formatDate, invoiceTotal, invoiceStatusMeta } from '../lib/format'
+import { billableMarkupLines } from '../lib/analytics'
 import type { InvoiceLineItem, InvoiceStatus } from '../types'
 import { usePrintSessions } from '../features/printkmz/store'
 import { objectMeta } from '../features/printkmz/types'
@@ -20,6 +21,7 @@ export function Invoicing() {
   const location = useLocation()
   const [open, setOpen] = useState(false)
   const [fromPrintOpen, setFromPrintOpen] = useState(false)
+  const [fromFieldWorkOpen, setFromFieldWorkOpen] = useState(false)
   const [initialSessionId, setInitialSessionId] = useState<string | undefined>()
   const [statusFilter, setStatusFilter] = useState<InvoiceStatus | 'all'>('all')
 
@@ -57,6 +59,9 @@ export function Invoicing() {
         description="Bill clients and track what's outstanding, overdue, and paid."
         action={
           <>
+            <Button variant="secondary" onClick={() => setFromFieldWorkOpen(true)}>
+              <FileText size={16} /> From field work
+            </Button>
             <Button variant="secondary" onClick={() => { setInitialSessionId(undefined); setFromPrintOpen(true) }}>
               <ScanText size={16} /> From print
             </Button>
@@ -147,6 +152,7 @@ export function Invoicing() {
         onCreate={addInvoice}
         initialSessionId={initialSessionId}
       />
+      <FromFieldWorkModal open={fromFieldWorkOpen} onClose={() => setFromFieldWorkOpen(false)} />
     </div>
   )
 }
@@ -473,6 +479,117 @@ function FromPrintModal({
           </div>
         </>
       )}
+    </Modal>
+  )
+}
+
+/** Invoice modal sourced from a project's billed-but-not-yet-invoiced Field Map Work Objects. */
+function FromFieldWorkModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { data, addInvoice, updateMarkupBilling } = useData()
+  const today = new Date().toISOString().slice(0, 10)
+  const due = new Date()
+  due.setDate(due.getDate() + 30)
+  const dueStr = due.toISOString().slice(0, 10)
+
+  const [projectId, setProjectId] = useState(data.projects[0]?.id ?? '')
+  const [form, setForm] = useState({
+    number: `INV-${1046 + Math.floor((Date.now() / 1000) % 1000)}`,
+    client: data.projects[0]?.client ?? '',
+    issueDate: today,
+    dueDate: dueStr,
+    status: 'draft' as InvoiceStatus,
+  })
+
+  const { lines, sourceBillingIds } = useMemo(
+    () => (projectId ? billableMarkupLines(data, projectId) : { lines: [], sourceBillingIds: [] }),
+    [data, projectId],
+  )
+
+  const onProject = (id: string) => {
+    setProjectId(id)
+    const p = data.projects.find((x) => x.id === id)
+    setForm((f) => ({ ...f, client: p?.client ?? f.client }))
+  }
+
+  const total = lines.reduce((s, l) => s + l.quantity * l.unitPrice, 0)
+
+  const submit = () => {
+    if (!projectId || lines.length === 0) return
+    const invoiceId = addInvoice({
+      number: form.number,
+      projectId,
+      client: form.client,
+      issueDate: form.issueDate,
+      dueDate: form.dueDate,
+      status: form.status,
+      lineItems: lines,
+    })
+    for (const billingId of sourceBillingIds) updateMarkupBilling(billingId, { invoiceId })
+    onClose()
+  }
+
+  return (
+    <Modal
+      open={open}
+      onClose={onClose}
+      title="Invoice from field work"
+      footer={
+        <>
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={submit} disabled={lines.length === 0}>Create invoice</Button>
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <Field label="Bill to project">
+          <Select value={projectId} onChange={(e) => onProject(e.target.value)}>
+            {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Invoice number">
+          <Input value={form.number} onChange={(e) => setForm((f) => ({ ...f, number: e.target.value }))} />
+        </Field>
+        <Field label="Client">
+          <Input value={form.client} onChange={(e) => setForm((f) => ({ ...f, client: e.target.value }))} />
+        </Field>
+        <Field label="Issue date">
+          <Input type="date" value={form.issueDate} onChange={(e) => setForm((f) => ({ ...f, issueDate: e.target.value }))} />
+        </Field>
+        <Field label="Due date">
+          <Input type="date" value={form.dueDate} onChange={(e) => setForm((f) => ({ ...f, dueDate: e.target.value }))} />
+        </Field>
+      </div>
+
+      <div className="mt-4">
+        <p className="mb-2 text-xs font-medium text-slate-600">
+          Line items <span className="text-slate-400">— from billed Work Objects on the Field Map; set unit prices</span>
+        </p>
+        {lines.length === 0 ? (
+          <p className="rounded-lg bg-slate-50 px-3 py-4 text-center text-sm text-slate-400">
+            No billed, not-yet-invoiced work for this project.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {lines.map((l) => (
+              <div key={l.id} className="grid grid-cols-12 gap-2">
+                <div className="col-span-7">
+                  <Input value={l.description} readOnly />
+                </div>
+                <div className="col-span-2">
+                  <Input type="number" value={l.quantity} readOnly />
+                </div>
+                <div className="col-span-3">
+                  <Input type="number" step="0.01" placeholder="Unit $" value={l.unitPrice} readOnly />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="mt-3 flex justify-end border-t border-slate-100 pt-3 text-sm">
+          <span className="text-slate-500">Total:&nbsp;</span>
+          <span className="font-semibold text-slate-900">{moneyExact(total)}</span>
+        </div>
+      </div>
     </Modal>
   )
 }

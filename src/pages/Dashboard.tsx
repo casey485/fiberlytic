@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, TrendingUp, TrendingDown, FileText, File, Clock, Receipt, Package, Users, Map as MapIcon, DollarSign, HardHat, Wrench } from 'lucide-react'
+import { Activity, TrendingUp, TrendingDown, FileText, File, Clock, Receipt, Package, Users, Map as MapIcon, DollarSign, HardHat, Wrench, Download } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { loadBlob } from '../lib/fileStore'
@@ -385,7 +385,7 @@ function WeeklySummaryCard({
                 <div className="flex flex-wrap gap-2 px-5 py-3">
                   {files.map((f) =>
                     f.fileType === 'pdf' ? (
-                      <Link key={f.id} to={`/redline/${f.id}`} className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-100">
+                      <Link key={f.id} to={`/kmz/${f.projectId}`} state={{ openPdfFileId: f.id }} className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-100">
                         <FileText size={13} /> {f.name}
                       </Link>
                     ) : (
@@ -915,15 +915,36 @@ function AdminDashboard() {
       (p) => p.date >= wStart && p.date <= wEnd &&
         (p.productionEntryId ? prodIds.has(p.productionEntryId) : scopedProjectIds.has(p.projectId ?? '')),
     )
-    const revenue   = weekPnl.reduce((s, p) => s + p.revenue, 0)
-    const laborCost = weekPnl.reduce((s, p) => s + p.laborCost, 0)
+    const revenue = weekPnl.reduce((s, p) => s + p.revenue, 0)
+    // Labor: real clock entries → timecards (crew day entries) → pnl snapshot fallback
+    const clockLaborCost = (data.clockEntries ?? []).reduce((s, ce) => {
+      const d = ce.clockIn.slice(0, 10)
+      if (d < wStart || d > wEnd || !ce.clockOut || !ce.crewId || !visibleCrewIds.has(ce.crewId)) return s
+      const hrs = (new Date(ce.clockOut).getTime() - new Date(ce.clockIn).getTime()) / 3_600_000
+      const emp = data.employees.find((e) => e.id === ce.employeeId)
+      return s + hrs * (emp?.hourlyRate ?? 0)
+    }, 0)
+    const tcLaborCost = data.timecards.reduce((s, tc) => {
+      if (tc.date < wStart || tc.date > wEnd || !tc.productionEntryId || !prodIds.has(tc.productionEntryId)) return s
+      return s + tc.laborCost
+    }, 0)
+    const laborCost = clockLaborCost > 0
+      ? Math.round(clockLaborCost)
+      : tcLaborCost > 0
+      ? tcLaborCost
+      : weekPnl.reduce((s, p) => s + p.laborCost, 0)
     // When a specific project is selected, only charge equipment from crews actually on that project
     const equipCrewIds = activeProject !== 'all'
       ? new Set(data.crews.filter((c) => c.currentProjectId && scopedProjectIds.has(c.currentProjectId)).map((c) => c.id))
       : visibleCrewIds
     const equipCost = data.equipment
       .filter((eq) => eq.active && eq.crewId && equipCrewIds.has(eq.crewId))
-      .reduce((s, eq) => s + Math.round(eq.monthlyCost / daysInMonth(wStart) * weekdays), 0)
+      .reduce((s, eq) => {
+        const from = eq.deployedFrom && eq.deployedFrom > wStart ? eq.deployedFrom : wStart
+        if (from > wEnd) return s
+        const days = weekdaysInRange(from, wEnd)
+        return s + Math.round(eq.monthlyCost / daysInMonth(from) * days)
+      }, 0)
     const expCost = data.jobExpenses
       .filter((ex) => ex.date >= wStart && ex.date <= wEnd &&
         (scopedProjectIds.has(ex.jobId) || (ex.crewId ? equipCrewIds.has(ex.crewId) : false)))
@@ -933,7 +954,7 @@ function AdminDashboard() {
     const retained = Math.round(revenue * avgRetentionPct)
     const netRevenue = revenue - retained
     return { revenue, retained, netRevenue, totalCost, ebitda: netRevenue - totalCost, footage, laborCost, equipCost, expCost }
-  }, [data, scopedProjectIds, visibleCrews, weekdays, wStart, wEnd, avgRetentionPct])
+  }, [data, scopedProjectIds, visibleCrews, wStart, wEnd, avgRetentionPct, activeProject])
 
   // ── Daily chart data ──────────────────────────────────────────────────────
   const dailyData = useMemo(() => {
@@ -952,7 +973,20 @@ function AdminDashboard() {
           : scopedProjectIds.has(p.projectId ?? '')
       ))
       const rev = dayPnl.reduce((s, p) => s + p.revenue, 0)
-      const lab = dayPnl.reduce((s, p) => s + p.laborCost, 0)
+      const dayProdIds = new Set(
+        data.production.filter((pr) => pr.date === date && scopedProjectIds.has(pr.projectId) && visibleCrewIds.has(pr.crewId)).map((pr) => pr.id)
+      )
+      const dayClockLabor = (data.clockEntries ?? []).reduce((s, ce) => {
+        if (ce.clockIn.slice(0, 10) !== date || !ce.clockOut || !ce.crewId || !visibleCrewIds.has(ce.crewId)) return s
+        const hrs = (new Date(ce.clockOut).getTime() - new Date(ce.clockIn).getTime()) / 3_600_000
+        const emp = data.employees.find((e) => e.id === ce.employeeId)
+        return s + hrs * (emp?.hourlyRate ?? 0)
+      }, 0)
+      const dayTcLabor = data.timecards.reduce((s, tc) => {
+        if (tc.date !== date || !tc.productionEntryId || !dayProdIds.has(tc.productionEntryId)) return s
+        return s + tc.laborCost
+      }, 0)
+      const lab = dayClockLabor > 0 ? Math.round(dayClockLabor) : dayTcLabor > 0 ? dayTcLabor : dayPnl.reduce((s, p) => s + p.laborCost, 0)
       // Equipment cost: weekdays only, prorated daily from monthly cost
       const dow = new Date(date + 'T00:00:00').getDay()
       const equip = (dow !== 0 && dow !== 6)
@@ -985,10 +1019,30 @@ function AdminDashboard() {
       const footage   = crewProd.reduce((s, p) => s + p.footage, 0)
       const hours     = crewProd.reduce((s, p) => s + p.hours,   0)
       const revenue   = crewPnl.reduce((s, p) => s + p.revenue,  0)
-      const laborCost = crewPnl.reduce((s, p) => s + p.laborCost, 0)
+      const crewClockLabor = (data.clockEntries ?? []).reduce((s, ce) => {
+        const d = ce.clockIn.slice(0, 10)
+        if (d < wStart || d > wEnd || !ce.clockOut || ce.crewId !== crew.id) return s
+        const hrs = (new Date(ce.clockOut).getTime() - new Date(ce.clockIn).getTime()) / 3_600_000
+        const emp = data.employees.find((e) => e.id === ce.employeeId)
+        return s + hrs * (emp?.hourlyRate ?? 0)
+      }, 0)
+      const crewTcLabor = data.timecards.reduce((s, tc) => {
+        if (tc.date < wStart || tc.date > wEnd || !tc.productionEntryId || !prodIds.has(tc.productionEntryId)) return s
+        return s + tc.laborCost
+      }, 0)
+      const laborCost = crewClockLabor > 0
+        ? Math.round(crewClockLabor)
+        : crewTcLabor > 0
+        ? crewTcLabor
+        : crewPnl.reduce((s, p) => s + p.laborCost, 0)
       const equipCost = data.equipment
         .filter((eq) => eq.active && eq.crewId === crew.id)
-        .reduce((s, eq) => s + Math.round(eq.monthlyCost / daysInMonth(wStart) * weekdays), 0)
+        .reduce((s, eq) => {
+          const from = eq.deployedFrom && eq.deployedFrom > wStart ? eq.deployedFrom : wStart
+          if (from > wEnd) return s
+          const days = weekdaysInRange(from, wEnd)
+          return s + Math.round(eq.monthlyCost / daysInMonth(from) * days)
+        }, 0)
       const expCost = data.jobExpenses
         .filter((ex) => ex.date >= wStart && ex.date <= wEnd && ex.crewId === crew.id)
         .reduce((s, ex) => s + ex.amount, 0)
@@ -999,8 +1053,8 @@ function AdminDashboard() {
       const margin     = netRevenue > 0 ? profit / netRevenue : 0
       const ftPerHr    = hours > 0 ? footage / hours : 0
       return { crew, footage, hours, revenue, netRevenue, laborCost, equipCost, expCost, profit, margin, ftPerHr }
-    }).filter((r) => r.footage > 0 || r.revenue > 0)
-  }, [data, visibleCrews, scopedProjectIds, wStart, wEnd, weekdays, avgRetentionPct])
+    })
+  }, [data, visibleCrews, scopedProjectIds, wStart, wEnd, avgRetentionPct])
 
   const activeFiltered = scopedProjects.filter((p) => p.status === 'active')
 
@@ -1012,6 +1066,75 @@ function AdminDashboard() {
     { name: 'Equipment', value: summary.equipCost },
     { name: 'Expenses', value: summary.expCost },
   ].filter((d) => d.value > 0)
+
+  const handleExport = () => {
+    const rows: string[][] = []
+    const row = (...cells: (string | number)[]) => rows.push(cells.map(String))
+    const blank = () => rows.push([])
+
+    const projLabel = activeProject === 'all' ? 'All Projects' : (scopedProjects.find((p) => p.id === activeProject)?.name ?? activeProject)
+    const crewLabel = activeCrew === 'all' ? 'All Crews' : (visibleCrews.find((c) => c.id === activeCrew)?.name ?? activeCrew)
+
+    row('Fiberlytic P&L Report')
+    row('Period', rangeLabel)
+    row('Generated', new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }))
+    row('Project Filter', projLabel)
+    row('Crew Filter', crewLabel)
+    blank()
+
+    row('SUMMARY')
+    row('Metric', 'Amount (USD)')
+    row('Gross Revenue', summary.revenue)
+    row('Retainage Held', summary.retained)
+    row('Net Revenue', summary.netRevenue)
+    row('Labor Cost', summary.laborCost)
+    row('Equipment Cost', summary.equipCost)
+    row('Field Expenses', summary.expCost)
+    row('Total Cost', summary.totalCost)
+    row('EBITDA', summary.ebitda)
+    row('Profit Margin %', `${marginPct.toFixed(1)}%`)
+    row('Footage (ft)', summary.footage)
+    blank()
+
+    row('DAILY BREAKDOWN')
+    row('Date', 'Gross Revenue', 'Net Revenue', 'Total Cost', 'Profit')
+    for (const d of dailyData) {
+      row(d.date, d.revenue, d.netRevenue, d.cost, d.profit)
+    }
+    blank()
+
+    row('CREW PERFORMANCE')
+    row('Crew', 'Hours', 'Footage (ft)', 'Ft/Hr', 'Net Revenue', 'Labor Cost', 'Equipment Cost', 'Expenses', 'Profit', 'Margin %')
+    for (const r of crewPerf) {
+      row(r.crew.name, r.hours.toFixed(1), r.footage, r.ftPerHr.toFixed(1), r.netRevenue, r.laborCost, r.equipCost, r.expCost, r.profit, `${(r.margin * 100).toFixed(1)}%`)
+    }
+    blank()
+
+    const periodExpenses = data.jobExpenses.filter((ex) => ex.date >= wStart && ex.date <= wEnd)
+    if (periodExpenses.length > 0) {
+      row('FIELD EXPENSES DETAIL')
+      row('Date', 'Vendor', 'Description', 'Amount (USD)')
+      for (const ex of periodExpenses) {
+        row(ex.date, ex.vendor, ex.description, ex.amount)
+      }
+      blank()
+    }
+
+    const csv = rows.map((r) =>
+      r.map((cell) => {
+        const s = String(cell)
+        return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
+      }).join(',')
+    ).join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `pnl-report-${wStart}-to-${wEnd}.csv`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   const selectCls = 'rounded-lg border border-[#2a2a2a] bg-[#141414] py-1.5 pl-3 pr-8 text-sm font-medium text-slate-300 focus:border-brand-500 focus:outline-none'
   const presetCls = (active: boolean) =>
@@ -1028,6 +1151,14 @@ function AdminDashboard() {
           <p className="text-xs text-slate-500">{rangeLabel}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Export */}
+          <button
+            onClick={handleExport}
+            className="flex items-center gap-1.5 rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-1.5 text-xs font-medium text-slate-300 hover:border-brand-500 hover:text-white transition"
+          >
+            <Download size={13} />
+            Export CSV
+          </button>
           {/* Date presets */}
           {([
             { label: 'This week', preset: 'thisWeek' as const },

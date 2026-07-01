@@ -1,0 +1,49 @@
+/** Metadata for feature-drop tool types — shared between MarkupPanel and KmzMap. */
+
+export const FEATURE_DROP_TOOLS = [
+  'handhole', 'bore', 'bore_pit', 'aerial_cable', 'underground_conduit',
+  'fiber_pull', 'splice_point', 'dtap', 'pole', 'pedestal', 'vault',
+  'cabinet', 'slack_loop', 'restoration', 'rock', 'asphalt', 'concrete',
+  'traffic_control', 'material_issue', 'qc_issue', 'completed_work', 'hold',
+  // Structure markers
+  'struct_s', 'struct_m', 'struct_l', 'struct_xl',
+  'struct_fp', 'struct_lv', 'struct_xlv',
+  'struct_ped', 'struct_cab', 'struct_hh',
+] as const
+
+export const FEATURE_TOOL_LABELS: Record<string, { label: string; abbr: string; color: string }> = {
+  point:                { label: 'Point',                 abbr: '•',  color: '#94a3b8' },
+  handhole:             { label: 'Handhole',             abbr: 'HH', color: '#f59e0b' },
+  bore:                 { label: 'Bore',                  abbr: 'BR', color: '#3b82f6' },
+  bore_pit:             { label: 'Bore Pit',              abbr: 'BP', color: '#1d4ed8' },
+  aerial_cable:         { label: 'Aerial Cable',          abbr: 'AC', color: '#06b6d4' },
+  underground_conduit:  { label: 'Underground Conduit',   abbr: 'UC', color: '#8b5cf6' },
+  fiber_pull:           { label: 'Fiber Pull',            abbr: 'FP', color: '#6366f1' },
+  splice_point:         { label: 'Splice Point',          abbr: 'SP', color: '#ec4899' },
+  dtap:                 { label: 'D-Tap',                 abbr: 'DT', color: '#f97316' },
+  pole:                 { label: 'Pole',                  abbr: 'PL', color: '#78716c' },
+  pedestal:             { label: 'Pedestal',              abbr: 'PD', color: '#a78bfa' },
+  vault:                { label: 'Vault',                 abbr: 'VT', color: '#64748b' },
+  cabinet:              { label: 'Cabinet',               abbr: 'CB', color: '#475569' },
+  slack_loop:           { label: 'Slack Loop',            abbr: 'SL', color: '#0ea5e9' },
+  restoration:          { label: 'Restoration',           abbr: 'RS', color: '#84cc16' },
+  rock:                 { label: 'Rock',                  abbr: 'RK', color: '#a8a29e' },
+  asphalt:              { label: 'Asphalt',               abbr: 'AS', color: '#374151' },
+  concrete:             { label: 'Concrete',              abbr: 'CN', color: '#9ca3af' },
+  traffic_control:      { label: 'Traffic Control',       abbr: 'TC', color: '#eab308' },
+  material_issue:       { label: 'Material Issue',        abbr: 'MI', color: '#ef4444' },
+  qc_issue:             { label: 'QC Issue',              abbr: 'QC', color: '#dc2626' },
+  completed_work:       { label: 'Completed Work',        abbr: 'CW',  color: '#22c55e' },
+  hold:                 { label: 'Hold / Needs Review',   abbr: 'HL',  color: '#f59e0b' },
+  // Structure markers — rendered as circular icons on the map
+  struct_s:             { label: 'Small Handhole',        abbr: 'S',   color: '#f59e0b' },
+  struct_m:             { label: 'Manhole',               abbr: 'M',   color: '#f97316' },
+  struct_l:             { label: 'Large Vault',           abbr: 'L',   color: '#f97316' },
+  struct_xl:            { label: 'XL Vault',              abbr: 'XL',  color: '#ef4444' },
+  struct_fp:            { label: 'Fiber Point',           abbr: 'FP',  color: '#6366f1' },
+  struct_lv:            { label: 'Large Vault',           abbr: 'LV',  color: '#f97316' },
+  struct_xlv:           { label: 'XL Vault Alt',          abbr: 'XLV', color: '#dc2626' },
+  struct_ped:           { label: 'Pedestal',              abbr: 'PED', color: '#a78bfa' },
+  struct_cab:           { label: 'Cabinet',               abbr: 'CAB', color: '#64748b' },
+  struct_hh:            { label: 'Handhole',              abbr: 'HH',  color: '#10b981' },
+}

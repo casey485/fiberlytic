@@ -173,7 +173,7 @@ function WeeklyView() {
         return { eq, crew }
       })
       .filter(Boolean) as { eq: typeof data.equipment[0]; crew: typeof data.crews[0] }[]
-  }, [data.equipment, data.crews, projectFilter])
+  }, [data, projectFilter])
 
   // Expenses: job expenses in this week
   const expenseRows = useMemo(() => {

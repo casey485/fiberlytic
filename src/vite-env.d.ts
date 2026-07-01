@@ -4,8 +4,14 @@ interface ImportMetaEnv {
   readonly VITE_MAPBOX_TOKEN?: string
   readonly VITE_SUPABASE_URL?: string
   readonly VITE_SUPABASE_ANON_KEY?: string
-  /** Optional default map center as "lng,lat". Falls back to a US Midwest point. */
   readonly VITE_DEFAULT_CENTER?: string
+  // Firebase Authentication
+  readonly VITE_FIREBASE_API_KEY?: string
+  readonly VITE_FIREBASE_AUTH_DOMAIN?: string
+  readonly VITE_FIREBASE_PROJECT_ID?: string
+  readonly VITE_FIREBASE_STORAGE_BUCKET?: string
+  readonly VITE_FIREBASE_MESSAGING_SENDER_ID?: string
+  readonly VITE_FIREBASE_APP_ID?: string
 }
 
 interface ImportMeta {

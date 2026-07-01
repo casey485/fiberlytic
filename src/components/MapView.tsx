@@ -147,7 +147,7 @@ export function MapView({
     if (readyRef.current) {
 (map.getSource(LINE_SOURCE) as mapboxgl.GeoJSONSource | undefined)?.setData(lineFeatures(objects, selectedId))
     }
-  }, [objects, selectedId])
+  }, [objects, selectedId, onMove])
 
   // Vertex handles + crosshair cursor for the object being drawn.
   useEffect(() => {

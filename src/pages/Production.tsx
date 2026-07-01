@@ -10,7 +10,7 @@ import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { StatCard } from '../components/ui/StatCard'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
-import { number, money, moneyExact, formatDate, formatDateShort, workTypeLabel } from '../lib/format'
+import { number, money, moneyExact, formatDateShort, workTypeLabel } from '../lib/format'
 import { dailyProductionSeries, weekStart, weekEnd, daysInMonth, workTypeDivisions } from '../lib/analytics'
 import { compressImage } from '../lib/imageCompress'
 import { saveBlob } from '../lib/fileStore'
@@ -256,7 +256,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
       photos: pendingPhotos,
     }
     onClose()
-    navigate(`/redline/${selectedFileId}`, { state: { pending } })
+    navigate(`/kmz/${form.projectId}`, { state: { pending } })
   }
 
   return (
@@ -269,7 +269,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
           <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
           <Button variant="secondary" onClick={submitOnly} disabled={!canSubmit || submitting}>{submitting ? 'Saving…' : 'Save only'}</Button>
           <Button onClick={submitAndRedline} disabled={!canSubmit || !selectedFileId || submitting} className="gap-1.5">
-            <PenLine size={15} /> Save + Redline
+            <PenLine size={15} /> Save + Field Map
           </Button>
         </>
       }
@@ -819,7 +819,7 @@ const toggleEmp = (id: string) =>
     }
     reset()
     onClose()
-    navigate(`/redline/${selectedFileId}`, { state: { pending } })
+    navigate(`/kmz/${form.projectId}`, { state: { pending } })
   }
 
   const selectedCrew = data.crews.find((c) => c.id === form.crewId)
@@ -837,7 +837,7 @@ const toggleEmp = (id: string) =>
           <Button variant="secondary" onClick={onClose} disabled={submitting}>Cancel</Button>
           <Button variant="secondary" onClick={submitOnly} disabled={!canSubmit || submitting}>{submitting ? 'Saving…' : 'Save only'}</Button>
           <Button onClick={submitAndRedline} disabled={!canSubmit || !selectedFileId || submitting} className="gap-1.5">
-            <PenLine size={15} /> Save + Redline
+            <PenLine size={15} /> Save + Field Map
           </Button>
         </>
       }
@@ -1245,8 +1245,11 @@ function EditEntryModal({
     [data.productionLineItems, entryId],
   )
 
+  const [date, setDate]           = useState(entry?.date ?? '')
   const [projectId, setProjectId] = useState(entry?.projectId ?? '')
   const [crewId, setCrewId]       = useState(entry?.crewId ?? '')
+  const [footage, setFootage]     = useState(String(entry?.footage ?? ''))
+  const [notes, setNotes]         = useState(entry?.notes ?? '')
 
   const hasUnits = (rcId: string) => data.rateCardUnits.some((u) => u.rateCardId === rcId)
   const resolveRateCardEdit = (projId: string): string => {
@@ -1315,14 +1318,23 @@ function EditEntryModal({
   const editTotalRevenue = editLineItems.reduce((s, li) => s + li.extendedTotal, 0)
   const editTotalLF = editLineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)
 
+  // When line items are present footage comes from LF quantities, not manual input
+  const hasLineItems = rows.length > 0
+
   if (!entry) return null
 
   const save = () => {
-    const patch: { projectId?: string; crewId?: string; lineItems?: LineItemInput[] } = {}
-    if (projectId !== entry.projectId) patch.projectId = projectId
-    if (crewId    !== entry.crewId)    patch.crewId    = crewId
-    // Always save line items if any rows present (including when replacing existing ones)
-    if (editLineItems.length > 0) patch.lineItems = editLineItems
+    const patch: Parameters<typeof patchProductionEntry>[1] = {}
+    if (date      !== entry.date)             patch.date      = date
+    if (projectId !== entry.projectId)        patch.projectId = projectId
+    if (crewId    !== entry.crewId)           patch.crewId    = crewId
+    if (!hasLineItems) {
+      const ft = parseFloat(footage)
+      if (!isNaN(ft) && ft !== entry.footage) patch.footage = ft
+    }
+    if (notes !== (entry.notes ?? ''))        patch.notes     = notes
+    // Always sync line items if the user has touched them (rows changed vs existing)
+    if (rows.length > 0 || existingLineItems.length > 0) patch.lineItems = editLineItems
     if (Object.keys(patch).length > 0) patchProductionEntry(entryId, patch)
     onClose()
   }
@@ -1332,6 +1344,7 @@ function EditEntryModal({
       open
       onClose={onClose}
       title="Edit production entry"
+      size="lg"
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -1339,17 +1352,21 @@ function EditEntryModal({
         </>
       }
     >
-      <p className="mb-4 rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-700">
-        Changing the project, crew, or unit codes will update all linked P&amp;L entries so revenue stays in sync.
-      </p>
       <div className="space-y-4">
-        <Field label="Project">
-          <Select value={projectId} onChange={(e) => { setProjectId(e.target.value); setRateCardId(resolveRateCardEdit(e.target.value)) }}>
-            {data.projects.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </Select>
-        </Field>
+        {/* Date + Project side by side */}
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Date">
+            <Input type="date" value={date} onChange={(e) => setDate(e.target.value)} />
+          </Field>
+          <Field label="Project">
+            <Select value={projectId} onChange={(e) => { setProjectId(e.target.value); setRateCardId(resolveRateCardEdit(e.target.value)) }}>
+              {data.projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </Select>
+          </Field>
+        </div>
+
         <Field label="Crew">
           <Select value={crewId} onChange={(e) => setCrewId(e.target.value)}>
             {data.crews.map((c) => {
@@ -1363,10 +1380,10 @@ function EditEntryModal({
           </Select>
         </Field>
 
-        {/* Line items editing */}
+        {/* Unit codes / line items */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Unit codes / line items</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Unit codes / line items</p>
             <div className="flex items-center gap-2">
               <Select className="text-xs" value={rateCardId} onChange={(e) => setRateCardId(e.target.value)}>
                 <option value="">— Rate card —</option>
@@ -1381,18 +1398,18 @@ function EditEntryModal({
           </div>
 
           {rows.length === 0 && (
-            <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+            <p className="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-xs text-slate-400">
               {existingLineItems.length === 0
-                ? 'No unit codes on this entry. Add units above to associate revenue codes.'
-                : 'All units removed — saving will clear line items and use raw footage for revenue.'}
+                ? 'No unit codes on this entry — enter raw footage below.'
+                : 'All units removed — saving will clear line items and use raw footage.'}
             </p>
           )}
 
           {rows.length > 0 && (
-            <div className="overflow-x-auto rounded-lg border border-slate-200">
+            <div className="overflow-x-auto rounded-lg border border-[#2a2a2a]">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <tr className="bg-[#1a1a1a] text-left text-xs uppercase tracking-wide text-slate-400">
                     <th className="px-3 py-2 font-medium">Code</th>
                     <th className="px-3 py-2 font-medium">UOM</th>
                     <th className="px-3 py-2 text-right font-medium">Rate</th>
@@ -1405,7 +1422,7 @@ function EditEntryModal({
                   {rows.map((row) => {
                     const qty = parseFloat(row.quantity) || 0
                     return (
-                      <tr key={row.key} className="border-t border-slate-100">
+                      <tr key={row.key} className="border-t border-[#1e1e1e]">
                         <td className="px-2 py-1.5">
                           <Select
                             className="text-xs"
@@ -1434,11 +1451,11 @@ function EditEntryModal({
                             placeholder="0"
                           />
                         </td>
-                        <td className="px-2 py-1.5 text-right text-xs font-medium text-slate-800">
+                        <td className="px-2 py-1.5 text-right text-xs font-medium text-slate-300">
                           {moneyExact(qty * row.rateSnapshot)}
                         </td>
                         <td className="px-2 py-1.5">
-                          <button onClick={() => removeEditRow(row.key)} className="text-slate-300 hover:text-rose-500" aria-label="Remove">
+                          <button onClick={() => removeEditRow(row.key)} className="text-slate-500 hover:text-rose-500" aria-label="Remove">
                             <X size={14} />
                           </button>
                         </td>
@@ -1451,25 +1468,42 @@ function EditEntryModal({
           )}
 
           {editLineItems.length > 0 && (
-            <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-500">LF placed</span>
-                <span className="font-semibold text-slate-700">{number(editTotalLF)} ft</span>
-              </div>
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-500">Revenue</span>
-                <span className="font-semibold text-emerald-700">{money(editTotalRevenue)}</span>
-              </div>
+            <div className="mt-2 flex items-center justify-between rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-xs">
+              <span className="text-slate-500">LF placed</span>
+              <span className="font-semibold text-slate-300">{number(editTotalLF)} ft</span>
+              <span className="text-slate-500">Revenue</span>
+              <span className="font-semibold text-emerald-500">{money(editTotalRevenue)}</span>
             </div>
           )}
         </div>
 
-        <div className="rounded-lg border border-slate-100 bg-slate-50 px-4 py-3 text-xs text-slate-500">
-          <p className="font-semibold text-slate-600">Entry details (read-only)</p>
-          <p className="mt-1">Date: {formatDate(entry.date)}</p>
-          <p>Footage: {number(entry.footage)} ft · Hours: {entry.hours.toFixed ? entry.hours.toFixed(1) : entry.hours}</p>
-          {entry.notes && <p className="italic">{entry.notes}</p>}
-        </div>
+        {/* Footage — manual entry when no line items; computed when line items present */}
+        {hasLineItems ? (
+          <div className="flex items-center justify-between rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-xs text-slate-400">
+            <span>Footage (from LF units)</span>
+            <span className="font-mono font-semibold text-slate-300">{number(editTotalLF)} ft</span>
+          </div>
+        ) : (
+          <Field label="Footage (ft)">
+            <Input
+              type="number"
+              min="0"
+              step="1"
+              value={footage}
+              onChange={(e) => setFootage(e.target.value)}
+              placeholder="0"
+            />
+          </Field>
+        )}
+
+        <Field label="Notes (optional)">
+          <Input
+            type="text"
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="Weather, delays, rework…"
+          />
+        </Field>
       </div>
     </Modal>
   )
@@ -1712,9 +1746,9 @@ function ProductionTab() {
       </Card>
 
       <Card className="mt-6">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+        <div className="flex items-center justify-between border-b border-[#2a2a2a] px-5 py-3.5">
           <div>
-            <p className="text-sm font-semibold text-slate-800">Production log</p>
+            <p className="text-sm font-semibold text-slate-200">Production log</p>
             <p className="text-xs text-slate-400">{entries.length} {entries.length === 1 ? 'entry' : 'entries'} in range</p>
           </div>
         </div>
@@ -1744,7 +1778,7 @@ function ProductionTab() {
                 const ftPerHr = e.hours > 0 ? e.footage / e.hours : 0
                 const dollarPerFt = revenue > 0 && e.footage > 0 ? revenue / e.footage : 0
                 return (
-                  <tr key={e.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-brand-50/20`}>
+                  <tr key={e.id} className={`${i % 2 === 0 ? 'bg-transparent' : 'bg-white/3'} hover:bg-white/5`}>
                     <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{formatDateShort(e.date)}</td>
                     <td className="max-w-[140px] truncate px-4 py-2.5 font-medium text-slate-800">{project?.name ?? '—'}</td>
                     <td className="px-4 py-2.5 text-slate-600">{crew?.name ?? '—'}</td>
@@ -1902,9 +1936,9 @@ function CrewDailyTab() {
       </div>
 
       <Card>
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+        <div className="flex items-center justify-between border-b border-[#2a2a2a] px-5 py-3.5">
           <div>
-            <p className="text-sm font-semibold text-slate-800">{isAdmin ? 'Crew day log' : 'My production'}</p>
+            <p className="text-sm font-semibold text-slate-200">{isAdmin ? 'Crew day log' : 'My production'}</p>
             <p className="text-xs text-slate-400">{crewEntries.length} {crewEntries.length === 1 ? 'entry' : 'entries'} in range</p>
           </div>
         </div>
@@ -1936,7 +1970,7 @@ function CrewDailyTab() {
                 const revenue = pnlEntry?.revenue ?? (entryItems.length > 0 ? entryItems.reduce((s, li) => s + li.extendedTotal, 0) : 0)
                 const dollarPerFt = revenue > 0 && entry.footage > 0 ? revenue / entry.footage : 0
                 return (
-                  <tr key={entry.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-brand-50/20`}>
+                  <tr key={entry.id} className={`${i % 2 === 0 ? 'bg-transparent' : 'bg-white/3'} hover:bg-white/5`}>
                     <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{formatDateShort(entry.date)}</td>
                     <td className="max-w-[140px] truncate px-4 py-2.5 font-medium text-slate-800">{project?.name ?? '—'}</td>
                     <td className="px-4 py-2.5 text-slate-600">

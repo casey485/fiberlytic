@@ -1,11 +1,13 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { FileText, File, Download, Pencil } from 'lucide-react'
+import { FileText, File, Download, Pencil, Map as MapIcon, Trash2 } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { loadBlob } from '../lib/fileStore'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { formatDate } from '../lib/format'
+import { KmzViewer } from '../components/KmzViewer'
 
 function formatBytes(b: number) {
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(0)} KB`
@@ -13,7 +15,8 @@ function formatBytes(b: number) {
 }
 
 export function Redline() {
-  const { data } = useData()
+  const { data, deleteProjectFile } = useData()
+  const [viewingKmz, setViewingKmz] = useState<{ id: string; name: string } | null>(null)
 
   // Group files by project
   const byProject = data.projects
@@ -91,7 +94,11 @@ export function Redline() {
                       <tr key={f.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                         <td className="px-5 py-3">
                           <div className="flex items-center gap-2 font-medium text-slate-700">
-                            {f.fileType === 'pdf' ? <FileText size={16} className="text-red-500" /> : <File size={16} className="text-emerald-500" />}
+                            {f.fileType === 'pdf'
+                              ? <FileText size={16} className="text-red-500" />
+                              : f.fileType === 'kmz'
+                              ? <MapIcon size={16} className="text-emerald-500" />
+                              : <File size={16} className="text-blue-400" />}
                             {f.name}
                           </div>
                         </td>
@@ -114,21 +121,40 @@ export function Redline() {
                           )}
                         </td>
                         <td className="px-5 py-3 text-right">
-                          {f.fileType === 'pdf' ? (
-                            <Link
-                              to={`/redline/${f.id}`}
-                              className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
-                            >
-                              <Pencil size={13} /> Open in Redline
-                            </Link>
-                          ) : (
+                          <div className="flex items-center justify-end gap-2">
+                            {f.fileType === 'pdf' ? (
+                              <Link
+                                to={`/redline/${f.id}`}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
+                              >
+                                <Pencil size={13} /> Open in Redline
+                              </Link>
+                            ) : f.fileType === 'kmz' ? (
+                              <button
+                                onClick={() => setViewingKmz({ id: f.id, name: f.name })}
+                                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                              >
+                                <MapIcon size={13} /> Open Map
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => downloadFile(f.id, f.name)}
+                                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                              >
+                                <Download size={13} /> Download
+                              </button>
+                            )}
                             <button
-                              onClick={() => downloadFile(f.id, f.name)}
-                              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                              onClick={() => {
+                                if (confirm(`Delete "${f.name}"? This cannot be undone.`))
+                                  deleteProjectFile(f.id)
+                              }}
+                              className="text-slate-300 hover:text-rose-500 transition-colors"
+                              title="Delete file"
                             >
-                              <Download size={13} /> Download
+                              <Trash2 size={15} />
                             </button>
-                          )}
+                          </div>
                         </td>
                       </tr>
                     )
@@ -139,6 +165,14 @@ export function Redline() {
           </Card>
         ))}
       </div>
+
+      {viewingKmz && (
+        <KmzViewer
+          fileId={viewingKmz.id}
+          fileName={viewingKmz.name}
+          onClose={() => setViewingKmz(null)}
+        />
+      )}
     </div>
   )
 }

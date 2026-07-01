@@ -33,6 +33,7 @@ import { useTheme } from '../store/ThemeContext'
 const adminNav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
+  { to: '/kmz', label: 'Field Map', icon: Map },
   { to: '/crews', label: 'Crews', icon: Users },
   { to: '/employees', label: 'Employees', icon: HardHat },
   { to: '/production', label: 'Production', icon: Activity },
@@ -52,6 +53,7 @@ const adminNav = [
 const fieldNav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/projects', label: 'My Projects', icon: FolderKanban },
+  { to: '/kmz', label: 'Field Map', icon: Map },
   { to: '/clock-in', label: 'Time Clock', icon: Clock },
   { to: '/production', label: 'Production', icon: Activity },
   { to: '/project-prints', label: 'Print Access', icon: Map },
