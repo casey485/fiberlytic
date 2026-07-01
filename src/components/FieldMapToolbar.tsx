@@ -38,7 +38,13 @@ interface Props {
   onMerge: () => void
   /** Optional menu items injected into the Advanced Tools dropdown (e.g. Export Report). */
   advancedToolsChildren?: React.ReactNode
+  /** True until Add Work → a Type is picked. Disables every shape-creating tool (Select, and the
+   * shape-editing tools Split/Merge/Vertex-Edit/Snap, stay usable — they act on existing work, not new). */
+  toolsLocked?: boolean
 }
+
+/** Tools that stay usable even while toolsLocked — they modify existing shapes rather than create new ones. */
+const LOCK_EXEMPT_TOOLS = new Set<FieldMapDrawTool>(['select', 'split'])
 
 const TOOL_BUTTONS: { tool: FieldMapDrawTool; labelKey: string; icon: React.ReactNode }[] = [
   { tool: 'select', labelKey: 'toolbar.select', icon: <MousePointer2 size={15} /> },
@@ -85,6 +91,7 @@ export function FieldMapToolbar({
   snapEnabled, onToggleSnap, onOpenLayerManager,
   onUndo, onRedo, onDelete, canDelete, onSave, canSave,
   canMerge, onMerge, advancedToolsChildren,
+  toolsLocked = false,
 }: Props) {
   const { t } = useTranslation()
   const [moreShapesOpen, setMoreShapesOpen] = useState(false)
@@ -107,18 +114,22 @@ export function FieldMapToolbar({
 
       <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
 
-      {TOOL_BUTTONS.map(({ tool, labelKey, icon }) => (
-        <ToolbarButton key={tool} active={activeTool === tool} title={t(labelKey)} onClick={() => onSelectTool(tool)}>
-          {icon}
-        </ToolbarButton>
-      ))}
+      {TOOL_BUTTONS.map(({ tool, labelKey, icon }) => {
+        const locked = toolsLocked && !LOCK_EXEMPT_TOOLS.has(tool)
+        return (
+          <ToolbarButton key={tool} active={activeTool === tool} disabled={locked} title={locked ? t('toolbar.locked') : t(labelKey)} onClick={() => onSelectTool(tool)}>
+            {icon}
+          </ToolbarButton>
+        )
+      })}
 
-      {/* More Shapes flyout: Cloud, Highlight, Ellipse */}
+      {/* More Shapes flyout: Cloud, Highlight, Ellipse — all pure drawing tools, so all lock together */}
       <div className="relative shrink-0">
         <button
           onClick={() => setMoreShapesOpen((o) => !o)}
-          title={t('toolbar.moreShapes')}
-          className={`flex items-center gap-0.5 rounded-md p-1.5 transition ${
+          disabled={toolsLocked}
+          title={toolsLocked ? t('toolbar.locked') : t('toolbar.moreShapes')}
+          className={`flex items-center gap-0.5 rounded-md p-1.5 transition disabled:opacity-30 disabled:cursor-not-allowed ${
             isMoreShapeActive ? 'bg-brand-600/25 text-brand-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
           }`}
         >

@@ -357,9 +357,10 @@ export function computeMetrics(
 
 /** Distinct billing unit codes most recently used across all Work Objects, most-recent first. */
 export function recentUnitCodes(data: AppData, limit = 8): string[] {
+  const activeMarkupIds = new Set(data.fieldMarkups.filter((m) => !m.deletedAt).map((m) => m.id))
   const seen = new Set<string>()
   const out: string[] = []
-  const entries = data.markupBilling ?? []
+  const entries = (data.markupBilling ?? []).filter((b) => activeMarkupIds.has(b.markupId))
   for (let i = entries.length - 1; i >= 0 && out.length < limit; i--) {
     const code = entries[i].rateCode
     if (code && !seen.has(code)) { seen.add(code); out.push(code) }
@@ -374,7 +375,7 @@ export function recentUnitCodes(data: AppData, limit = 8): string[] {
  * `invoiceId` once the invoice is actually created.
  */
 export function billableMarkupLines(data: AppData, projectId: string): { lines: InvoiceLineItem[]; sourceBillingIds: string[] } {
-  const markupIds = new Set(data.fieldMarkups.filter((m) => m.projectId === projectId).map((m) => m.id))
+  const markupIds = new Set(data.fieldMarkups.filter((m) => m.projectId === projectId && !m.deletedAt).map((m) => m.id))
   const eligible = (data.markupBilling ?? []).filter(
     (b) => markupIds.has(b.markupId) && b.invoiceStatus === 'invoiced' && !b.invoiceId,
   )

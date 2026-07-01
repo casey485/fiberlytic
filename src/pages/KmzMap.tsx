@@ -14,6 +14,8 @@ import {
 } from 'lucide-react'
 import { DistributionLineModal } from '../components/DistributionLineModal'
 import { useData } from '../store/DataContext'
+import { useRole } from '../store/RoleContext'
+import { attemptDeleteMarkup } from '../lib/markupDelete'
 import { FeaturePanel } from '../components/FeaturePanel'
 import { MarkupPanel } from '../components/MarkupPanel'
 import { AerialLashRunPanel } from '../components/AerialLashRunPanel'
@@ -99,9 +101,10 @@ export function KmzMap() {
   const { projectId } = useParams<{ projectId: string }>()
   const nav = useNavigate()
   const location = useLocation()
-  const { data, setFeatureStatus, addKmzUpload, deleteMapFeature, addMarkup, updateMarkup, deleteMarkup, addProjectFile,
+  const { data, setFeatureStatus, addKmzUpload, deleteMapFeature, addMarkup, updateMarkup, deleteMarkup, softDeleteMarkup, addProjectFile,
     addAerialLashFiberRun, deleteAerialLashFiberRun, updateFieldMapOverlay,
     addProduction, addCrewDayEntry, addPhoto } = useData()
+  const { activeEmployeeId } = useRole()
 
   // DOM refs
   const wrapperRef      = useRef<HTMLDivElement>(null)
@@ -161,8 +164,13 @@ export function KmzMap() {
 
   // Markup tool state
   const [rlActive,      setRlActive]      = useState(false)
-  const [activeTool,    setActiveTool]    = useState<DrawTool | MarkupTool>('pen')
+  const [activeTool,    setActiveTool]    = useState<DrawTool | MarkupTool>('select')
   const [activeSubtype, setActiveSubtype] = useState<string>('pen')
+  // True from the moment a Work Type is picked in Add Work through Save/Cancel of that
+  // Work Object — drawing is locked outside this window (both the toolbar's disabled
+  // buttons and the actual draw-trigger effects below check this), so every new redline
+  // has to go through Add Work first.
+  const [workSessionActive, setWorkSessionActive] = useState(false)
   const [rlColor,       setRlColor]       = useState('#ef4444')
   const [rlWeight,      setRlWeight]      = useState(2)
   const [rlOpacity,      setRlOpacity]      = useState(1.0)
@@ -226,7 +234,7 @@ export function KmzMap() {
   const project     = data.projects.find((p) => p.id === projectId)
   const uploads     = (data.kmzUploads ?? []).filter((u) => u.projectId === projectId)
   const allFeatures = (data.mapFeatures ?? []).filter((f) => f.projectId === projectId)
-  const allMarkups  = (data.fieldMarkups ?? []).filter((m) => m.projectId === projectId)
+  const allMarkups  = (data.fieldMarkups ?? []).filter((m) => m.projectId === projectId && !m.deletedAt)
   const pdfs        = (data.projectFiles ?? []).filter((f) => f.projectId === projectId && f.fileType === 'pdf')
   const pendingActive = !!pending && !productionCompleted
   const canCompletePending = pendingActive && pendingBaselineMarkupCountRef.current != null && allMarkups.length > pendingBaselineMarkupCountRef.current
@@ -827,8 +835,10 @@ export function KmzMap() {
     const map = mapRef.current
     // Pause map click handling while the Add Work modal is open — it reopens with the
     // same activeTool that was just used to draw, and the map must not keep intercepting
-    // clicks meant for the modal's form fields.
-    if (!map || !rlActive || addWorkModalOpen || activeTool === 'select' || activeTool === 'aerial_lash' || isDragDrawTool(activeTool as string)) return
+    // clicks meant for the modal's form fields. Also pause outside an active Add Work
+    // session — disabling the toolbar buttons alone wouldn't stop this, since activeTool
+    // can already be a drawing tool (e.g. the initial default) independent of the toolbar.
+    if (!map || !rlActive || !workSessionActive || addWorkModalOpen || activeTool === 'select' || activeTool === 'aerial_lash' || isDragDrawTool(activeTool as string)) return
 
     // Line / Polygon / Multi-Line / Measure / Cloud: click-to-add-point, finish on completion
     // (never on the first click — geometryComplete, not geometryStart, is what may open the
@@ -1043,7 +1053,7 @@ export function KmzMap() {
       tmap.on('click', onTextClick)
       return () => { tmap.off('click', onTextClick) }
     }
-  }, [rlActive, activeTool, activeSubtype, rlColor, rlWeight, rlFillOpacity, rlOpacity, projectId, commitMarkup, snapEnabled, snapCandidates, addWorkModalOpen])
+  }, [rlActive, activeTool, activeSubtype, rlColor, rlWeight, rlFillOpacity, rlOpacity, projectId, commitMarkup, snapEnabled, snapCandidates, addWorkModalOpen, workSessionActive])
 
   // ── Aerial lash fiber: drawing mode ──────────────────────────────────────────
   useEffect(() => {
@@ -1205,10 +1215,10 @@ export function KmzMap() {
     if (!el) return
     const leaf = el.querySelector('.leaflet-container') as HTMLElement | null
     if (!leaf) return
-    const inClickDraw = rlActive && activeTool !== 'select' && !isDragDrawTool(activeTool as string)
+    const inClickDraw = rlActive && workSessionActive && activeTool !== 'select' && !isDragDrawTool(activeTool as string)
     leaf.style.cursor = inClickDraw ? 'crosshair' : ''
     return () => { leaf.style.cursor = '' }
-  }, [rlActive, activeTool, mapReady])
+  }, [rlActive, workSessionActive, activeTool, mapReady])
 
   // ── Shared pan logic (direct mapPane CSS manipulation) ───────────────────
   function applyPanDelta(dx: number, dy: number) {
@@ -1387,6 +1397,7 @@ export function KmzMap() {
   function handleReportLine() {
     reportModeRef.current = true
     setRlActive(true)
+    setWorkSessionActive(true)
     setActiveColorCode(null); activeColorCodeRef.current = null
     setActiveTool('polygon')
     setActiveSubtype('polyline')
@@ -1405,6 +1416,7 @@ export function KmzMap() {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
     reportModeRef.current = false
+    setWorkSessionActive(true)
     setActiveColorCode(null); activeColorCodeRef.current = null
     setRlColor(type.defaultColor)
     setRlActive(true)
@@ -1975,12 +1987,19 @@ export function KmzMap() {
             onOpenLayerManager={() => setShowLayerManager(true)}
             onUndo={undoLast}
             onRedo={redoLast}
-            onDelete={() => selectedMarkup && deleteMarkup(selectedMarkup.id)}
+            onDelete={() => {
+              if (!selectedMarkup) return
+              const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === selectedMarkup.id)
+              const result = attemptDeleteMarkup(selectedMarkup, billingLines, softDeleteMarkup, activeEmployeeId)
+              if (!result.ok && result.message) alert(result.message)
+              else if (result.ok) setSelectedMarkup(null)
+            }}
             canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
             onSave={() => { if (aerialRunInProgress) finishAerialRunRef.current?.(); else finishPolygonRef.current?.() }}
             canSave={polygonInProgress || aerialRunInProgress}
             canMerge={toolSelectedIds.size === 2}
             onMerge={performMerge}
+            toolsLocked={!workSessionActive}
             advancedToolsChildren={
               <button
                 onClick={handleExportReport}
@@ -2141,7 +2160,12 @@ export function KmzMap() {
                             {m.featureName || meta?.label || m.tool}
                           </p>
                         </button>
-                        <button onClick={() => deleteMarkup(m.id)}
+                        <button onClick={() => {
+                          const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === m.id)
+                          const result = attemptDeleteMarkup(m, billingLines, softDeleteMarkup, activeEmployeeId)
+                          if (!result.ok && result.message) alert(result.message)
+                          else if (result.ok && selectedMarkup?.id === m.id) setSelectedMarkup(null)
+                        }}
                           className="shrink-0 rounded p-0.5 text-slate-700 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10 transition"
                           title="Delete markup">
                           <Trash2 size={11} />
@@ -2220,7 +2244,7 @@ export function KmzMap() {
 
           {/* Draw overlay: captures drag events for draw tools (pen/line/rect/circle/arrow).
                touchAction:none prevents browser scroll/zoom so touch events reach our handlers. */}
-          {rlActive && !addWorkModalOpen && isDragDrawTool(activeTool as string) && (
+          {rlActive && workSessionActive && !addWorkModalOpen && isDragDrawTool(activeTool as string) && (
             <div
               className="absolute inset-0 z-[500]"
               style={{ cursor: 'crosshair', touchAction: 'none', userSelect: 'none' }}
@@ -2512,7 +2536,7 @@ export function KmzMap() {
         {/* Billing */}
         <button
           onClick={() => {
-            const billable = (data.markupBilling ?? []).filter((b) => b.billable && b.invoiceStatus === 'not_billed' && (data.fieldMarkups ?? []).some((m) => m.id === b.markupId && m.projectId === projectId))
+            const billable = (data.markupBilling ?? []).filter((b) => b.billable && b.invoiceStatus === 'not_billed' && (data.fieldMarkups ?? []).some((m) => m.id === b.markupId && m.projectId === projectId && !m.deletedAt))
             if (billable.length === 0) return
             const firstMarkupId = billable[0].markupId
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === firstMarkupId)
@@ -2554,12 +2578,16 @@ export function KmzMap() {
           lengthFt={(data.fieldMarkups ?? []).find((m) => m.id === distModalId)?.lengthFt ?? null}
           onClose={() => {
             setDistModalId(null)
+            setActiveTool('select')
+            setWorkSessionActive(false)
             // Show the markup in the right panel after closing without saving
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
             if (mk) { setSelectedMarkup(mk); setPanelCollapsed(false) }
           }}
           onSaved={() => {
             setDistModalId(null)
+            setActiveTool('select')
+            setWorkSessionActive(false)
             // Refresh selected markup so right panel shows updated data
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
             if (mk) { setSelectedMarkup({ ...mk }); setPanelCollapsed(false) }
@@ -2577,6 +2605,7 @@ export function KmzMap() {
           setAddWorkModalOpen(false)
           setAddWorkMarkupId(null)
           setActiveTool('select')
+          setWorkSessionActive(false)
         }}
       />
     </div>

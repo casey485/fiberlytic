@@ -89,6 +89,7 @@ export function submitMarkupToProduction(args: SubmitMarkupToProductionArgs): Su
         footage:   !primaryCrewHandled ? Math.round(markup.lengthFt ?? 0) : 0,
         hours:     0,
         notes:     baseNotes,
+        sourceMarkupId: markup.id,
       },
       crewLineItems,
     )

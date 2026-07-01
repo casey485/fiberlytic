@@ -27,6 +27,7 @@
     "delete": "Eliminar",
     "save": "Guardar",
     "advancedTools": "Herramientas Avanzadas",
+    "locked": "Haga clic en Agregar Trabajo para iniciar un nuevo elemento",
     "exportReport": "Exportar Informe (PDF)",
     "exporting": "Exportando…"
   },

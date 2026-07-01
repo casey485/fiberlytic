@@ -385,6 +385,7 @@ interface DataContextValue {
   addMarkup: (m: Omit<FieldMarkup, 'id' | 'createdAt'>) => string
   updateMarkup: (id: string, patch: Partial<FieldMarkup>, actor?: string | null) => void
   deleteMarkup: (id: string) => void
+  softDeleteMarkup: (id: string, actor?: string | null) => void
   addMarkupPhoto: (p: Omit<MarkupPhoto, 'id'>, actor?: string | null) => string
   deleteMarkupPhoto: (id: string, actor?: string | null) => void
   addMarkupBilling: (b: Omit<MarkupBilling, 'id'>, actor?: string | null) => string
@@ -1035,6 +1036,35 @@ export function DataProvider({ children }: { children: ReactNode }) {
         }))
         enqueueSyncEntry('markup', id, id, 'delete')
         // Blobs in IndexedDB are cleaned up lazily — orphaned blobs are small and rarely accumulate
+      },
+      // User-facing "delete this Work Object" (Field Map toolbar / MarkupPanel / layer manager) —
+      // unlike deleteMarkup (used only by Undo/Split/Merge/callout-removal internals), this keeps
+      // the markup plus its photos/billing/history intact for audit and just flags it deletedAt,
+      // while cascading a real removal of whatever production/P&L it had already generated —
+      // mirrors deleteProduction's existing cascade exactly, just keyed by sourceMarkupId.
+      softDeleteMarkup(id, actor = null) {
+        const now = new Date().toISOString()
+        for (const p of data.photos) {
+          if (p.productionEntryId && data.production.find((e) => e.id === p.productionEntryId && e.sourceMarkupId === id) && p.url.startsWith('idb:')) {
+            deleteBlob(p.url.slice(4))
+          }
+        }
+        setData((d) => {
+          const removedIds = new Set((d.production ?? []).filter((e) => e.sourceMarkupId === id).map((e) => e.id))
+          const production = (d.production ?? []).filter((e) => !removedIds.has(e.id))
+          const pnl = (d.pnl ?? []).filter((e) => !(e.productionEntryId && removedIds.has(e.productionEntryId)))
+          return {
+            ...d,
+            fieldMarkups: (d.fieldMarkups ?? []).map((m) => (m.id === id ? { ...m, deletedAt: now, deletedBy: actor } : m)),
+            production,
+            pnl,
+            productionLineItems: (d.productionLineItems ?? []).filter((li) => !removedIds.has(li.productionEntryId)),
+            photos: (d.photos ?? []).filter((p) => !p.productionEntryId || !removedIds.has(p.productionEntryId)),
+            projects: recomputeFootage(d.projects, production),
+            markupHistory: [...(d.markupHistory ?? []), historyEntry(id, 'deleted', actor)],
+          }
+        })
+        enqueueSyncEntry('markup', id, id, 'update')
       },
       addMarkupPhoto(p, actor = null) {
         const id = newId('mkph')

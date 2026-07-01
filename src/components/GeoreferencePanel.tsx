@@ -163,7 +163,7 @@ export function GeoreferencePanel({ projectId, map, onClose, onSaved, preloadFil
   // "later, georeference to map coordinates" should carry the drawn work onto the map too,
   // not just anchor the picture.
   const pdfPageMarkups = preloadFile
-    ? data.fieldMarkups.filter((m) => m.coordSpace === 'pdfPage' && m.sourceProjectFileId === preloadFile.id && (m.pageIndex ?? 0) === 0)
+    ? data.fieldMarkups.filter((m) => !m.deletedAt && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === preloadFile.id && (m.pageIndex ?? 0) === 0)
     : []
   const [converting, setConverting] = useState(false)
   const [converted, setConverted] = useState(false)

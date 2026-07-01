@@ -98,6 +98,8 @@ export interface ProductionEntry {
   notes?: string
   /** Equipment explicitly selected by the crew when logging this day — used for cost calculation. */
   equipmentIds?: string[]
+  /** FK → FieldMarkup.id — set when auto-generated from a Field Map Work Object's billing; lets softDeleteMarkup cascade-remove this entry (and its PnLEntry) when the source markup is deleted. */
+  sourceMarkupId?: string
 }
 
 /** A daily financial roll-up for a project (the Daily P&L ledger — legacy + auto-generated). */
@@ -638,6 +640,9 @@ export interface FieldMarkup {
   createdAt: string          // ISO datetime
   updatedAt: string | null
   lockedAt: string | null
+  /** Soft-delete marker — set instead of removing the record, so photos/billing/history survive for audit. Every reader that renders/aggregates active work must filter deletedAt == null. */
+  deletedAt?: string | null
+  deletedBy?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -688,6 +693,7 @@ export type MarkupHistoryAction =
   | 'billing_added' | 'billing_removed'
   | 'inspection_added'
   | 'locked' | 'unlocked'
+  | 'deleted'
 
 /** A real, field-level audit log entry for a Work Object — written centrally by DataContext's mutation methods. */
 export interface MarkupHistoryEntry {

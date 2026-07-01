@@ -14,6 +14,8 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2 } from 'lucide-react'
 import { useData } from '../store/DataContext'
+import { useRole } from '../store/RoleContext'
+import { attemptDeleteMarkup } from '../lib/markupDelete'
 import { renderPdf } from '../features/printkmz/pdf'
 import { loadBlob } from '../lib/fileStore'
 import { markupToPdfElement } from '../lib/markupToPdfSvg'
@@ -55,7 +57,8 @@ export function PdfPrintMode() {
   const { t } = useTranslation()
   const { projectId, fileId } = useParams<{ projectId: string; fileId: string }>()
   const nav = useNavigate()
-  const { data, addMarkup, updateMarkup, deleteMarkup, updateProjectFile } = useData()
+  const { data, addMarkup, updateMarkup, deleteMarkup, softDeleteMarkup, updateProjectFile } = useData()
+  const { activeEmployeeId } = useRole()
 
   const project = data.projects.find((p) => p.id === projectId)
   const file = data.projectFiles.find((f) => f.id === fileId)
@@ -68,6 +71,10 @@ export function PdfPrintMode() {
   const [error, setError] = useState<string | null>(null)
 
   const [activeTool, setActiveTool] = useState<FieldMapDrawTool | MarkupTool | string>('select')
+  // True from the moment a Work Type is picked in Add Work through Save/Cancel of that
+  // Work Object — drawing tools are locked outside this window (see FieldMapToolbar's
+  // toolsLocked prop), so every new redline has to go through Add Work first.
+  const [workSessionActive, setWorkSessionActive] = useState(false)
   const [activeSubtype, setActiveSubtype] = useState('pen')
   const [color, setColor] = useState('#ef4444')
   const [weight, setWeight] = useState(2)
@@ -160,7 +167,7 @@ export function PdfPrintMode() {
   }, [selectedMarkup?.id])
 
   const pageMarkups = (data.fieldMarkups ?? []).filter(
-    (m) => m.projectId === projectId && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId && m.pageIndex === pageNum,
+    (m) => m.projectId === projectId && !m.deletedAt && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId && m.pageIndex === pageNum,
   )
 
   // selectedMarkup is a point-in-time snapshot passed to MarkupPanel; some of its fields
@@ -224,6 +231,7 @@ export function PdfPrintMode() {
   function startAddWork(type: WorkObjectTypeDef) {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
+    setWorkSessionActive(true)
     setColor(type.defaultColor)
     if (type.defaultGeometry === 'polygon') setActiveTool('polygon')
     else if (type.defaultGeometry === 'line') setActiveTool('line')
@@ -260,6 +268,9 @@ export function PdfPrintMode() {
   // same fix the old RedlineEditor used. This also gives touch/pen support for free.
   function onSvgPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (textInput) { commitText(); return }
+    // Defense in depth alongside the toolbar's disabled buttons — every branch below starts
+    // a brand new shape, which should never be reachable outside an active Add Work session.
+    if (!workSessionActive) return
     const pt = toPagePtSnapped(e.clientX, e.clientY)
 
     if (DRAG_TOOLS.has(activeTool as string)) {
@@ -572,12 +583,19 @@ export function PdfPrintMode() {
         onToggleSnap={() => setSnapEnabled((s) => !s)}
         onUndo={undoLast}
         onRedo={redoLast}
-        onDelete={() => selectedMarkup && deleteMarkup(selectedMarkup.id)}
+        onDelete={() => {
+          if (!selectedMarkup) return
+          const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === selectedMarkup.id)
+          const result = attemptDeleteMarkup(selectedMarkup, billingLines, softDeleteMarkup, activeEmployeeId)
+          if (!result.ok && result.message) alert(result.message)
+          else if (result.ok) setSelectedMarkup(null)
+        }}
         canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
         onSave={() => finishAccumulation()}
         canSave={accumPts.length > 0}
         canMerge={toolSelectedIds.size === 2}
         onMerge={performMerge}
+        toolsLocked={!workSessionActive}
         advancedToolsChildren={
           <div className="px-3 py-2">
             <label className="block text-[10px] font-medium text-slate-400 mb-1">Page scale — 1 inch =</label>
@@ -751,7 +769,7 @@ export function PdfPrintMode() {
         projectId={projectId ?? ''}
         markupId={addWorkMarkupId}
         onPickType={startAddWork}
-        onClose={() => { setAddWorkModalOpen(false); setAddWorkMarkupId(null); setActiveTool('select') }}
+        onClose={() => { setAddWorkModalOpen(false); setAddWorkMarkupId(null); setActiveTool('select'); setWorkSessionActive(false) }}
       />
 
       {selectedMarkup && !panelCollapsed && (

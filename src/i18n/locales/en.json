@@ -27,6 +27,7 @@
     "delete": "Delete",
     "save": "Save",
     "advancedTools": "Advanced Tools",
+    "locked": "Click Add Work to start a new item",
     "exportReport": "Export Report (PDF)",
     "exporting": "Exporting…"
   },

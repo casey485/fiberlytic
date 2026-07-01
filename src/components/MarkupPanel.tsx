@@ -10,6 +10,7 @@ import {
   DollarSign, Image, Lock, Unlock, Send, CheckCircle2, Move, Spline,
 } from 'lucide-react'
 import { useData } from '../store/DataContext'
+import { attemptDeleteMarkup } from '../lib/markupDelete'
 import { useRole } from '../store/RoleContext'
 import { saveBlob, loadBlob } from '../lib/fileStore'
 import { MARKUP_STATUS_META } from '../types'
@@ -116,7 +117,7 @@ interface Props {
 export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editMode = 'none', onSetEditMode }: Props) {
   const { t } = useTranslation()
   const {
-    data, updateMarkup, deleteMarkup, addMarkup,
+    data, updateMarkup, softDeleteMarkup, addMarkup,
     addMarkupPhoto, deleteMarkupPhoto,
     addMarkupBilling, updateMarkupBilling, deleteMarkupBilling,
     addProduction,
@@ -269,8 +270,8 @@ export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editM
   }
 
   function handleDeleteMarkup() {
-    if (!confirm('Delete this markup item? This cannot be undone.')) return
-    deleteMarkup(markup.id)
+    const result = attemptDeleteMarkup(markup, billingEntries, softDeleteMarkup, activeEmployeeId)
+    if (!result.ok) { if (result.message) alert(result.message); return }
     onDelete?.()
     onClose()
   }

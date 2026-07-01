@@ -103,7 +103,7 @@ export function DistributionLineModal({ markupId, projectId, lengthFt, onClose, 
     addMarkupBilling,
   } = useData()
 
-  const markup   = (data.fieldMarkups ?? []).find((m) => m.id === markupId)
+  const markup   = (data.fieldMarkups ?? []).find((m) => m.id === markupId && !m.deletedAt)
   const project  = data.projects.find((p) => p.id === projectId)
   const allCards = data.rateCards ?? []
   const allUnits = data.rateCardUnits ?? []
