@@ -89,6 +89,9 @@
   },
   "pdfPrintMode": {
     "badge": "Modo de Impressão PDF",
-    "page": "Página {{n}} / {{total}}"
+    "page": "Página {{n}} / {{total}}",
+    "zoomIn": "Aumentar zoom (Ctrl/Cmd + rolagem)",
+    "zoomOut": "Diminuir zoom (Ctrl/Cmd + rolagem)",
+    "resetView": "Redefinir zoom/posição"
   }
 }

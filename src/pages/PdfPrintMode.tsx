@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2 } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { attemptDeleteMarkup } from '../lib/markupDelete'
@@ -41,6 +41,13 @@ const WEIGHT_OPTIONS = [
 
 const DRAG_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'circle', 'arrow', 'double_arrow'])
 const CLICK_ACCUM_TOOLS = new Set(['line', 'polygon', 'multi_line', 'measure', 'cloud'])
+
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 3
+const ZOOM_STEP = 0.25
+/** Pixel movement during a Select-mode mousedown→mouseup below this is treated as a click
+ * (select/deselect), not a pan drag — mirrors KmzMap.tsx's DRAG_PLACE_THRESHOLD_PX pattern. */
+const PAN_DRAG_THRESHOLD_PX = 6
 
 function euclideanLength(pts: [number, number][]): number {
   let d = 0
@@ -71,6 +78,22 @@ export function PdfPrintMode() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Zoom/pan applied as a CSS transform on the canvas wrapper — toPagePt's
+  // getBoundingClientRect()-based conversion already reflects it, so no coordinate
+  // math elsewhere needs to change for either of these.
+  const [zoom, setZoom] = useState(1)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [isPanning, setIsPanning] = useState(false)
+  useEffect(() => { setZoom(1); setPan({ x: 0, y: 0 }) }, [pageNum, fileId])
+  function zoomIn() { setZoom((z) => Math.min(ZOOM_MAX, Math.round((z + ZOOM_STEP) * 100) / 100)) }
+  function zoomOut() { setZoom((z) => Math.max(ZOOM_MIN, Math.round((z - ZOOM_STEP) * 100) / 100)) }
+  function resetView() { setZoom(1); setPan({ x: 0, y: 0 }) }
+  function onCanvasWheel(e: React.WheelEvent) {
+    if (!e.ctrlKey && !e.metaKey) return // plain wheel keeps native scroll-to-pan
+    e.preventDefault()
+    if (e.deltaY < 0) zoomIn(); else if (e.deltaY > 0) zoomOut()
+  }
+
   const [activeTool, setActiveTool] = useState<FieldMapDrawTool | MarkupTool | string>('select')
   // null outside an active Add Work session — the toolbar shows only Select+Add Work, and
   // the pointer-down guard below refuses to start a new shape. Non-null from the moment a
@@ -98,6 +121,12 @@ export function PdfPrintMode() {
   // Drag-tool in-progress preview (pen/highlight/rect/ellipse/circle/arrow/double_arrow)
   const [dragPreview, setDragPreview] = useState<{ tool: string; pts: [number, number][] } | null>(null)
   const dragActiveRef = useRef(false)
+
+  // Click-and-drag panning while in Select mode — works regardless of Add Work session state
+  // (pan/select are base controls). Disambiguated from a click-to-select/deselect by
+  // PAN_DRAG_THRESHOLD_PX: a real drag suppresses the click event that follows.
+  const panStartRef = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null)
+  const wasPanDragRef = useRef(false)
 
   // Click-accumulation in-progress points (line/polygon/multi_line/measure/cloud)
   const [accumPts, setAccumPts] = useState<[number, number][]>([])
@@ -270,6 +299,12 @@ export function PdfPrintMode() {
   // same fix the old RedlineEditor used. This also gives touch/pen support for free.
   function onSvgPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (textInput) { commitText(); return }
+    if (activeTool === 'select') {
+      e.currentTarget.setPointerCapture(e.pointerId)
+      panStartRef.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y }
+      setIsPanning(true)
+      return
+    }
     // Defense in depth alongside the toolbar's disabled buttons — every branch below starts
     // a brand new shape, which should never be reachable outside an active Add Work session.
     if (!sessionTools) return
@@ -304,6 +339,12 @@ export function PdfPrintMode() {
   }
 
   function onSvgPointerMove(e: React.PointerEvent<SVGSVGElement>) {
+    if (panStartRef.current) {
+      const dx = e.clientX - panStartRef.current.x
+      const dy = e.clientY - panStartRef.current.y
+      setPan({ x: panStartRef.current.panX + dx, y: panStartRef.current.panY + dy })
+      return
+    }
     const pt = toPagePtSnapped(e.clientX, e.clientY)
     if (dragActiveRef.current && dragPreview) {
       if (dragPreview.tool === 'pen' || dragPreview.tool === 'highlight') {
@@ -317,6 +358,15 @@ export function PdfPrintMode() {
   }
 
   function onSvgPointerUp(e: React.PointerEvent<SVGSVGElement>) {
+    if (panStartRef.current) {
+      const dx = e.clientX - panStartRef.current.x
+      const dy = e.clientY - panStartRef.current.y
+      wasPanDragRef.current = Math.hypot(dx, dy) >= PAN_DRAG_THRESHOLD_PX
+      panStartRef.current = null
+      setIsPanning(false)
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+      return
+    }
     const pt = toPagePtSnapped(e.clientX, e.clientY)
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
 
@@ -560,17 +610,33 @@ export function PdfPrintMode() {
         </button>
         <span className="text-[12px] font-medium text-slate-300 truncate">{file.name}</span>
         <span className="text-[10px] text-amber-500 bg-amber-950/40 rounded px-1.5 py-0.5 shrink-0">{t('pdfPrintMode.badge')}</span>
-        {pageCount > 1 && (
-          <div className="ml-auto flex items-center gap-1 shrink-0">
-            <button onClick={() => setPageNum((p) => Math.max(0, p - 1))} disabled={pageNum === 0} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
-              <ChevronLeft size={14} />
+
+        <div className="ml-auto flex items-center gap-2 shrink-0">
+          {pageCount > 1 && (
+            <div className="flex items-center gap-1">
+              <button onClick={() => setPageNum((p) => Math.max(0, p - 1))} disabled={pageNum === 0} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
+                <ChevronLeft size={14} />
+              </button>
+              <span className="text-[11px] text-slate-400">{t('pdfPrintMode.page', { n: pageNum + 1, total: pageCount })}</span>
+              <button onClick={() => setPageNum((p) => Math.min(pageCount - 1, p + 1))} disabled={pageNum === pageCount - 1} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
+                <ChevronRight size={14} />
+              </button>
+            </div>
+          )}
+
+          <div className="flex items-center gap-0.5 border-l border-[#1e1e1e] pl-2">
+            <button onClick={zoomOut} disabled={zoom <= ZOOM_MIN} title={t('pdfPrintMode.zoomOut')} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
+              <ZoomOut size={14} />
             </button>
-            <span className="text-[11px] text-slate-400">{t('pdfPrintMode.page', { n: pageNum + 1, total: pageCount })}</span>
-            <button onClick={() => setPageNum((p) => Math.min(pageCount - 1, p + 1))} disabled={pageNum === pageCount - 1} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
-              <ChevronRight size={14} />
+            <span className="w-9 text-center text-[11px] text-slate-400">{Math.round(zoom * 100)}%</span>
+            <button onClick={zoomIn} disabled={zoom >= ZOOM_MAX} title={t('pdfPrintMode.zoomIn')} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
+              <ZoomIn size={14} />
+            </button>
+            <button onClick={resetView} title={t('pdfPrintMode.resetView')} className="rounded p-1 text-slate-500 hover:text-slate-300">
+              <Maximize2 size={13} />
             </button>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Toolbar */}
@@ -642,7 +708,7 @@ export function PdfPrintMode() {
       </div>
 
       {/* Canvas */}
-      <div className="relative flex-1 overflow-auto flex items-start justify-center bg-[#050505]">
+      <div className="relative flex-1 overflow-auto flex items-start justify-center bg-[#050505]" onWheel={onCanvasWheel}>
         {loading && (
           <div className="flex flex-col items-center gap-2 py-20 text-slate-500">
             <Loader2 size={24} className="animate-spin" />
@@ -656,18 +722,26 @@ export function PdfPrintMode() {
           </div>
         )}
         {!loading && !error && currentImage && naturalSize && (
-          <div className="relative" style={{ width: '100%', maxWidth: naturalSize.w }}>
+          <div
+            className="relative"
+            style={{
+              width: '100%', maxWidth: naturalSize.w,
+              transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+              transformOrigin: 'top center',
+            }}
+          >
             <img src={currentImage} className="w-full select-none" draggable={false} alt={`${file.name} page ${pageNum + 1}`} />
             <svg
               ref={svgRef}
               viewBox={`0 0 ${naturalSize.w} ${naturalSize.h}`}
               preserveAspectRatio="none"
               className="absolute inset-0 h-full w-full"
-              style={{ cursor: activeTool === 'select' ? 'default' : 'crosshair', touchAction: 'none' }}
+              style={{ cursor: activeTool === 'select' ? (isPanning ? 'grabbing' : 'grab') : 'crosshair', touchAction: 'none' }}
               onPointerDown={onSvgPointerDown}
               onPointerMove={onSvgPointerMove}
               onPointerUp={onSvgPointerUp}
               onClick={(e) => {
+                if (wasPanDragRef.current) { wasPanDragRef.current = false; return }
                 if (activeTool !== 'select' && activeTool !== 'merge') return
                 // The click target is the leaf shape (e.g. <polyline>), not the <g data-markup-id>
                 // wrapper around it — walk up to find it, same as the old RedlineEditor's hit-test.
