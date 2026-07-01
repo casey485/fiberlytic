@@ -65,13 +65,16 @@
     },
     "billing": {
       "notRequired": "Códigos de faturamento não obrigatórios",
-      "searchPlaceholder": "Buscar códigos de faturamento por nome ou código da unidade…",
+      "searchPlaceholder": "Buscar códigos de faturamento por código, descrição ou categoria…",
+      "suggested": "Sugeridos para {{type}}",
       "recentlyUsed": "Usados Recentemente",
       "favorites": "Favoritos",
       "allCategories": "Todas as Categorias",
       "noFavorites": "Nenhum favorito ainda.",
       "noRecent": "Nenhum código usado recentemente ainda.",
-      "noUnits": "Nenhuma unidade de tabela de preços encontrada para o cliente deste projeto."
+      "noSuggested": "Nenhum código sugerido para este tipo de trabalho ainda — tente Todos.",
+      "noUnits": "Nenhuma unidade de tabela de preços encontrada para o cliente deste projeto.",
+      "noRateCardAssigned": "Nenhuma tabela de preços atribuída a este projeto. Atribua uma antes de faturar."
     }
   },
   "workObjectPanel": {

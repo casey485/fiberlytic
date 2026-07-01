@@ -2,6 +2,7 @@ import { useRef, useMemo, useState, useEffect } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, MapPin, Calendar, Users, Trash2, Upload, FileText, Download, X, Pencil, Loader2, RotateCcw, Map as MapIcon } from 'lucide-react'
 import { useData } from '../store/DataContext'
+import { useRole } from '../store/RoleContext'
 import { loadBlob } from '../lib/fileStore'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card, CardHeader, CardBody } from '../components/ui/Card'
@@ -36,6 +37,7 @@ export function ProjectDetail() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { data, deleteProject, updateProject, updateCrew, addProjectFile, deleteProjectFile } = useData()
+  const { isAdmin } = useRole()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploading, setUploading] = useState(false)
   const [editingBoundary, setEditingBoundary] = useState(false)
@@ -163,16 +165,31 @@ export function ProjectDetail() {
         {project.client && <span className="flex items-center gap-1.5 font-medium text-slate-600">{project.client}</span>}
         {project.clientId && (() => {
           const cards = data.rateCards.filter(rc => rc.clientId === project.clientId)
-          return cards.length > 0 ? (
-            <span className="flex flex-wrap items-center gap-1.5">
-              {cards.map(rc => (
-                <span key={rc.id} className="rounded-md bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">
-                  {rc.name}
-                </span>
-              ))}
+          if (cards.length === 0) {
+            return <span className="text-xs text-amber-500">No rate card — add one in Rate Cards</span>
+          }
+          if (!isAdmin) {
+            const assigned = cards.find((rc) => rc.id === project.rateCardId)
+            return assigned ? (
+              <span className="rounded-md bg-brand-50 px-2 py-0.5 text-xs font-semibold text-brand-700">{assigned.name}</span>
+            ) : (
+              <span className="text-xs text-amber-500">No rate card assigned to this project</span>
+            )
+          }
+          return (
+            <span className="flex items-center gap-1.5">
+              <span className="text-xs text-slate-400">Rate card:</span>
+              <select
+                value={project.rateCardId ?? ''}
+                onChange={(e) => updateProject(project.id, { rateCardId: e.target.value || null })}
+                className={`rounded-md border px-2 py-0.5 text-xs font-semibold outline-none ${
+                  project.rateCardId ? 'border-brand-200 bg-brand-50 text-brand-700' : 'border-amber-300 bg-amber-50 text-amber-700'
+                }`}
+              >
+                <option value="">— Not assigned —</option>
+                {cards.map(rc => <option key={rc.id} value={rc.id}>{rc.name}</option>)}
+              </select>
             </span>
-          ) : (
-            <span className="text-xs text-amber-500">No rate card — add one in Rate Cards</span>
           )
         })()}
       </div>

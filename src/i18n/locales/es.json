@@ -65,13 +65,16 @@
     },
     "billing": {
       "notRequired": "Códigos de facturación no requeridos",
-      "searchPlaceholder": "Buscar códigos de facturación por nombre o código de unidad…",
+      "searchPlaceholder": "Buscar códigos de facturación por código, descripción o categoría…",
+      "suggested": "Sugeridos para {{type}}",
       "recentlyUsed": "Usados Recientemente",
       "favorites": "Favoritos",
       "allCategories": "Todas las Categorías",
       "noFavorites": "Aún no hay favoritos.",
       "noRecent": "Aún no hay códigos usados recientemente.",
-      "noUnits": "No se encontraron unidades de tarifa para el cliente de este proyecto."
+      "noSuggested": "Aún no hay códigos sugeridos para este tipo de trabajo — prueba Todas.",
+      "noUnits": "No se encontraron unidades de tarifa para el cliente de este proyecto.",
+      "noRateCardAssigned": "No hay tarifa asignada a este proyecto. Asigne una antes de facturar."
     }
   },
   "workObjectPanel": {

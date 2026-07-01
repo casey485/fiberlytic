@@ -7,7 +7,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Camera, ImagePlus, Trash2, Search, X, MapPin, Star, Clock, Check } from 'lucide-react'
+import { Camera, ImagePlus, Trash2, Search, X, MapPin, Star, Clock, Check, Sparkles } from 'lucide-react'
 import { Modal } from './ui/Modal'
 import { Button, Field, Input, Select, Textarea } from './ui/Form'
 import { AddWorkTypeGrid } from './AddWorkTypeGrid'
@@ -46,11 +46,11 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
     addMarkupBilling, deleteMarkupBilling, updateMarkupBilling,
     addProduction, addMarkup, toggleFavoriteUnitCode,
   } = useData()
-  const { activeEmployeeId } = useRole()
+  const { activeEmployeeId, isAdmin } = useRole()
   const [step, setStep] = useState<Step>('details')
   const [billingSkipped, setBillingSkipped] = useState(false)
   const [billingSearch, setBillingSearch] = useState('')
-  const [billingView, setBillingView] = useState<'favorites' | 'recent' | 'all'>('recent')
+  const [billingView, setBillingView] = useState<'suggested' | 'favorites' | 'recent' | 'all'>('recent')
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'capturing' | 'error'>('idle')
   const [savingBilling, setSavingBilling] = useState(false)
   const [photoPhaseOverride, setPhotoPhaseOverride] = useState<PhotoProofType | null>(null)
@@ -59,15 +59,32 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   const markup = markupId ? data.fieldMarkups.find((m) => m.id === markupId) ?? null : null
   const typeDef = markup?.workObjectType ? WORK_OBJECT_TYPE_MAP[markup.workObjectType] : null
   const project = data.projects.find((p) => p.id === projectId)
-  const rateCards = project?.clientId ? data.rateCards.filter((rc) => rc.clientId === project.clientId) : []
-  const rateCardUnits = data.rateCardUnits.filter((u) => rateCards.some((rc) => rc.id === u.rateCardId))
+  const assignedRateCard = project?.rateCardId ? data.rateCards.find((rc) => rc.id === project.rateCardId) ?? null : null
+  const rateCardUnits = assignedRateCard ? data.rateCardUnits.filter((u) => u.rateCardId === assignedRateCard.id) : []
   const billingLines = markup ? data.markupBilling.filter((b) => b.markupId === markup.id) : []
   const photos = markup ? data.markupPhotos.filter((p) => p.markupId === markup.id) : []
   const favoriteCodes = data.favoriteUnitCodes ?? []
   const recentCodes = recentUnitCodes(data)
 
+  // A unit "suggested" for the drawn Work Type either has a manually-tagged category
+  // matching the type's label, or its code/description/category text hits one of the
+  // type's existing OCR billingKeywords (same keyword list workObjectTypes.ts already
+  // uses to auto-match plan text) — removes the need to search for the common case.
+  function unitMatchesWorkType(u: (typeof rateCardUnits)[number]): boolean {
+    if (!typeDef) return false
+    if (u.category && u.category.trim().toLowerCase() === typeDef.label.toLowerCase()) return true
+    const haystack = `${u.unitCode} ${u.description} ${u.category ?? ''}`.toLowerCase()
+    return typeDef.billingKeywords.some((kw) => haystack.includes(kw.toLowerCase()))
+  }
+  const suggestedUnits = rateCardUnits.filter(unitMatchesWorkType)
+
   useEffect(() => {
-    if (markupId) { setStep('details'); setBillingSkipped(false); setBillingSearch(''); setBillingView('recent'); setPhotoPhaseOverride(null) }
+    if (markupId) {
+      setStep('details'); setBillingSkipped(false); setBillingSearch('')
+      setBillingView(suggestedUnits.length > 0 ? 'suggested' : 'recent')
+      setPhotoPhaseOverride(null)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markupId])
 
   if (!open) return null
@@ -127,14 +144,19 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   }
 
   const filteredUnits = billingSearch.trim()
-    ? rateCardUnits.filter((u) =>
-        u.unitCode.toLowerCase().includes(billingSearch.toLowerCase()) ||
-        u.description.toLowerCase().includes(billingSearch.toLowerCase()))
-    : billingView === 'favorites'
-      ? rateCardUnits.filter((u) => favoriteCodes.includes(u.unitCode))
-      : billingView === 'recent'
-        ? recentCodes.map((code) => rateCardUnits.find((u) => u.unitCode === code)).filter((u): u is (typeof rateCardUnits)[number] => !!u)
-        : rateCardUnits
+    ? rateCardUnits.filter((u) => {
+        const q = billingSearch.toLowerCase()
+        return u.unitCode.toLowerCase().includes(q) ||
+          u.description.toLowerCase().includes(q) ||
+          (u.category ?? '').toLowerCase().includes(q)
+      })
+    : billingView === 'suggested'
+      ? suggestedUnits
+      : billingView === 'favorites'
+        ? rateCardUnits.filter((u) => favoriteCodes.includes(u.unitCode))
+        : billingView === 'recent'
+          ? recentCodes.map((code) => rateCardUnits.find((u) => u.unitCode === code)).filter((u): u is (typeof rateCardUnits)[number] => !!u)
+          : rateCardUnits
 
   function addBillingLine(unit: (typeof rateCardUnits)[number]) {
     if (!markup) return
@@ -327,80 +349,115 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
 
       {step === 'billing' && (
         <div className="space-y-3">
-          <label className="flex items-center gap-2 text-[11px] text-slate-400">
-            <input
-              type="checkbox"
-              checked={billingSkipped}
-              onChange={(e) => setBillingSkipped(e.target.checked)}
-            />
-            {t('addWork.billing.notRequired')}
-          </label>
+          {isAdmin && (
+            <label className="flex items-center gap-2 text-[11px] text-slate-400">
+              <input
+                type="checkbox"
+                checked={billingSkipped}
+                onChange={(e) => setBillingSkipped(e.target.checked)}
+              />
+              {t('addWork.billing.notRequired')}
+            </label>
+          )}
 
           {!billingSkipped && (
             <>
               {billingLines.length > 0 && (
                 <ul className="space-y-1">
                   {billingLines.map((b) => (
-                    <li key={b.id} className="flex items-center justify-between rounded bg-white/5 px-2 py-1 text-[11px]">
-                      <span>{b.rateCode} — {b.description} · {b.quantity} {b.unitType} × ${b.rate.toFixed(2)} = ${b.total.toFixed(2)}</span>
-                      <button onClick={() => deleteMarkupBilling(b.id, activeEmployeeId)} className="text-slate-600 hover:text-red-400">
+                    <li key={b.id} className="flex items-center justify-between gap-2 rounded bg-white/5 px-2 py-1 text-[11px]">
+                      <span className="min-w-0 flex-1 truncate">{b.rateCode} — {b.description}</span>
+                      <span className="flex shrink-0 items-center gap-1">
+                        <input
+                          type="number"
+                          value={b.quantity}
+                          onChange={(e) => {
+                            const q = Number(e.target.value)
+                            updateMarkupBilling(b.id, { quantity: q, total: q * b.rate })
+                          }}
+                          className="w-14 rounded border border-[#2a3347] bg-[#141414] px-1 py-0.5 text-right text-[11px] text-slate-200 outline-none"
+                        />
+                        <span className="text-slate-500">{b.unitType} × ${b.rate.toFixed(2)} = ${b.total.toFixed(2)}</span>
+                      </span>
+                      <button onClick={() => deleteMarkupBilling(b.id, activeEmployeeId)} className="shrink-0 text-slate-600 hover:text-red-400">
                         <Trash2 size={11} />
                       </button>
                     </li>
                   ))}
                 </ul>
               )}
-              <div className="relative">
-                <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-600" />
-                <Input
-                  value={billingSearch}
-                  onChange={(e) => setBillingSearch(e.target.value)}
-                  placeholder={t('addWork.billing.searchPlaceholder')}
-                  className="pl-7"
-                />
-              </div>
-              {!billingSearch.trim() && (
-                <div className="flex gap-1">
-                  {(['recent', 'favorites', 'all'] as const).map((v) => (
-                    <button
-                      key={v}
-                      onClick={() => setBillingView(v)}
-                      className={`flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition ${
-                        billingView === v ? 'bg-brand-600/20 text-brand-300' : 'text-slate-500 hover:text-slate-300'
-                      }`}
-                    >
-                      {v === 'recent' && <Clock size={11} />}
-                      {v === 'favorites' && <Star size={11} />}
-                      {v === 'recent' ? t('addWork.billing.recentlyUsed') : v === 'favorites' ? t('addWork.billing.favorites') : t('addWork.billing.allCategories')}
-                    </button>
-                  ))}
-                </div>
+
+              {!assignedRateCard ? (
+                <p className="rounded-md border border-amber-800/50 bg-amber-950/20 px-2.5 py-2 text-[11px] text-amber-400">
+                  {t('addWork.billing.noRateCardAssigned')}
+                </p>
+              ) : (
+                <>
+                  <div className="relative">
+                    <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-600" />
+                    <Input
+                      value={billingSearch}
+                      onChange={(e) => setBillingSearch(e.target.value)}
+                      placeholder={t('addWork.billing.searchPlaceholder')}
+                      className="pl-7"
+                    />
+                  </div>
+                  {!billingSearch.trim() && (
+                    <div className="flex flex-wrap gap-1">
+                      {(['suggested', 'recent', 'favorites', 'all'] as const).map((v) => (
+                        v === 'suggested' && suggestedUnits.length === 0 ? null : (
+                          <button
+                            key={v}
+                            onClick={() => setBillingView(v)}
+                            className={`flex items-center gap-1 rounded px-2 py-1 text-[10px] font-semibold uppercase tracking-wider transition ${
+                              billingView === v ? 'bg-brand-600/20 text-brand-300' : 'text-slate-500 hover:text-slate-300'
+                            }`}
+                          >
+                            {v === 'suggested' && <Sparkles size={11} />}
+                            {v === 'recent' && <Clock size={11} />}
+                            {v === 'favorites' && <Star size={11} />}
+                            {v === 'suggested' ? t('addWork.billing.suggested', { type: typeDef?.label ?? '' })
+                              : v === 'recent' ? t('addWork.billing.recentlyUsed')
+                              : v === 'favorites' ? t('addWork.billing.favorites')
+                              : t('addWork.billing.allCategories')}
+                          </button>
+                        )
+                      ))}
+                    </div>
+                  )}
+                  <ul className="max-h-48 space-y-1 overflow-y-auto">
+                    {filteredUnits.map((u) => (
+                      <li key={u.id} className="flex items-center gap-1">
+                        <button
+                          onClick={() => addBillingLine(u)}
+                          className="flex flex-1 items-center justify-between rounded px-2 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5"
+                        >
+                          <span>
+                            {u.description}
+                            {u.category && <span className="ml-1.5 text-slate-600">({u.category})</span>}
+                          </span>
+                          <span className="text-slate-500">{u.unitCode} · ${u.rate.toFixed(2)}/{u.uom}</span>
+                        </button>
+                        <button
+                          onClick={() => toggleFavoriteUnitCode(u.unitCode)}
+                          title={favoriteCodes.includes(u.unitCode) ? 'Remove favorite' : 'Add favorite'}
+                          className={favoriteCodes.includes(u.unitCode) ? 'text-amber-400' : 'text-slate-700 hover:text-slate-400'}
+                        >
+                          <Star size={12} fill={favoriteCodes.includes(u.unitCode) ? 'currentColor' : 'none'} />
+                        </button>
+                      </li>
+                    ))}
+                    {filteredUnits.length === 0 && (
+                      <li className="text-[11px] text-slate-600">
+                        {billingView === 'suggested' ? t('addWork.billing.noSuggested')
+                          : billingView === 'favorites' ? t('addWork.billing.noFavorites')
+                          : billingView === 'recent' ? t('addWork.billing.noRecent')
+                          : t('addWork.billing.noUnits')}
+                      </li>
+                    )}
+                  </ul>
+                </>
               )}
-              <ul className="max-h-48 space-y-1 overflow-y-auto">
-                {filteredUnits.map((u) => (
-                  <li key={u.id} className="flex items-center gap-1">
-                    <button
-                      onClick={() => addBillingLine(u)}
-                      className="flex flex-1 items-center justify-between rounded px-2 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5"
-                    >
-                      <span>{u.description}</span>
-                      <span className="text-slate-500">{u.unitCode} · ${u.rate.toFixed(2)}/{u.uom}</span>
-                    </button>
-                    <button
-                      onClick={() => toggleFavoriteUnitCode(u.unitCode)}
-                      title={favoriteCodes.includes(u.unitCode) ? 'Remove favorite' : 'Add favorite'}
-                      className={favoriteCodes.includes(u.unitCode) ? 'text-amber-400' : 'text-slate-700 hover:text-slate-400'}
-                    >
-                      <Star size={12} fill={favoriteCodes.includes(u.unitCode) ? 'currentColor' : 'none'} />
-                    </button>
-                  </li>
-                ))}
-                {filteredUnits.length === 0 && (
-                  <li className="text-[11px] text-slate-600">
-                    {billingView === 'favorites' ? t('addWork.billing.noFavorites') : billingView === 'recent' ? t('addWork.billing.noRecent') : t('addWork.billing.noUnits')}
-                  </li>
-                )}
-              </ul>
             </>
           )}
         </div>

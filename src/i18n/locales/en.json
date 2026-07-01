@@ -65,13 +65,16 @@
     },
     "billing": {
       "notRequired": "Billing codes not required",
-      "searchPlaceholder": "Search billing codes by name or unit code…",
+      "searchPlaceholder": "Search billing codes by unit code, description, or category…",
+      "suggested": "Suggested for {{type}}",
       "recentlyUsed": "Recently Used",
       "favorites": "Favorites",
       "allCategories": "All Categories",
       "noFavorites": "No favorites yet.",
       "noRecent": "No recently used codes yet.",
-      "noUnits": "No rate card units found for this project's client."
+      "noSuggested": "No suggested codes for this work type yet — try All.",
+      "noUnits": "No rate card units found for this project's client.",
+      "noRateCardAssigned": "No rate card assigned to this project. Please assign one before billing."
     }
   },
   "workObjectPanel": {

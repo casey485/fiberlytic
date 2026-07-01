@@ -20,6 +20,8 @@ export interface Project {
   client: string
   /** Optional FK → Client.id; links to rate cards for this project. */
   clientId?: string
+  /** FK → RateCard.id — the one rate card billing draws from for this project (a client may have several). */
+  rateCardId?: string | null
   /** Geofence polygon vertices as [lng, lat] pairs (Mapbox order). */
   boundary?: [number, number][]
   location: string
@@ -191,6 +193,8 @@ export interface RateCardUnit {
   description: string
   uom: UOM
   rate: number
+  /** Optional manual work-type tag (e.g. "Directional Drill", "Trenching", "Aerial") for pre-filtering in the Add Work billing step. Falls back to keyword-matching against workObjectTypes.ts's billingKeywords when unset. */
+  category?: string
 }
 
 // ---------------------------------------------------------------------------

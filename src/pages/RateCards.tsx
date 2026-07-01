@@ -8,6 +8,7 @@ import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
 import { moneyExact, formatDate } from '../lib/format'
 import { BulkImportModal } from '../components/BulkImportModal'
+import { WORK_OBJECT_TYPES } from '../lib/workObjectTypes'
 import type { Client, RateCard, RateCardUnit, RateCardDivision, UOM } from '../types'
 
 const DIVISIONS: RateCardDivision[] = ['Underground', 'Aerial']
@@ -166,7 +167,7 @@ function RateCardModal({
 // Rate card unit modal
 // ---------------------------------------------------------------------------
 
-type UnitForm = { unitCode: string; description: string; uom: UOM; rate: string }
+type UnitForm = { unitCode: string; description: string; uom: UOM; rate: string; category: string }
 
 function UnitModal({
   initial,
@@ -182,6 +183,7 @@ function UnitModal({
     description: initial?.description ?? '',
     uom: initial?.uom ?? 'LF',
     rate: initial ? String(initial.rate) : '',
+    category: initial?.category ?? '',
   })
   const set = <K extends keyof UnitForm>(k: K, v: UnitForm[K]) => setForm((f) => ({ ...f, [k]: v }))
   const valid = form.unitCode.trim() && form.description.trim() && parseFloat(form.rate) > 0
@@ -210,6 +212,19 @@ function UnitModal({
         <div className="sm:col-span-2">
           <Field label="Description">
             <Input value={form.description} onChange={(e) => set('description', e.target.value)} placeholder='e.g. Place (1) 1.25" HDPE Duct' />
+          </Field>
+        </div>
+        <div className="sm:col-span-2">
+          <Field label="Category" hint='Optional — used to pre-filter this unit under a matching Work Type in Add Work (e.g. "Directional Drill"). Leave blank to fall back to keyword matching.'>
+            <Input
+              list="rate-card-unit-categories"
+              value={form.category}
+              onChange={(e) => set('category', e.target.value)}
+              placeholder="e.g. Directional Drill"
+            />
+            <datalist id="rate-card-unit-categories">
+              {WORK_OBJECT_TYPES.map((t) => <option key={t.id} value={t.label} />)}
+            </datalist>
           </Field>
         </div>
         <Field label="Rate ($/unit)">
@@ -289,6 +304,7 @@ function RateCardRow({
                 <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
                   <th className="px-4 py-2 font-medium">Code</th>
                   <th className="px-4 py-2 font-medium">Description</th>
+                  <th className="px-4 py-2 font-medium">Category</th>
                   <th className="px-4 py-2 font-medium">UOM</th>
                   <th className="px-4 py-2 text-right font-medium">Rate</th>
                   <th className="px-4 py-2"></th>
@@ -299,6 +315,7 @@ function RateCardRow({
                   <tr key={u.id} className="border-t border-slate-50 hover:bg-slate-50/60">
                     <td className="px-4 py-2 font-mono text-xs font-semibold text-brand-700">{u.unitCode}</td>
                     <td className="px-4 py-2 text-slate-700">{u.description}</td>
+                    <td className="px-4 py-2 text-slate-500">{u.category ? <Badge tone="slate">{u.category}</Badge> : <span className="text-slate-300">—</span>}</td>
                     <td className="px-4 py-2 text-slate-500">{u.uom}</td>
                     <td className="px-4 py-2 text-right font-medium text-slate-800">{moneyExact(u.rate)}</td>
                     <td className="px-4 py-2 text-right">
@@ -442,14 +459,14 @@ export function RateCards() {
       )}
       {dialog?.type === 'addUnit' && (
         <UnitModal
-          onSave={(f) => addRateCardUnit({ rateCardId: dialog.rateCardId, unitCode: f.unitCode.toUpperCase(), description: f.description, uom: f.uom, rate: parseFloat(f.rate) })}
+          onSave={(f) => addRateCardUnit({ rateCardId: dialog.rateCardId, unitCode: f.unitCode.toUpperCase(), description: f.description, uom: f.uom, rate: parseFloat(f.rate), category: f.category.trim() || undefined })}
           onClose={close}
         />
       )}
       {dialog?.type === 'editUnit' && (
         <UnitModal
           initial={dialog.unit}
-          onSave={(f) => updateRateCardUnit(dialog.unit.id, { unitCode: f.unitCode.toUpperCase(), description: f.description, uom: f.uom, rate: parseFloat(f.rate) })}
+          onSave={(f) => updateRateCardUnit(dialog.unit.id, { unitCode: f.unitCode.toUpperCase(), description: f.description, uom: f.uom, rate: parseFloat(f.rate), category: f.category.trim() || undefined })}
           onClose={close}
         />
       )}
