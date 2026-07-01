@@ -16,6 +16,7 @@ import { computeTransform, projectPoint } from '../lib/georeference'
 import type { ControlPoint } from '../lib/georeference'
 import { detectOcrCandidates, type OcrCandidate } from '../lib/ocrWorkObjectDetect'
 import { WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
+import type { MarkupGeometry } from '../types'
 
 interface Props {
   projectId: string
@@ -32,7 +33,7 @@ interface DetectCandidate extends OcrCandidate {
 }
 
 export function GeoreferencePanel({ projectId, map, onClose, onSaved, preloadFile }: Props) {
-  const { addFieldMapOverlay, addMarkup } = useData()
+  const { data, addFieldMapOverlay, addMarkup, updateMarkup } = useData()
   const [step, setStep] = useState<'upload' | 'calibrate' | 'detect'>('upload')
   const [rendering, setRendering] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -156,6 +157,47 @@ export function GeoreferencePanel({ projectId, map, onClose, onSaved, preloadFil
     for (const marker of candidateMarkersRef.current.values()) marker.remove()
     candidateMarkersRef.current.clear()
     if (savedOverlayId) onSaved(savedOverlayId)
+  }
+
+  // Work Objects drawn in PDF Print Mode on this file/page, before it was georeferenced —
+  // "later, georeference to map coordinates" should carry the drawn work onto the map too,
+  // not just anchor the picture.
+  const pdfPageMarkups = preloadFile
+    ? data.fieldMarkups.filter((m) => m.coordSpace === 'pdfPage' && m.sourceProjectFileId === preloadFile.id && (m.pageIndex ?? 0) === 0)
+    : []
+  const [converting, setConverting] = useState(false)
+  const [converted, setConverted] = useState(false)
+
+  function convertPdfMarkupsToLatLng() {
+    if (pdfPageMarkups.length === 0) return
+    setConverting(true)
+    try {
+      const transform = computeTransform(points)
+      for (const m of pdfPageMarkups) {
+        const geo = m.geometry
+        const next: MarkupGeometry = {}
+        if (geo.latlngs) next.latlngs = geo.latlngs.map(([x, y]) => { const p = projectPoint(transform, x, y); return [p.lat, p.lng] })
+        if (geo.bounds) {
+          const p0 = projectPoint(transform, geo.bounds[0][0], geo.bounds[0][1])
+          const p1 = projectPoint(transform, geo.bounds[1][0], geo.bounds[1][1])
+          next.bounds = [[p0.lat, p0.lng], [p1.lat, p1.lng]]
+        }
+        if (geo.center) {
+          const c = projectPoint(transform, geo.center[0], geo.center[1])
+          next.center = [c.lat, c.lng]
+          if (geo.radius != null) {
+            // Radius was Euclidean page-point units — re-measure it as real geodesic
+            // meters via a second projected reference point on the circle's edge.
+            const edge = projectPoint(transform, geo.center[0] + geo.radius, geo.center[1])
+            next.radius = L.latLng(c.lat, c.lng).distanceTo(L.latLng(edge.lat, edge.lng))
+          }
+        }
+        updateMarkup(m.id, { geometry: next, coordSpace: 'latlng', sourceProjectFileId: null, pageIndex: undefined })
+      }
+      setConverted(true)
+    } finally {
+      setConverting(false)
+    }
   }
 
   async function runDetection() {
@@ -304,6 +346,26 @@ export function GeoreferencePanel({ projectId, map, onClose, onSaved, preloadFil
         {step === 'detect' && (
           <div className="flex flex-col gap-3">
             <p>Overlay saved. Optionally scan the plan for text like "vault", "handhole", "splice", etc. — each match becomes a draggable candidate pin you can confirm or dismiss.</p>
+            {pdfPageMarkups.length > 0 && (
+              <div className="rounded-md border border-emerald-800/50 bg-emerald-950/20 p-2.5">
+                {converted ? (
+                  <p className="flex items-center gap-1.5 text-emerald-400"><Check size={12} /> Converted {pdfPageMarkups.length} Work Object{pdfPageMarkups.length === 1 ? '' : 's'} to map coordinates.</p>
+                ) : (
+                  <>
+                    <p className="mb-1.5 text-slate-300">
+                      This PDF has {pdfPageMarkups.length} Work Object{pdfPageMarkups.length === 1 ? '' : 's'} drawn in Print Mode. Convert {pdfPageMarkups.length === 1 ? 'it' : 'them'} to real map coordinates too?
+                    </p>
+                    <button
+                      onClick={convertPdfMarkupsToLatLng}
+                      disabled={converting}
+                      className="flex items-center gap-1.5 rounded bg-emerald-600 px-2.5 py-1 font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+                    >
+                      <Check size={12} /> {converting ? 'Converting…' : `Convert ${pdfPageMarkups.length} to Map Coordinates`}
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
             {!ocrRunning && candidates.length === 0 && (
               <button
                 onClick={runDetection}
