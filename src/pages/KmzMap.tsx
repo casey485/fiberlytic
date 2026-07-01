@@ -59,7 +59,11 @@ function isFeatureDrop(tool: string): boolean {
 }
 
 
-const DRAG_DRAW_TOOLS = new Set(['pen', 'line', 'dashed_line', 'dotted_line', 'arrow', 'double_arrow', 'rect', 'circle', 'highlight', 'ellipse'])
+// 'line' is deliberately NOT drag-based: a straight line is a 2-click gesture (click to
+// start, click to finish) via the click-accumulation effect below, not a drag gesture —
+// a plain click is a zero-movement mousedown+mouseup, which used to commit a degenerate
+// zero-length "line" and open the Work Object dialog after a single click.
+const DRAG_DRAW_TOOLS = new Set(['pen', 'dashed_line', 'dotted_line', 'arrow', 'double_arrow', 'rect', 'circle', 'highlight', 'ellipse'])
 function isDragDrawTool(tool: string) { return DRAG_DRAW_TOOLS.has(tool) }
 
 const WEIGHT_OPTIONS = [
@@ -819,34 +823,60 @@ export function KmzMap() {
   // ── Markup drawing events (click-based tools only; drag-draw handled by overlay div) ──
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !rlActive || activeTool === 'select' || activeTool === 'aerial_lash' || isDragDrawTool(activeTool as string)) return
+    // Pause map click handling while the Add Work modal is open — it reopens with the
+    // same activeTool that was just used to draw, and the map must not keep intercepting
+    // clicks meant for the modal's form fields.
+    if (!map || !rlActive || addWorkModalOpen || activeTool === 'select' || activeTool === 'aerial_lash' || isDragDrawTool(activeTool as string)) return
 
-    // Polygon / Multi-Line / Measure / Cloud: click-to-add-point, dblclick-to-finish
-    if (activeTool === 'polygon' || activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud') {
+    // Line / Polygon / Multi-Line / Measure / Cloud: click-to-add-point, finish on completion
+    // (never on the first click — geometryComplete, not geometryStart, is what may open the
+    // Work Object dialog via commitMarkup).
+    if (activeTool === 'line' || activeTool === 'polygon' || activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud') {
       const pmap: L.Map = map
-      let clickHandler: ((e: L.LeafletMouseEvent) => void) | null = null
+      // Without this, Leaflet's own pan/drag handling can absorb a slightly-moved
+      // mousedown→mouseup as a pan instead of firing 'click', and the container
+      // keeps showing its default grab/hand cursor instead of a drawing crosshair.
+      pmap.dragging.disable()
+      const prevCursor = pmap.getContainer().style.cursor
+      pmap.getContainer().style.cursor = 'crosshair'
       let dblClickHandler: ((e: L.LeafletMouseEvent) => void) | null = null
+      let mouseMoveHandler: ((e: L.LeafletMouseEvent) => void) | null = null
+      let startMarker: L.CircleMarker | null = null
 
       // Open-path modes render as a polyline preview (not a closed, filled polygon) and commit with their own tool value.
-      const isMultiLine = () => activeTool === 'multi_line' || activeTool === 'measure'
+      const isMultiLine = () => activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'line'
 
       // lastTouchMs guards against double-fire: on touch devices the browser fires
       // touchend → (synthetic) click in sequence; we handle touchend directly and
       // skip the follow-on click so each tap adds exactly one point.
       let lastTouchMs = 0
 
+      const redrawPreview = (pts: [number, number][]) => {
+        if (polygonPreviewRef.current) { polygonPreviewRef.current.remove(); polygonPreviewRef.current = null }
+        if (pts.length < 2) return
+        const previewOpts = { color: rlColor, weight: rlWeight, opacity: 0.8, pane: 'markups' as string }
+        polygonPreviewRef.current = (isMultiLine()
+          ? L.polyline(pts, previewOpts)
+          : L.polygon(pts, { ...previewOpts, fill: true, fillColor: rlColor, fillOpacity: rlFillOpacity })
+        ).addTo(pmap)
+      }
+
       const addPoint = (latlng: L.LatLng) => {
         const snapped = snapEnabled ? findSnapPoint(latlng, snapCandidates, pmap) : null
         polygonPtsRef.current.push(snapped ?? [latlng.lat, latlng.lng])
-        if (polygonPtsRef.current.length === 1) setPolygonInProgress(true)
-        if (polygonPreviewRef.current) polygonPreviewRef.current.remove()
-        if (polygonPtsRef.current.length >= 2) {
-          const previewOpts = { color: rlColor, weight: rlWeight, opacity: 0.8, pane: 'markups' as string }
-          polygonPreviewRef.current = (isMultiLine()
-            ? L.polyline(polygonPtsRef.current, previewOpts)
-            : L.polygon(polygonPtsRef.current, { ...previewOpts, fill: true, fillColor: rlColor, fillOpacity: rlFillOpacity })
-          ).addTo(pmap)
+        if (polygonPtsRef.current.length === 1) {
+          setPolygonInProgress(true)
+          // Immediate visible feedback for the very first click — a live rubber-band
+          // preview only appears once the cursor moves, so without this a single click
+          // can look like nothing happened.
+          startMarker = L.circleMarker(polygonPtsRef.current[0], {
+            radius: 5, color: rlColor, weight: 2, fillColor: rlColor, fillOpacity: 1, pane: 'markups',
+          }).addTo(pmap)
         }
+        redrawPreview(polygonPtsRef.current)
+        // A straight line is always exactly 2 points — finish immediately on the 2nd
+        // click instead of waiting for a double-click/Enter/Finish button.
+        if (activeTool === 'line' && polygonPtsRef.current.length >= 2) finishPolygon()
       }
 
       const finishPolygon = () => {
@@ -854,9 +884,10 @@ export function KmzMap() {
         polygonPtsRef.current = []
         setPolygonInProgress(false)
         if (polygonPreviewRef.current) { polygonPreviewRef.current.remove(); polygonPreviewRef.current = null }
+        if (startMarker) { startMarker.remove(); startMarker = null }
         const minPts = isMultiLine() ? 2 : 3
         if (pts.length >= minPts) {
-          const committedTool: MarkupTool = activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' ? activeTool : 'polygon'
+          const committedTool: MarkupTool = activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || activeTool === 'line' ? activeTool : 'polygon'
           commitMarkup({
             tool: committedTool, subtype: activeSubtype, color: rlColor, weight: rlWeight,
             fillColor: rlColor, fillOpacity: rlFillOpacity, opacity: rlOpacity,
@@ -867,21 +898,74 @@ export function KmzMap() {
         }
       }
 
+      const cancelInProgress = () => {
+        polygonPtsRef.current = []
+        setPolygonInProgress(false)
+        if (polygonPreviewRef.current) { polygonPreviewRef.current.remove(); polygonPreviewRef.current = null }
+        if (startMarker) { startMarker.remove(); startMarker = null }
+      }
+
       finishPolygonRef.current = finishPolygon
 
-      // Mouse click handler — skipped when a touch just fired to avoid double-add
-      clickHandler = (e: L.LeafletMouseEvent) => {
-        if (Date.now() - lastTouchMs < 500) return
-        addPoint(e.latlng)
+      // Mouse interaction supports both gestures: a plain click places one point (the
+      // click→click→click flow), while a click-and-drag places the mousedown point AND
+      // the mouseup point in one motion — for 'line' that alone completes the geometry,
+      // matching how Rectangle/Circle/Freehand already behave with a single drag.
+      const DRAG_PLACE_THRESHOLD_PX = 6
+      let downLatLng: L.LatLng | null = null
+      let downContainerPt: L.Point | null = null
+      const onMouseDown = (e: L.LeafletMouseEvent) => {
+        downLatLng = e.latlng
+        downContainerPt = pmap.latLngToContainerPoint(e.latlng)
       }
+      const onMouseUp = (e: L.LeafletMouseEvent) => {
+        if (Date.now() - lastTouchMs < 500) { downLatLng = null; downContainerPt = null; return }
+        if (!downLatLng || !downContainerPt) { addPoint(e.latlng); return }
+        const upContainerPt = pmap.latLngToContainerPoint(e.latlng)
+        const moved = downContainerPt.distanceTo(upContainerPt) >= DRAG_PLACE_THRESHOLD_PX
+        const start = downLatLng
+        downLatLng = null
+        downContainerPt = null
+        if (moved) {
+          addPoint(start)
+          addPoint(e.latlng)
+        } else {
+          addPoint(e.latlng)
+        }
+      }
+
       // Always add the dblclick endpoint before finishing — Leaflet's dblClickZoom may
-      // cancel the click events that fire during a double-click.
+      // cancel the click events that fire during a double-click. (No-op for 'line',
+      // which already auto-finishes on its 2nd click.)
       dblClickHandler = (e) => {
         L.DomEvent.stopPropagation(e)
         if (Date.now() - lastTouchMs < 500) return
+        if (polygonPtsRef.current.length === 0) return
         const snapped = snapEnabled ? findSnapPoint(e.latlng, snapCandidates, pmap) : null
         polygonPtsRef.current.push(snapped ?? [e.latlng.lat, e.latlng.lng])
         finishPolygon()
+      }
+
+      // Enter finishes the in-progress shape (mirrors the toolbar's Save/Finish button);
+      // Escape cancels it without committing anything.
+      const onKeyDown = (ev: KeyboardEvent) => {
+        if (polygonPtsRef.current.length === 0) return
+        if (ev.key === 'Enter') { ev.preventDefault(); finishPolygon() }
+        else if (ev.key === 'Escape') { ev.preventDefault(); cancelInProgress() }
+      }
+
+      // Live rubber-band preview: once the first point is placed, redraw the preview
+      // through the current cursor position as the mouse moves, so the user sees the
+      // line/shape forming instead of nothing happening between the two clicks.
+      mouseMoveHandler = (e: L.LeafletMouseEvent) => {
+        const snapped = snapEnabled ? findSnapPoint(e.latlng, snapCandidates, pmap) : null
+        const ghost = snapped ?? ([e.latlng.lat, e.latlng.lng] as [number, number])
+        if (polygonPtsRef.current.length > 0) {
+          redrawPreview([...polygonPtsRef.current, ghost])
+        } else if (downLatLng) {
+          // Live preview while dragging out the very first segment, before mouseup commits it.
+          redrawPreview([[downLatLng.lat, downLatLng.lng], ghost])
+        }
       }
 
       // Touch handler — reliable tap detection directly on the map container.
@@ -902,19 +986,28 @@ export function KmzMap() {
         addPoint(latlng)
       }
 
-      pmap.on('click', clickHandler)
+      pmap.on('mousedown', onMouseDown)
+      pmap.on('mouseup', onMouseUp)
       pmap.on('dblclick', dblClickHandler)
+      pmap.on('mousemove', mouseMoveHandler)
       container.addEventListener('touchstart', onTouchStart, { passive: true })
       container.addEventListener('touchend', onTouchEnd, { passive: true })
+      window.addEventListener('keydown', onKeyDown)
       return () => {
-        if (clickHandler) pmap.off('click', clickHandler)
+        pmap.off('mousedown', onMouseDown)
+        pmap.off('mouseup', onMouseUp)
         if (dblClickHandler) pmap.off('dblclick', dblClickHandler)
+        if (mouseMoveHandler) pmap.off('mousemove', mouseMoveHandler)
         container.removeEventListener('touchstart', onTouchStart)
         container.removeEventListener('touchend', onTouchEnd)
+        window.removeEventListener('keydown', onKeyDown)
+        pmap.dragging.enable()
+        pmap.getContainer().style.cursor = prevCursor
         polygonPtsRef.current = []
         setPolygonInProgress(false)
         finishPolygonRef.current = null
         if (polygonPreviewRef.current) { polygonPreviewRef.current.remove(); polygonPreviewRef.current = null }
+        if (startMarker) { (startMarker as L.CircleMarker).remove(); startMarker = null }
       }
     }
 
@@ -948,12 +1041,12 @@ export function KmzMap() {
       tmap.on('click', onTextClick)
       return () => { tmap.off('click', onTextClick) }
     }
-  }, [rlActive, activeTool, activeSubtype, rlColor, rlWeight, rlFillOpacity, rlOpacity, projectId, commitMarkup, snapEnabled, snapCandidates])
+  }, [rlActive, activeTool, activeSubtype, rlColor, rlWeight, rlFillOpacity, rlOpacity, projectId, commitMarkup, snapEnabled, snapCandidates, addWorkModalOpen])
 
   // ── Aerial lash fiber: drawing mode ──────────────────────────────────────────
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !rlActive || activeTool !== 'aerial_lash') return
+    if (!map || !rlActive || addWorkModalOpen || activeTool !== 'aerial_lash') return
 
     const lashColor = MARKUP_COLOR_CODES['lash_aerial'].color
 
@@ -1059,7 +1152,7 @@ export function KmzMap() {
       container.removeEventListener('touchend', onTouchEnd)
       finishAerialRunRef.current = null
     }
-  }, [rlActive, activeTool, projectId, addAerialLashFiberRun])
+  }, [rlActive, activeTool, projectId, addAerialLashFiberRun, addWorkModalOpen])
 
   // ── Aerial lash fiber: render saved runs ────────────────────────────────────
   useEffect(() => {
@@ -1298,7 +1391,14 @@ export function KmzMap() {
     setMobileNav('map')
   }
 
-  /** Add Work Step 1 (Type) → arm the map's draw tool with this type's defaults and close the modal to draw. */
+  /**
+   * Add Work Step 1 (Type) → arm the map with this type's defaults and close the modal to draw.
+   * `activeWorkType` (pendingWorkTypeRef) and `activeSubtype` track WHAT is being recorded;
+   * `activeTool` only controls HOW it gets drawn and stays freely overridable from the toolbar
+   * afterward — it must never be force-locked to Freehand just because a line-geometry type
+   * doesn't have a real drawing-tool value of its own (its `defaultMarkupTool` is a feature/
+   * subtype tag like 'aerial_cable', not a drawing primitive, for line/polygon geometry kinds).
+   */
   function startAddWork(type: WorkObjectTypeDef) {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
@@ -1306,10 +1406,11 @@ export function KmzMap() {
     setActiveColorCode(null); activeColorCodeRef.current = null
     setRlColor(type.defaultColor)
     setRlActive(true)
+    setActiveSubtype(type.defaultMarkupTool)
     if (type.defaultGeometry === 'polygon') {
       setActiveTool('polygon')
     } else if (type.defaultGeometry === 'line') {
-      setActiveTool('pen')
+      setActiveTool('line')
     } else {
       setActiveTool(type.defaultMarkupTool)
     }
@@ -1456,7 +1557,7 @@ export function KmzMap() {
     if (activeTool === 'pen' || activeTool === 'highlight') {
       drawPenPtsRef.current = [latlng]
       drawPreviewRef.current = L.polyline([latlng], drawOpts).addTo(map)
-    } else if (activeTool === 'line' || activeTool === 'dashed_line' || activeTool === 'dotted_line' || activeTool === 'arrow' || activeTool === 'double_arrow') {
+    } else if (activeTool === 'dashed_line' || activeTool === 'dotted_line' || activeTool === 'arrow' || activeTool === 'double_arrow') {
       drawPreviewRef.current = L.polyline([latlng, latlng], drawOpts).addTo(map)
     } else if (activeTool === 'rect' || activeTool === 'ellipse') {
       // Ellipse previews as its bounding box while dragging; the final shape renders as a true ellipse.
@@ -1475,7 +1576,7 @@ export function KmzMap() {
     if ((activeTool === 'pen' || activeTool === 'highlight') && preview) {
       drawPenPtsRef.current.push(latlng)
       ;(preview as L.Polyline).setLatLngs(drawPenPtsRef.current)
-    } else if ((activeTool === 'line' || activeTool === 'dashed_line' || activeTool === 'dotted_line' || activeTool === 'arrow' || activeTool === 'double_arrow') && preview) {
+    } else if ((activeTool === 'dashed_line' || activeTool === 'dotted_line' || activeTool === 'arrow' || activeTool === 'double_arrow') && preview) {
       (preview as L.Polyline).setLatLngs([start, latlng])
     } else if ((activeTool === 'rect' || activeTool === 'ellipse') && preview) {
       (preview as L.Rectangle).setBounds([[start.lat, start.lng], [latlng.lat, latlng.lng]])
@@ -1505,7 +1606,7 @@ export function KmzMap() {
         const latlngs = pts.map((ll) => [ll.lat, ll.lng] as [number, number])
         commitMarkup({ ...base, tool: activeTool === 'highlight' ? 'highlight' : 'pen', geometry: { latlngs }, lengthFt: latlngsLengthFt(latlngs) })
       }
-    } else if (activeTool === 'line' || activeTool === 'dashed_line' || activeTool === 'dotted_line' || activeTool === 'arrow' || activeTool === 'double_arrow') {
+    } else if (activeTool === 'dashed_line' || activeTool === 'dotted_line' || activeTool === 'arrow' || activeTool === 'double_arrow') {
       const latlngs: [number, number][] = [[start.lat, start.lng], [endLL.lat, endLL.lng]]
       commitMarkup({ ...base, tool: activeTool as MarkupTool, geometry: { latlngs }, lengthFt: latlngsLengthFt(latlngs) })
     } else if (activeTool === 'rect') {
@@ -2116,12 +2217,15 @@ export function KmzMap() {
         )}
 
         {/* ── Center: Leaflet map ──────────────────────────────────── */}
-        <div className="relative flex-1">
+        {/* pointer-events-none while Add Work is open: belt-and-suspenders so nothing under
+             the map (Leaflet panes, draw overlays, controls) can ever intercept clicks meant
+             for the modal, regardless of z-index. */}
+        <div className={`relative flex-1 ${addWorkModalOpen ? 'pointer-events-none' : ''}`}>
           <div ref={mapContainerRef} className="absolute inset-0 z-0" />
 
           {/* Draw overlay: captures drag events for draw tools (pen/line/rect/circle/arrow).
                touchAction:none prevents browser scroll/zoom so touch events reach our handlers. */}
-          {rlActive && isDragDrawTool(activeTool as string) && (
+          {rlActive && !addWorkModalOpen && isDragDrawTool(activeTool as string) && (
             <div
               className="absolute inset-0 z-[500]"
               style={{ cursor: 'crosshair', touchAction: 'none', userSelect: 'none' }}
@@ -2143,7 +2247,7 @@ export function KmzMap() {
           )}
 
           {/* Pan overlay: native pointer events + setPointerCapture for reliable grab-pan */}
-          {rlActive && activeTool === 'select' && (
+          {rlActive && !addWorkModalOpen && activeTool === 'select' && (
             <div
               ref={panOverlayRef}
               className="absolute inset-0 z-[500]"
@@ -2189,7 +2293,9 @@ export function KmzMap() {
             <div className="absolute top-2 right-2 z-[1000] flex items-center gap-1.5 rounded-md bg-[#0d0d0d]/90 border border-red-500/40 px-2 py-1 text-[11px] text-red-400">
               <Pencil size={10} />
               {currentToolLabel}
-              {activeTool === 'polygon' && polygonPtsRef.current.length > 0 && ` (${polygonPtsRef.current.length} pts — dbl-click to close)`}
+              {activeTool === 'polygon' && polygonPtsRef.current.length > 0 && ` (${polygonPtsRef.current.length} pts — dbl-click, Enter, or Save to close)`}
+              {(activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud') && polygonPtsRef.current.length > 0 && ` (${polygonPtsRef.current.length} pts — dbl-click, Enter, or Save to finish)`}
+              {activeTool === 'line' && polygonPtsRef.current.length > 0 && ' (click end point to finish)'}
             </div>
           )}
 

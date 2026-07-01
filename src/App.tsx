@@ -13,8 +13,6 @@ import { Invoicing } from './pages/Invoicing'
 import { PrintReader } from './pages/PrintReader'
 import { PrintReview } from './pages/PrintReview'
 import { ProjectPrints } from './pages/ProjectPrints'
-import { Redline } from './pages/Redline'
-import { RedlineEditor } from './pages/RedlineEditor'
 import { RateCards } from './pages/RateCards'
 import { Employees } from './pages/Employees'
 import { EquipmentPage } from './pages/Equipment'
@@ -64,8 +62,6 @@ export default function App() {
           <Route path="/clock-in" element={<ClockIn />} />
           <Route path="/expenses" element={<ExpensesPage />} />
           <Route path="/materials" element={<Materials />} />
-          <Route path="/redline" element={<Redline />} />
-          <Route path="/redline/:fileId" element={<RedlineEditor />} />
           <Route path="/kmz" element={<KmzProduction />} />
           <Route path="/kmz/:projectId" element={<KmzMap />} />
 

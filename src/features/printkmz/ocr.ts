@@ -31,6 +31,52 @@ export async function runOcr(
   return pages
 }
 
+export interface OcrWordBox {
+  text: string
+  /** Pixel bounding box in the same coordinate space as the rendered page image (renderPdf's output). */
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+export interface OcrPageWords {
+  text: string
+  words: OcrWordBox[]
+}
+
+/**
+ * Same OCR pass as `runOcr`, but keeps each word's pixel bounding box instead of
+ * discarding it — needed to place detected candidates at real positions on a
+ * georeferenced page rather than a synthetic grid.
+ */
+export async function runOcrWithBoxes(
+  images: string[],
+  onProgress?: (p: OcrProgress) => void,
+): Promise<OcrPageWords[]> {
+  const worker = await createWorker('eng', 1, {
+    logger: (m) => {
+      if (m.status === 'recognizing text') {
+        onProgress?.({ page: 0, total: images.length, progress: m.progress })
+      }
+    },
+  })
+
+  const pages: OcrPageWords[] = []
+  for (let i = 0; i < images.length; i++) {
+    const { data } = await worker.recognize(images[i])
+    pages.push({
+      text: data.text,
+      words: (data.words ?? []).map((w) => ({
+        text: w.text, x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1,
+      })),
+    })
+    onProgress?.({ page: i + 1, total: images.length, progress: 1 })
+  }
+  await worker.terminate()
+  return pages
+}
+
 const uniq = (arr: string[]) => [...new Set(arr.map((s) => s.trim()).filter(Boolean))]
 const lines = (text: string) =>
   text.split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean)

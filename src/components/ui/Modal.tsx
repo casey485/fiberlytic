@@ -32,7 +32,7 @@ export function Modal({
   if (!open) return null
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 pt-16">
+    <div className="fixed inset-0 z-[3000] flex items-start justify-center overflow-y-auto bg-black/70 p-4 pt-16">
       <div
         className={`w-full ${sizeClass[size]} rounded-xl border border-[#2a2a2a] bg-[#141414] shadow-xl shadow-black/60`}
         role="dialog"

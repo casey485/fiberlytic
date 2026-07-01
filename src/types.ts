@@ -316,51 +316,6 @@ export interface ProjectFile {
 }
 
 // ---------------------------------------------------------------------------
-// Redline annotations — markup drawn on top of project PDFs
-// ---------------------------------------------------------------------------
-
-export type AnnotationTool =
-  | 'pen' | 'line' | 'arrow'
-  | 'rect' | 'ellipse' | 'cloud' | 'highlight'
-  | 'text' | 'callout'
-  | 'polyline' | 'polygon' | 'pin'
-
-export interface AnnotationShape {
-  id: string
-  fileId: string
-  page: number
-  tool: AnnotationTool
-  color: string
-  strokeWidth: number
-  points?: [number, number][]
-  x1?: number; y1?: number; x2?: number; y2?: number
-  text?: string
-  // text / callout / pin formatting
-  fontSize?: number
-  fontFamily?: string
-  fontBold?: boolean
-  fontItalic?: boolean
-  fontUnderline?: boolean
-  fontStrikethrough?: boolean
-  // fill (rect / ellipse / cloud / highlight / callout / polygon)
-  fillColor?: string
-  fillOpacity?: number
-  // per-shape opacity
-  opacity?: number
-  // stroke style
-  lineStyle?: 'solid' | 'dashed' | 'dotted'
-  // visibility toggle (false = hidden but not deleted)
-  visible?: boolean
-  // session / author tracking
-  sessionId?: string
-  author?: string
-  // field audit — label and notes stored on the annotation itself
-  label?: string
-  notes?: string
-  createdAt: string
-}
-
-// ---------------------------------------------------------------------------
 // Clock-in / geofence entries
 // ---------------------------------------------------------------------------
 
@@ -792,8 +747,6 @@ export interface AppData {
   equipment: Equipment[]
   // Project files (PDFs, KMZ plans)
   projectFiles: ProjectFile[]
-  // Redline annotations keyed by file + page
-  annotations: AnnotationShape[]
   // Clock-in / geofence records
   clockEntries: ClockEntry[]
   // KMZ production workflow

@@ -2,7 +2,6 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type {
   AppData,
   AerialLashFiberRun,
-  AnnotationShape,
   Client,
   ClockEntry,
   Crew,
@@ -228,7 +227,6 @@ function migrateData(raw: AppData): AppData {
     jobExpenses,
     equipment: raw.equipment ?? [],
     projectFiles: raw.projectFiles ?? [],
-    annotations: raw.annotations ?? [],
     clockEntries: raw.clockEntries ?? [],
     kmzUploads: raw.kmzUploads ?? [],
     mapFeatures: raw.mapFeatures ?? [],
@@ -368,12 +366,6 @@ interface DataContextValue {
   // Project files (blob stored in IndexedDB; only metadata goes to localStorage)
   addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => void
   deleteProjectFile: (id: string) => void
-  // Annotations (redline markup)
-  addAnnotation: (a: Omit<AnnotationShape, 'id'>) => string
-  updateAnnotation: (id: string, patch: Partial<AnnotationShape>) => void
-  deleteAnnotation: (id: string) => void
-  clearAnnotations: (fileId: string, page: number) => void
-  setAnnotationsForPage: (fileId: string, page: number, shapes: AnnotationShape[]) => void
   // Clock-in / geofence
   addClockIn: (entry: Omit<ClockEntry, 'id'>) => ClockEntry
   clockOut: (id: string) => void
@@ -895,36 +887,6 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setData((d) => ({
           ...d,
           projectFiles: d.projectFiles.filter((f) => f.id !== id),
-          annotations: d.annotations.filter((a) => a.fileId !== id),
-        }))
-      },
-
-      addAnnotation(a) {
-        const id = newId('ann')
-        setData((d) => ({ ...d, annotations: [...d.annotations, { ...a, id }] }))
-        return id
-      },
-      updateAnnotation(id, patch) {
-        setData((d) => ({ ...d, annotations: d.annotations.map((a) => a.id === id ? { ...a, ...patch } : a) }))
-      },
-      deleteAnnotation(id) {
-        setData((d) => ({
-          ...d,
-          annotations: d.annotations.filter((a) => a.id !== id),
-          markupBilling: (d.markupBilling ?? []).filter((b) => b.markupId !== id),
-          markupPhotos: (d.markupPhotos ?? []).filter((p) => p.markupId !== id),
-        }))
-      },
-      clearAnnotations(fileId, page) {
-        setData((d) => ({ ...d, annotations: d.annotations.filter((a) => !(a.fileId === fileId && a.page === page)) }))
-      },
-      setAnnotationsForPage(fileId, page, shapes) {
-        setData((d) => ({
-          ...d,
-          annotations: [
-            ...d.annotations.filter((a) => !(a.fileId === fileId && a.page === page)),
-            ...shapes,
-          ],
         }))
       },
 

@@ -1,8 +1,8 @@
 // ---------------------------------------------------------------------------
-// Field Map export/report — modernized replacement for KmzViewer.tsx's
-// exportToPdf(). Same html2canvas+jsPDF technique (dynamically imported to
-// keep them out of the main bundle), but the second page summarizes Work
-// Objects (type/status/quantity/billing) instead of a raw redline-notes list.
+// Field Map export/report — snapshots the map (html2canvas) and generates a
+// PDF (jsPDF, dynamically imported to keep it out of the main bundle) whose
+// second page summarizes this project's Work Objects: type/status/quantity/
+// billing total.
 // ---------------------------------------------------------------------------
 
 import type { FieldMarkup, MarkupBilling } from '../types'

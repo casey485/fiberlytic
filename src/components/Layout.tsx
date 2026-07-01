@@ -10,7 +10,6 @@ import {
   Image,
   FileText,
   ScanText,
-  PenLine,
   CreditCard,
   HardHat,
   Wrench,
@@ -47,7 +46,6 @@ const adminNav = [
   { to: '/photos', label: 'Photos', icon: Image },
   { to: '/invoicing', label: 'Invoicing', icon: FileText },
   { to: '/print-reader', label: 'Print Reader', icon: ScanText },
-  { to: '/redline', label: 'Redline', icon: PenLine },
 ]
 
 const fieldNav = [
@@ -59,7 +57,6 @@ const fieldNav = [
   { to: '/project-prints', label: 'Print Access', icon: Map },
   { to: '/expenses', label: 'Expenses', icon: Receipt },
   { to: '/materials', label: 'Materials', icon: Package },
-  { to: '/redline', label: 'Redline', icon: PenLine },
 ]
 
 function Brand() {

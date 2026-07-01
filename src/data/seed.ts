@@ -371,7 +371,6 @@ export function generateSeedData(): AppData {
     jobExpenses: [],
     equipment: [],
     projectFiles: [],
-    annotations: [],
     clockEntries: [],
     kmzUploads: [],
     mapFeatures: [],

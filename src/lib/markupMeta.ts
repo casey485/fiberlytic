@@ -1,6 +1,7 @@
 /** Metadata for feature-drop tool types — shared between MarkupPanel and KmzMap. */
 
 export const FEATURE_DROP_TOOLS = [
+  'point',
   'handhole', 'bore', 'bore_pit', 'aerial_cable', 'underground_conduit',
   'fiber_pull', 'splice_point', 'dtap', 'pole', 'pedestal', 'vault',
   'cabinet', 'slack_loop', 'restoration', 'rock', 'asphalt', 'concrete',
