@@ -45,11 +45,17 @@ function euclideanLength(pts: [number, number][]): number {
   return d
 }
 
+/** PDF points are always 72/inch — converts a page-point length to real feet using the file's scale, or null if unset. */
+function feetForPageLength(pageUnits: number, scaleFeetPerInch: number | undefined): number | null {
+  if (!scaleFeetPerInch) return null
+  return Math.round((pageUnits / 72) * scaleFeetPerInch * 10) / 10
+}
+
 export function PdfPrintMode() {
   const { t } = useTranslation()
   const { projectId, fileId } = useParams<{ projectId: string; fileId: string }>()
   const nav = useNavigate()
-  const { data, addMarkup, updateMarkup, deleteMarkup } = useData()
+  const { data, addMarkup, updateMarkup, deleteMarkup, updateProjectFile } = useData()
 
   const project = data.projects.find((p) => p.id === projectId)
   const file = data.projectFiles.find((f) => f.id === fileId)
@@ -94,6 +100,9 @@ export function PdfPrintMode() {
   const textInputRef = useRef<HTMLInputElement>(null)
 
   const svgRef = useRef<SVGSVGElement>(null)
+
+  const [scaleInput, setScaleInput] = useState('')
+  useEffect(() => { setScaleInput(file?.pdfScaleFeetPerInch != null ? String(file.pdfScaleFeetPerInch) : '') }, [file?.pdfScaleFeetPerInch])
 
   const [snapEnabled, setSnapEnabled] = useState(false)
   const [toolSelectedIds, setToolSelectedIds] = useState<Set<string>>(new Set())
@@ -223,6 +232,12 @@ export function PdfPrintMode() {
     setAddWorkModalOpen(false)
   }
 
+  function handleSetScale() {
+    if (!fileId) return
+    const n = Number(scaleInput)
+    updateProjectFile(fileId, { pdfScaleFeetPerInch: n > 0 ? n : undefined })
+  }
+
   function undoLast() {
     const id = undoStackRef.current.pop()
     if (!id) return
@@ -319,7 +334,8 @@ export function PdfPrintMode() {
     }
     if (tool === 'pen' || tool === 'highlight') {
       if (pts.length < 2) return
-      commitMarkup({ ...base, tool: tool as MarkupTool, geometry: { latlngs: pts }, lengthFt: euclideanLength(pts) })
+      const feet = feetForPageLength(euclideanLength(pts), file?.pdfScaleFeetPerInch)
+      commitMarkup({ ...base, tool: tool as MarkupTool, geometry: { latlngs: pts }, lengthFt: feet, quantity: feet })
     } else if (tool === 'rect') {
       commitMarkup({ ...base, tool: 'rect', geometry: { bounds: [start, end] }, lengthFt: null })
     } else if (tool === 'ellipse') {
@@ -328,7 +344,8 @@ export function PdfPrintMode() {
       commitMarkup({ ...base, tool: 'circle', geometry: { center: start, radius: Math.hypot(end[0] - start[0], end[1] - start[1]) }, lengthFt: null })
     } else if (tool === 'arrow' || tool === 'double_arrow') {
       const line: [number, number][] = [start, end]
-      commitMarkup({ ...base, tool: tool as MarkupTool, geometry: { latlngs: line }, lengthFt: euclideanLength(line) })
+      const feet = feetForPageLength(euclideanLength(line), file?.pdfScaleFeetPerInch)
+      commitMarkup({ ...base, tool: tool as MarkupTool, geometry: { latlngs: line }, lengthFt: feet, quantity: feet })
     }
   }
 
@@ -352,12 +369,13 @@ export function PdfPrintMode() {
     const minPts = isMultiLine ? 2 : 3
     if (pts.length < minPts) return
     const committedTool: MarkupTool = (activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || activeTool === 'line') ? activeTool as MarkupTool : 'polygon'
+    const feet = isMultiLine ? feetForPageLength(euclideanLength(pts), file?.pdfScaleFeetPerInch) : null
     commitMarkup({
       tool: committedTool, subtype: activeSubtype, color, weight,
       fillColor: color, fillOpacity, opacity,
       geometry: { latlngs: pts }, label: null, fontSize: 13,
       featureType: null, featureName: null, notes: null,
-      lengthFt: isMultiLine ? euclideanLength(pts) : null, quantity: null,
+      lengthFt: feet, quantity: feet,
     })
   }
 
@@ -386,8 +404,8 @@ export function PdfPrintMode() {
     } else {
       if (idx === 0 || idx === pts.length - 1) return // must be an interior vertex
       const [lineA, lineB] = splitLine(pts, idx)
-      addMarkup({ ...markup, geometry: { latlngs: lineA }, lengthFt: euclideanLength(lineA) })
-      addMarkup({ ...markup, geometry: { latlngs: lineB }, lengthFt: euclideanLength(lineB) })
+      addMarkup({ ...markup, geometry: { latlngs: lineA }, lengthFt: feetForPageLength(euclideanLength(lineA), file?.pdfScaleFeetPerInch) })
+      addMarkup({ ...markup, geometry: { latlngs: lineB }, lengthFt: feetForPageLength(euclideanLength(lineB), file?.pdfScaleFeetPerInch) })
       deleteMarkup(markup.id)
       setSelectedMarkup(null)
       setActiveTool('select')
@@ -407,7 +425,7 @@ export function PdfPrintMode() {
       for (const ring of rings) addMarkup({ ...a, geometry: { latlngs: ring }, lengthFt: null })
     } else {
       const merged = mergeLines(a.geometry.latlngs, b.geometry.latlngs)
-      addMarkup({ ...a, geometry: { latlngs: merged }, lengthFt: euclideanLength(merged) })
+      addMarkup({ ...a, geometry: { latlngs: merged }, lengthFt: feetForPageLength(euclideanLength(merged), file?.pdfScaleFeetPerInch) })
     }
     deleteMarkup(a.id)
     deleteMarkup(b.id)
@@ -560,6 +578,24 @@ export function PdfPrintMode() {
         canSave={accumPts.length > 0}
         canMerge={toolSelectedIds.size === 2}
         onMerge={performMerge}
+        advancedToolsChildren={
+          <div className="px-3 py-2">
+            <label className="block text-[10px] font-medium text-slate-400 mb-1">Page scale — 1 inch =</label>
+            <div className="flex items-center gap-1.5">
+              <input
+                type="number" min={0} step="any" value={scaleInput}
+                onChange={(e) => setScaleInput(e.target.value)}
+                placeholder="e.g. 50"
+                className="w-16 rounded border border-[#2a3347] bg-[#141414] px-1.5 py-1 text-[11px] text-slate-200 outline-none"
+              />
+              <span className="text-[10px] text-slate-500">ft</span>
+              <button onClick={handleSetScale} className="ml-auto rounded bg-brand-600 px-2 py-1 text-[10px] font-semibold text-white hover:bg-brand-500">
+                Set
+              </button>
+            </div>
+            <p className="mt-1.5 text-[9px] text-slate-600">Drawn line lengths auto-fill from this scale once set.</p>
+          </div>
+        }
       />
 
       {/* Style presets */}

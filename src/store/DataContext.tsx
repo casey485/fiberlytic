@@ -367,6 +367,7 @@ interface DataContextValue {
   // Project files (blob stored in IndexedDB; only metadata goes to localStorage)
   addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => void
   deleteProjectFile: (id: string) => void
+  updateProjectFile: (id: string, patch: Partial<ProjectFile>) => void
   // Clock-in / geofence
   addClockIn: (entry: Omit<ClockEntry, 'id'>) => ClockEntry
   clockOut: (id: string) => void
@@ -891,6 +892,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setData((d) => ({
           ...d,
           projectFiles: d.projectFiles.filter((f) => f.id !== id),
+        }))
+      },
+      updateProjectFile(id, patch) {
+        setData((d) => ({
+          ...d,
+          projectFiles: d.projectFiles.map((f) => (f.id === id ? { ...f, ...patch } : f)),
         }))
       },
 
