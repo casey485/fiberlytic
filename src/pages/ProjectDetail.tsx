@@ -283,8 +283,7 @@ export function ProjectDetail() {
                     <td className="px-5 py-3">
                       {f.fileType === 'pdf' ? (
                         <Link
-                          to={`/kmz/${id}`}
-                          state={{ openPdfFileId: f.id }}
+                          to={`/kmz/${id}/print/${f.id}`}
                           className="flex items-center gap-2 font-medium text-brand-600 hover:text-brand-700"
                         >
                           <FileText size={16} />
@@ -315,10 +314,9 @@ export function ProjectDetail() {
                       <div className="flex items-center justify-end gap-2">
                         {f.fileType === 'pdf' ? (
                           <Link
-                            to={`/kmz/${id}`}
-                            state={{ openPdfFileId: f.id }}
+                            to={`/kmz/${id}/print/${f.id}`}
                             className="text-slate-300 hover:text-brand-600"
-                            title="Open in Field Map"
+                            title="Open in PDF Print Mode"
                           >
                             <Pencil size={14} />
                           </Link>

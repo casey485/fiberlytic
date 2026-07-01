@@ -365,7 +365,7 @@ interface DataContextValue {
   updateEquipment: (id: string, patch: Partial<Equipment>) => void
   deleteEquipment: (id: string) => void
   // Project files (blob stored in IndexedDB; only metadata goes to localStorage)
-  addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => void
+  addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => string
   deleteProjectFile: (id: string) => void
   updateProjectFile: (id: string, patch: Partial<ProjectFile>) => void
   // Clock-in / geofence
@@ -886,6 +886,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const { dataUrl, ...meta } = f
         saveBlob(id, dataUrl) // async — store blob in IndexedDB
         setData((d) => ({ ...d, projectFiles: [...d.projectFiles, { ...meta, id }] }))
+        return id
       },
       deleteProjectFile(id) {
         deleteBlob(id) // async — clean up from IndexedDB

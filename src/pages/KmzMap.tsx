@@ -1735,7 +1735,10 @@ export function KmzMap() {
         reader.onerror = () => reject(new Error('Failed to read file'))
         reader.readAsDataURL(file)
       })
-      addProjectFile({ projectId, name: file.name, fileType: 'pdf', size: file.size, uploadedAt: new Date().toISOString(), dataUrl })
+      const newId = addProjectFile({ projectId, name: file.name, fileType: 'pdf', size: file.size, uploadedAt: new Date().toISOString(), dataUrl })
+      // Default entry point for a freshly-uploaded PDF is Print Mode (draw directly on the
+      // page), not the Leaflet map's georeference-calibration flow.
+      nav(`/kmz/${projectId}/print/${newId}`)
     } catch (err) {
       alert(`Upload failed: ${(err as Error).message}`)
     } finally {
@@ -1744,19 +1747,8 @@ export function KmzMap() {
   }
 
   function openPdf(fileId: string) {
-    const file = pdfs.find((f) => f.id === fileId)
-    if (!file) return
-    setPreloadPdfFile({ id: file.id, name: file.name })
-    setActiveTool('select')
-    setShowGeoreference(true)
+    nav(`/kmz/${projectId}/print/${fileId}`)
   }
-
-  // Arriving from ProjectDetail's Files tab with a specific PDF to open (e.g. `<Link state={{ openPdfFileId }}>`)
-  useEffect(() => {
-    const openPdfFileId = (location.state as { openPdfFileId?: string } | null)?.openPdfFileId
-    if (openPdfFileId) openPdf(openPdfFileId)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
 
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -1951,9 +1943,10 @@ export function KmzMap() {
         ))}
         <button
           onClick={() => { setActiveTool('select'); setPreloadPdfFile(null); setShowGeoreference(true) }}
+          title="Anchor a PDF directly onto the map without going through Print Mode first"
           className="flex shrink-0 items-center gap-1 rounded border border-brand-700/60 px-2.5 py-0.5 text-[11px] font-medium text-brand-400 hover:bg-brand-900/20 transition ml-auto"
         >
-          <Upload size={10} /> Add PDF Overlay
+          <Upload size={10} /> Georeference PDF Directly
         </button>
         <button
           onClick={() => pdfFileRef.current?.click()}

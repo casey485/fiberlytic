@@ -385,7 +385,7 @@ function WeeklySummaryCard({
                 <div className="flex flex-wrap gap-2 px-5 py-3">
                   {files.map((f) =>
                     f.fileType === 'pdf' ? (
-                      <Link key={f.id} to={`/kmz/${f.projectId}`} state={{ openPdfFileId: f.id }} className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-100">
+                      <Link key={f.id} to={`/kmz/${f.projectId}/print/${f.id}`} className="flex items-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700 transition hover:bg-red-100">
                         <FileText size={13} /> {f.name}
                       </Link>
                     ) : (

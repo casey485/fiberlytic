@@ -91,7 +91,7 @@ export function KmzProduction() {
 
 
   function openPdf(projectIdForFile: string, fileId: string) {
-    nav(`/kmz/${projectIdForFile}`, { state: { openPdfFileId: fileId } })
+    nav(`/kmz/${projectIdForFile}/print/${fileId}`)
   }
 
   function confirmDelete(uploadId: string) {
