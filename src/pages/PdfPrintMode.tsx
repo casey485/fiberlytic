@@ -22,6 +22,8 @@ import { FieldMapToolbar, type FieldMapDrawTool } from '../components/FieldMapTo
 import { AddWorkModal } from '../components/AddWorkModal'
 import { MarkupPanel } from '../components/MarkupPanel'
 import { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS } from '../lib/markupMeta'
+import { findSnapPointFlat, collectSnapCandidates } from '../lib/snap'
+import { splitLine, splitPolygon, mergeLines, unionPolygons } from '../lib/geometryOps'
 import type { FieldMarkup, MarkupTool } from '../types'
 import type { EditMode } from '../lib/markupLayer'
 
@@ -47,7 +49,7 @@ export function PdfPrintMode() {
   const { t } = useTranslation()
   const { projectId, fileId } = useParams<{ projectId: string; fileId: string }>()
   const nav = useNavigate()
-  const { data, addMarkup, deleteMarkup } = useData()
+  const { data, addMarkup, updateMarkup, deleteMarkup } = useData()
 
   const project = data.projects.find((p) => p.id === projectId)
   const file = data.projectFiles.find((f) => f.id === fileId)
@@ -93,6 +95,14 @@ export function PdfPrintMode() {
 
   const svgRef = useRef<SVGSVGElement>(null)
 
+  const [snapEnabled, setSnapEnabled] = useState(false)
+  const [toolSelectedIds, setToolSelectedIds] = useState<Set<string>>(new Set())
+  const splitPickedIndicesRef = useRef<number[]>([])
+  // Live-drag position for vertex/whole-shape/circle-radius editing — kept in local state
+  // (not written to the store on every pointermove) so dragging doesn't spam updateMarkup
+  // and the audit history with dozens of intermediate writes; committed once on release.
+  const [vertexDrag, setVertexDrag] = useState<{ markupId: string; kind: 'vertex' | 'move' | 'radius'; index?: number; anchor: [number, number]; pt: [number, number] } | null>(null)
+
   // ── Load the PDF ────────────────────────────────────────────────────────
   useEffect(() => {
     if (!fileId) return
@@ -129,6 +139,17 @@ export function PdfPrintMode() {
     return () => { cancelled = true }
   }, [pageImages, pageNum])
 
+  // Clear merge/split selection state whenever the active tool changes away from them.
+  useEffect(() => {
+    if (activeTool !== 'merge') setToolSelectedIds(new Set())
+    if (activeTool !== 'split') splitPickedIndicesRef.current = []
+  }, [activeTool])
+
+  // Leave vertex-edit mode whenever the selection changes (or is deselected).
+  useEffect(() => {
+    setEditMode('none')
+  }, [selectedMarkup?.id])
+
   const pageMarkups = (data.fieldMarkups ?? []).filter(
     (m) => m.projectId === projectId && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId && m.pageIndex === pageNum,
   )
@@ -154,6 +175,14 @@ export function PdfPrintMode() {
       ((clientX - rect.left) / rect.width) * naturalSize.w,
       ((clientY - rect.top) / rect.height) * naturalSize.h,
     ]
+  }
+
+  const snapCandidates = collectSnapCandidates(pageMarkups.map((m) => m.geometry))
+
+  function toPagePtSnapped(clientX: number, clientY: number): [number, number] {
+    const pt = toPagePt(clientX, clientY)
+    if (!snapEnabled) return pt
+    return findSnapPointFlat(pt, snapCandidates) ?? pt
   }
 
   // ── Commit a completed markup (mirrors KmzMap.tsx's commitMarkup exactly) ──
@@ -216,7 +245,7 @@ export function PdfPrintMode() {
   // same fix the old RedlineEditor used. This also gives touch/pen support for free.
   function onSvgPointerDown(e: React.PointerEvent<SVGSVGElement>) {
     if (textInput) { commitText(); return }
-    const pt = toPagePt(e.clientX, e.clientY)
+    const pt = toPagePtSnapped(e.clientX, e.clientY)
 
     if (DRAG_TOOLS.has(activeTool as string)) {
       e.currentTarget.setPointerCapture(e.pointerId)
@@ -247,7 +276,7 @@ export function PdfPrintMode() {
   }
 
   function onSvgPointerMove(e: React.PointerEvent<SVGSVGElement>) {
-    const pt = toPagePt(e.clientX, e.clientY)
+    const pt = toPagePtSnapped(e.clientX, e.clientY)
     if (dragActiveRef.current && dragPreview) {
       if (dragPreview.tool === 'pen' || dragPreview.tool === 'highlight') {
         setDragPreview({ ...dragPreview, pts: [...dragPreview.pts, pt] })
@@ -260,7 +289,7 @@ export function PdfPrintMode() {
   }
 
   function onSvgPointerUp(e: React.PointerEvent<SVGSVGElement>) {
-    const pt = toPagePt(e.clientX, e.clientY)
+    const pt = toPagePtSnapped(e.clientX, e.clientY)
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
 
     if (dragActiveRef.current && dragPreview) {
@@ -338,6 +367,124 @@ export function PdfPrintMode() {
     downPtRef.current = null
   }
 
+  // ── Split ────────────────────────────────────────────────────────────
+  function handleSplitVertexClick(markup: FieldMarkup, idx: number) {
+    const pts = markup.geometry.latlngs
+    if (!pts) return
+    if (markup.tool === 'polygon') {
+      splitPickedIndicesRef.current.push(idx)
+      if (splitPickedIndicesRef.current.length < 2) return
+      const [i, j] = splitPickedIndicesRef.current
+      splitPickedIndicesRef.current = []
+      if (i === j) return
+      const [ringA, ringB] = splitPolygon(pts, i, j)
+      addMarkup({ ...markup, geometry: { latlngs: ringA }, lengthFt: null })
+      addMarkup({ ...markup, geometry: { latlngs: ringB }, lengthFt: null })
+      deleteMarkup(markup.id)
+      setSelectedMarkup(null)
+      setActiveTool('select')
+    } else {
+      if (idx === 0 || idx === pts.length - 1) return // must be an interior vertex
+      const [lineA, lineB] = splitLine(pts, idx)
+      addMarkup({ ...markup, geometry: { latlngs: lineA }, lengthFt: euclideanLength(lineA) })
+      addMarkup({ ...markup, geometry: { latlngs: lineB }, lengthFt: euclideanLength(lineB) })
+      deleteMarkup(markup.id)
+      setSelectedMarkup(null)
+      setActiveTool('select')
+    }
+  }
+
+  // ── Merge ────────────────────────────────────────────────────────────
+  function performMerge() {
+    const ids = [...toolSelectedIds]
+    if (ids.length !== 2) return
+    const a = pageMarkups.find((mk) => mk.id === ids[0])
+    const b = pageMarkups.find((mk) => mk.id === ids[1])
+    if (!a || !b || !a.geometry.latlngs?.length || !b.geometry.latlngs?.length || a.tool !== b.tool) return
+
+    if (a.tool === 'polygon') {
+      const rings = unionPolygons(a.geometry.latlngs, b.geometry.latlngs)
+      for (const ring of rings) addMarkup({ ...a, geometry: { latlngs: ring }, lengthFt: null })
+    } else {
+      const merged = mergeLines(a.geometry.latlngs, b.geometry.latlngs)
+      addMarkup({ ...a, geometry: { latlngs: merged }, lengthFt: euclideanLength(merged) })
+    }
+    deleteMarkup(a.id)
+    deleteMarkup(b.id)
+    setToolSelectedIds(new Set())
+    setActiveTool('select')
+  }
+
+  // ── Vertex Edit ──────────────────────────────────────────────────────
+  // Mirrors markupLayer.ts's buildEditHandles, but as plain SVG circles with pointer
+  // capture instead of draggable Leaflet markers. The live position lives in local
+  // `vertexDrag` state (not the store) while dragging — only committed once on release,
+  // same reasoning as commitMarkup: avoid spamming updateMarkup/the audit log per frame.
+  function applyVertexDragPreview(m: FieldMarkup, drag: NonNullable<typeof vertexDrag>): FieldMarkup {
+    const geo = m.geometry
+    if (drag.kind === 'vertex' && geo.latlngs && drag.index != null) {
+      const next = geo.latlngs.map((p, i) => (i === drag.index ? drag.pt : p))
+      return { ...m, geometry: { ...geo, latlngs: next } }
+    }
+    if (drag.kind === 'radius' && geo.center) {
+      return { ...m, geometry: { ...geo, radius: Math.hypot(drag.pt[0] - geo.center[0], drag.pt[1] - geo.center[1]) } }
+    }
+    if (drag.kind === 'move') {
+      const dx = drag.pt[0] - drag.anchor[0], dy = drag.pt[1] - drag.anchor[1]
+      const next = { ...geo }
+      if (geo.latlngs) next.latlngs = geo.latlngs.map(([x, y]) => [x + dx, y + dy] as [number, number])
+      if (geo.bounds) next.bounds = [[geo.bounds[0][0] + dx, geo.bounds[0][1] + dy], [geo.bounds[1][0] + dx, geo.bounds[1][1] + dy]]
+      if (geo.center) next.center = [geo.center[0] + dx, geo.center[1] + dy]
+      return { ...m, geometry: next }
+    }
+    return m
+  }
+
+  function handleStart(kind: 'vertex' | 'move' | 'radius', markupId: string, anchor: [number, number], index?: number) {
+    setVertexDrag({ markupId, kind, index, anchor, pt: anchor })
+  }
+  function handleMove(e: React.PointerEvent) {
+    if (!vertexDrag) return
+    e.stopPropagation()
+    setVertexDrag({ ...vertexDrag, pt: toPagePtSnapped(e.clientX, e.clientY) })
+  }
+  function handleEnd(e: React.PointerEvent, m: FieldMarkup) {
+    e.stopPropagation()
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+    if (!vertexDrag) return
+    const updated = applyVertexDragPreview(m, vertexDrag)
+    updateMarkup(m.id, { geometry: updated.geometry })
+    setVertexDrag(null)
+  }
+
+  function renderEditHandles(m: FieldMarkup, geo: FieldMarkup['geometry']) {
+    const dot = (cx: number, cy: number, color: string, onDown: () => void) => (
+      <circle
+        cx={cx} cy={cy} r={9} fill={color} stroke="#fff" strokeWidth={2} style={{ cursor: 'move' }}
+        onPointerDown={(e) => { e.stopPropagation(); e.currentTarget.setPointerCapture(e.pointerId); onDown() }}
+        onPointerMove={handleMove}
+        onPointerUp={(e) => handleEnd(e, m)}
+      />
+    )
+    if (geo.latlngs?.length) {
+      return geo.latlngs.map(([x, y], idx) => (
+        <g key={idx}>{dot(x, y, '#3b82f6', () => handleStart('vertex', m.id, [x, y], idx))}</g>
+      ))
+    }
+    if (geo.center && geo.radius != null) {
+      const [cx, cy] = geo.center
+      return (
+        <>
+          {dot(cx, cy, '#3b82f6', () => handleStart('move', m.id, [cx, cy]))}
+          {dot(cx + geo.radius, cy, '#f59e0b', () => handleStart('radius', m.id, [cx, cy]))}
+        </>
+      )
+    }
+    const anchor = geo.latlngs?.[0] ?? geo.bounds?.[0] ?? geo.center ?? null
+    if (!anchor) return null
+    return dot(anchor[0], anchor[1], '#22c55e', () => handleStart('move', m.id, anchor))
+  }
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (accumPts.length === 0) return
@@ -403,16 +550,16 @@ export function PdfPrintMode() {
         editMode={editMode}
         canVertexEdit={!!selectedMarkup && !selectedMarkup.lockedAt}
         onToggleVertexEdit={() => setEditMode((m) => (m === 'vertices' ? 'none' : 'vertices'))}
-        snapEnabled={false}
-        onToggleSnap={() => {}}
+        snapEnabled={snapEnabled}
+        onToggleSnap={() => setSnapEnabled((s) => !s)}
         onUndo={undoLast}
         onRedo={redoLast}
         onDelete={() => selectedMarkup && deleteMarkup(selectedMarkup.id)}
         canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
         onSave={() => finishAccumulation()}
         canSave={accumPts.length > 0}
-        canMerge={false}
-        onMerge={() => {}}
+        canMerge={toolSelectedIds.size === 2}
+        onMerge={performMerge}
       />
 
       {/* Style presets */}
@@ -465,20 +612,51 @@ export function PdfPrintMode() {
               onPointerMove={onSvgPointerMove}
               onPointerUp={onSvgPointerUp}
               onClick={(e) => {
-                if (activeTool !== 'select') return
+                if (activeTool !== 'select' && activeTool !== 'merge') return
                 // The click target is the leaf shape (e.g. <polyline>), not the <g data-markup-id>
                 // wrapper around it — walk up to find it, same as the old RedlineEditor's hit-test.
                 const hit = (e.target as Element).closest('[data-markup-id]')
                 const id = hit?.getAttribute('data-markup-id') ?? null
+                if (activeTool === 'merge') {
+                  if (!id) return
+                  setToolSelectedIds((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(id)) next.delete(id); else next.add(id)
+                    return next
+                  })
+                  return
+                }
                 setSelectedMarkup(id ? (pageMarkups.find((m) => m.id === id) ?? null) : null)
               }}
             >
-              {pageMarkups.map((m) => (
-                <g key={m.id} data-markup-id={m.id} style={{ cursor: activeTool === 'select' ? 'pointer' : undefined }}
-                  opacity={selectedMarkup?.id === m.id ? 1 : 0.92}>
-                  {markupToPdfElement(m)}
-                </g>
-              ))}
+              {pageMarkups.map((m) => {
+                const displayMarkup = vertexDrag?.markupId === m.id ? applyVertexDragPreview(m, vertexDrag) : m
+                const showVertexHandles = editMode === 'vertices' && selectedMarkup?.id === m.id && !m.lockedAt
+                const showSplitHandles = activeTool === 'split' && selectedMarkup?.id === m.id && !!m.geometry.latlngs?.length
+                const geo = displayMarkup.geometry
+                return (
+                  <g key={m.id}>
+                    <g data-markup-id={m.id} style={{ cursor: activeTool === 'select' || activeTool === 'merge' ? 'pointer' : undefined }}
+                      opacity={selectedMarkup?.id === m.id ? 1 : 0.92}>
+                      {markupToPdfElement(displayMarkup)}
+                    </g>
+                    {activeTool === 'merge' && toolSelectedIds.has(m.id) && (
+                      <circle
+                        cx={geo.center?.[0] ?? geo.latlngs?.[0]?.[0] ?? geo.bounds?.[0]?.[0] ?? 0}
+                        cy={geo.center?.[1] ?? geo.latlngs?.[0]?.[1] ?? geo.bounds?.[0]?.[1] ?? 0}
+                        r={10} fill="none" stroke="#f97316" strokeWidth={2} pointerEvents="none"
+                      />
+                    )}
+                    {showVertexHandles && renderEditHandles(m, geo)}
+                    {showSplitHandles && geo.latlngs!.map(([x, y], idx) => (
+                      <circle
+                        key={idx} cx={x} cy={y} r={7} fill="#f97316" stroke="#fff" strokeWidth={2} style={{ cursor: 'pointer' }}
+                        onClick={(e) => { e.stopPropagation(); handleSplitVertexClick(m, idx) }}
+                      />
+                    ))}
+                  </g>
+                )
+              })}
               {dragPreview && dragPreview.pts.length > 0 && (
                 <g opacity={0.8} pointerEvents="none">
                   {(dragPreview.tool === 'pen' || dragPreview.tool === 'highlight') && dragPreview.pts.length >= 2 && (
