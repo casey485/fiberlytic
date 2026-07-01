@@ -198,18 +198,23 @@ function ClientField({
   rateCards,
   clientId,
   clientName,
+  rateCardId,
   onChange,
+  onRateCardChange,
 }: {
   clients: ReturnType<typeof useData>['data']['clients']
   rateCards: ReturnType<typeof useData>['data']['rateCards']
   clientId: string
   clientName: string
+  rateCardId: string
   onChange: (clientId: string, clientName: string) => void
+  onRateCardChange: (rateCardId: string) => void
 }) {
   const dropdownVal = clientId || (clientName ? '__other__' : '')
   const linkedCards = clientId ? rateCards.filter((rc) => rc.clientId === clientId) : []
 
   const handleSelect = (val: string) => {
+    onRateCardChange('') // switching clients invalidates whichever rate card was picked for the old one
     if (val === '__other__' || val === '') {
       onChange('', val === '' ? '' : clientName)
     } else {
@@ -234,12 +239,21 @@ function ClientField({
         />
       )}
       {linkedCards.length > 0 && (
-        <div className="mt-1.5 flex flex-wrap gap-1">
-          {linkedCards.map((rc) => (
-            <span key={rc.id} className="rounded-md bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">
-              {rc.name}{(rc.divisions ?? []).length > 0 ? ` · ${rc.divisions.join(' + ')}` : ''}
-            </span>
-          ))}
+        <div className="mt-2">
+          <label className="mb-1 block text-xs font-medium text-slate-500">
+            Rate card <span className="font-normal text-slate-400">— used by the Field Map for billing</span>
+          </label>
+          <Select value={rateCardId} onChange={(e) => onRateCardChange(e.target.value)}>
+            <option value="">— Not assigned —</option>
+            {linkedCards.map((rc) => (
+              <option key={rc.id} value={rc.id}>
+                {rc.name}{(rc.divisions ?? []).length > 0 ? ` · ${rc.divisions.join(' + ')}` : ''}
+              </option>
+            ))}
+          </Select>
+          {!rateCardId && (
+            <p className="mt-1 text-xs text-amber-600">No rate card assigned — Add Work billing won't have codes to pick from until one is chosen.</p>
+          )}
         </div>
       )}
       {clientId && linkedCards.length === 0 && (
@@ -264,6 +278,7 @@ function NewProjectModal({
     name: '',
     client: '',
     clientId: '',
+    rateCardId: '',
     location: '',
     workTypes: [] as WorkType[],
     status: 'planning' as ProjectStatus,
@@ -279,9 +294,9 @@ function NewProjectModal({
 
   const submit = () => {
     if (!form.name.trim()) return
-    onCreate({ ...form, retentionPct: form.retentionPct / 100, footageComplete: 0, crewIds: [], notes: '' })
+    onCreate({ ...form, rateCardId: form.rateCardId || null, retentionPct: form.retentionPct / 100, footageComplete: 0, crewIds: [], notes: '' })
     onClose()
-    setForm((f) => ({ ...f, name: '', client: '', clientId: '', location: '', contractValue: 0, budget: 0, footageGoal: 0, retentionPct: 10 }))
+    setForm((f) => ({ ...f, name: '', client: '', clientId: '', rateCardId: '', location: '', contractValue: 0, budget: 0, footageGoal: 0, retentionPct: 10 }))
   }
 
   return (
@@ -309,7 +324,9 @@ function NewProjectModal({
               rateCards={data.rateCards}
               clientId={form.clientId}
               clientName={form.client}
+              rateCardId={form.rateCardId}
               onChange={(id, name) => setForm((f) => ({ ...f, clientId: id, client: name }))}
+              onRateCardChange={(id) => set('rateCardId', id)}
             />
           </Field>
         </div>
@@ -376,6 +393,7 @@ function EditProjectModal({ project, onClose }: { project: Project; onClose: () 
     name: project.name,
     client: project.client,
     clientId: resolvedClientId,
+    rateCardId: project.rateCardId ?? '',
     location: project.location,
     workTypes: project.workTypes ?? [],
     status: project.status,
@@ -394,6 +412,7 @@ function EditProjectModal({ project, onClose }: { project: Project; onClose: () 
     if (!form.name.trim()) return
     updateProject(project.id, {
       ...form,
+      rateCardId: form.rateCardId || null,
       retentionPct: form.retentionPct / 100,
     })
     onClose()
@@ -424,7 +443,9 @@ function EditProjectModal({ project, onClose }: { project: Project; onClose: () 
               rateCards={data.rateCards}
               clientId={form.clientId}
               clientName={form.client}
+              rateCardId={form.rateCardId}
               onChange={(id, name) => setForm((f) => ({ ...f, clientId: id, client: name }))}
+              onRateCardChange={(id) => set('rateCardId', id)}
             />
           </Field>
         </div>
