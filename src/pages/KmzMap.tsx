@@ -29,9 +29,11 @@ import { GeoreferencePanel } from '../components/GeoreferencePanel'
 import { AddWorkModal } from '../components/AddWorkModal'
 import { LayerManagerPanel } from '../components/LayerManagerPanel'
 import { FieldMapToolbar } from '../components/FieldMapToolbar'
+import type { FieldMapDrawTool } from '../components/FieldMapToolbar'
 import { exportFieldMapReport, buildReportRows } from '../lib/fieldMapExport'
 import { findSnapPoint, collectSnapCandidates } from '../lib/snap'
 import { splitLine, mergeLines, splitPolygon, unionPolygons } from '../lib/geometryOps'
+import { relevantToolsForWorkType } from '../lib/workObjectTypes'
 import type { WorkObjectTypeDef } from '../lib/workObjectTypes'
 import { loadBlob, saveBlob } from '../lib/fileStore'
 import type { PendingProduction } from '../lib/pendingProduction'
@@ -68,6 +70,11 @@ function isFeatureDrop(tool: string): boolean {
 // zero-length "line" and open the Work Object dialog after a single click.
 const DRAG_DRAW_TOOLS = new Set(['pen', 'dashed_line', 'dotted_line', 'arrow', 'double_arrow', 'rect', 'circle', 'highlight', 'ellipse'])
 function isDragDrawTool(tool: string) { return DRAG_DRAW_TOOLS.has(tool) }
+
+/** Report Line isn't Add-Work-Type-driven (no WorkObjectTypeDef involved), so it gets its own
+ * fixed curated toolbar set instead of relevantToolsForWorkType — covers the polygon/polyline
+ * trace it defaults into plus the other line-tracing tools. */
+const REPORT_LINE_TOOLS: FieldMapDrawTool[] = ['line', 'multi_line', 'polygon', 'pen', 'measure']
 
 const WEIGHT_OPTIONS = [
   { value: 1,  label: 'XS' },
@@ -166,11 +173,13 @@ export function KmzMap() {
   const [rlActive,      setRlActive]      = useState(false)
   const [activeTool,    setActiveTool]    = useState<DrawTool | MarkupTool>('select')
   const [activeSubtype, setActiveSubtype] = useState<string>('pen')
-  // True from the moment a Work Type is picked in Add Work through Save/Cancel of that
-  // Work Object — drawing is locked outside this window (both the toolbar's disabled
-  // buttons and the actual draw-trigger effects below check this), so every new redline
-  // has to go through Add Work first.
-  const [workSessionActive, setWorkSessionActive] = useState(false)
+  // null outside an active Add Work/Report Line session — the toolbar shows only
+  // Select+Add Work, and the draw-trigger effects below refuse to start a new shape.
+  // Non-null from the moment a Work Type is picked through Save/Cancel of that Work
+  // Object: holds the curated tool list for the toolbar to show (not just a boolean —
+  // pendingWorkTypeRef itself gets cleared right after the shape is drawn, before
+  // Details/Photos/Billing/Save, so it can't be relied on for the whole session).
+  const [sessionTools, setSessionTools] = useState<FieldMapDrawTool[] | null>(null)
   const [rlColor,       setRlColor]       = useState('#ef4444')
   const [rlWeight,      setRlWeight]      = useState(2)
   const [rlOpacity,      setRlOpacity]      = useState(1.0)
@@ -838,7 +847,7 @@ export function KmzMap() {
     // clicks meant for the modal's form fields. Also pause outside an active Add Work
     // session — disabling the toolbar buttons alone wouldn't stop this, since activeTool
     // can already be a drawing tool (e.g. the initial default) independent of the toolbar.
-    if (!map || !rlActive || !workSessionActive || addWorkModalOpen || activeTool === 'select' || activeTool === 'aerial_lash' || isDragDrawTool(activeTool as string)) return
+    if (!map || !rlActive || !sessionTools || addWorkModalOpen || activeTool === 'select' || activeTool === 'aerial_lash' || isDragDrawTool(activeTool as string)) return
 
     // Line / Polygon / Multi-Line / Measure / Cloud: click-to-add-point, finish on completion
     // (never on the first click — geometryComplete, not geometryStart, is what may open the
@@ -1053,7 +1062,7 @@ export function KmzMap() {
       tmap.on('click', onTextClick)
       return () => { tmap.off('click', onTextClick) }
     }
-  }, [rlActive, activeTool, activeSubtype, rlColor, rlWeight, rlFillOpacity, rlOpacity, projectId, commitMarkup, snapEnabled, snapCandidates, addWorkModalOpen, workSessionActive])
+  }, [rlActive, activeTool, activeSubtype, rlColor, rlWeight, rlFillOpacity, rlOpacity, projectId, commitMarkup, snapEnabled, snapCandidates, addWorkModalOpen, sessionTools])
 
   // ── Aerial lash fiber: drawing mode ──────────────────────────────────────────
   useEffect(() => {
@@ -1215,10 +1224,10 @@ export function KmzMap() {
     if (!el) return
     const leaf = el.querySelector('.leaflet-container') as HTMLElement | null
     if (!leaf) return
-    const inClickDraw = rlActive && workSessionActive && activeTool !== 'select' && !isDragDrawTool(activeTool as string)
+    const inClickDraw = rlActive && sessionTools && activeTool !== 'select' && !isDragDrawTool(activeTool as string)
     leaf.style.cursor = inClickDraw ? 'crosshair' : ''
     return () => { leaf.style.cursor = '' }
-  }, [rlActive, workSessionActive, activeTool, mapReady])
+  }, [rlActive, sessionTools, activeTool, mapReady])
 
   // ── Shared pan logic (direct mapPane CSS manipulation) ───────────────────
   function applyPanDelta(dx: number, dy: number) {
@@ -1397,7 +1406,7 @@ export function KmzMap() {
   function handleReportLine() {
     reportModeRef.current = true
     setRlActive(true)
-    setWorkSessionActive(true)
+    setSessionTools(REPORT_LINE_TOOLS)
     setActiveColorCode(null); activeColorCodeRef.current = null
     setActiveTool('polygon')
     setActiveSubtype('polyline')
@@ -1416,7 +1425,7 @@ export function KmzMap() {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
     reportModeRef.current = false
-    setWorkSessionActive(true)
+    setSessionTools(relevantToolsForWorkType(type.id))
     setActiveColorCode(null); activeColorCodeRef.current = null
     setRlColor(type.defaultColor)
     setRlActive(true)
@@ -1999,7 +2008,7 @@ export function KmzMap() {
             canSave={polygonInProgress || aerialRunInProgress}
             canMerge={toolSelectedIds.size === 2}
             onMerge={performMerge}
-            toolsLocked={!workSessionActive}
+            activeTools={sessionTools}
             advancedToolsChildren={
               <button
                 onClick={handleExportReport}
@@ -2244,7 +2253,7 @@ export function KmzMap() {
 
           {/* Draw overlay: captures drag events for draw tools (pen/line/rect/circle/arrow).
                touchAction:none prevents browser scroll/zoom so touch events reach our handlers. */}
-          {rlActive && workSessionActive && !addWorkModalOpen && isDragDrawTool(activeTool as string) && (
+          {rlActive && sessionTools && !addWorkModalOpen && isDragDrawTool(activeTool as string) && (
             <div
               className="absolute inset-0 z-[500]"
               style={{ cursor: 'crosshair', touchAction: 'none', userSelect: 'none' }}
@@ -2579,7 +2588,7 @@ export function KmzMap() {
           onClose={() => {
             setDistModalId(null)
             setActiveTool('select')
-            setWorkSessionActive(false)
+            setSessionTools(null)
             // Show the markup in the right panel after closing without saving
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
             if (mk) { setSelectedMarkup(mk); setPanelCollapsed(false) }
@@ -2587,7 +2596,7 @@ export function KmzMap() {
           onSaved={() => {
             setDistModalId(null)
             setActiveTool('select')
-            setWorkSessionActive(false)
+            setSessionTools(null)
             // Refresh selected markup so right panel shows updated data
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
             if (mk) { setSelectedMarkup({ ...mk }); setPanelCollapsed(false) }
@@ -2605,7 +2614,7 @@ export function KmzMap() {
           setAddWorkModalOpen(false)
           setAddWorkMarkupId(null)
           setActiveTool('select')
-          setWorkSessionActive(false)
+          setSessionTools(null)
         }}
       />
     </div>

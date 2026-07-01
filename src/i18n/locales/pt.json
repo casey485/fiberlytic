@@ -15,7 +15,7 @@
     "measure": "Medir",
     "split": "Dividir (selecione 2)",
     "merge": "Unir (selecione 2)",
-    "moreShapes": "Mais formas",
+    "moreTools": "Mais Ferramentas",
     "cloud": "Nuvem",
     "highlight": "Destaque",
     "ellipse": "Elipse",
@@ -27,7 +27,6 @@
     "delete": "Excluir",
     "save": "Salvar",
     "advancedTools": "Ferramentas Avançadas",
-    "locked": "Clique em Adicionar Trabalho para iniciar um novo item",
     "exportReport": "Exportar Relatório (PDF)",
     "exporting": "Exportando…"
   },

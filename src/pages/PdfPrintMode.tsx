@@ -19,6 +19,7 @@ import { attemptDeleteMarkup } from '../lib/markupDelete'
 import { renderPdf } from '../features/printkmz/pdf'
 import { loadBlob } from '../lib/fileStore'
 import { markupToPdfElement } from '../lib/markupToPdfSvg'
+import { relevantToolsForWorkType } from '../lib/workObjectTypes'
 import type { WorkObjectTypeDef } from '../lib/workObjectTypes'
 import { FieldMapToolbar, type FieldMapDrawTool } from '../components/FieldMapToolbar'
 import { AddWorkModal } from '../components/AddWorkModal'
@@ -71,10 +72,11 @@ export function PdfPrintMode() {
   const [error, setError] = useState<string | null>(null)
 
   const [activeTool, setActiveTool] = useState<FieldMapDrawTool | MarkupTool | string>('select')
-  // True from the moment a Work Type is picked in Add Work through Save/Cancel of that
-  // Work Object — drawing tools are locked outside this window (see FieldMapToolbar's
-  // toolsLocked prop), so every new redline has to go through Add Work first.
-  const [workSessionActive, setWorkSessionActive] = useState(false)
+  // null outside an active Add Work session — the toolbar shows only Select+Add Work, and
+  // the pointer-down guard below refuses to start a new shape. Non-null from the moment a
+  // Work Type is picked through Save/Cancel of that Work Object: holds the curated tool list
+  // for the toolbar to show.
+  const [sessionTools, setSessionTools] = useState<FieldMapDrawTool[] | null>(null)
   const [activeSubtype, setActiveSubtype] = useState('pen')
   const [color, setColor] = useState('#ef4444')
   const [weight, setWeight] = useState(2)
@@ -231,7 +233,7 @@ export function PdfPrintMode() {
   function startAddWork(type: WorkObjectTypeDef) {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
-    setWorkSessionActive(true)
+    setSessionTools(relevantToolsForWorkType(type.id))
     setColor(type.defaultColor)
     if (type.defaultGeometry === 'polygon') setActiveTool('polygon')
     else if (type.defaultGeometry === 'line') setActiveTool('line')
@@ -270,7 +272,7 @@ export function PdfPrintMode() {
     if (textInput) { commitText(); return }
     // Defense in depth alongside the toolbar's disabled buttons — every branch below starts
     // a brand new shape, which should never be reachable outside an active Add Work session.
-    if (!workSessionActive) return
+    if (!sessionTools) return
     const pt = toPagePtSnapped(e.clientX, e.clientY)
 
     if (DRAG_TOOLS.has(activeTool as string)) {
@@ -595,7 +597,7 @@ export function PdfPrintMode() {
         canSave={accumPts.length > 0}
         canMerge={toolSelectedIds.size === 2}
         onMerge={performMerge}
-        toolsLocked={!workSessionActive}
+        activeTools={sessionTools}
         advancedToolsChildren={
           <div className="px-3 py-2">
             <label className="block text-[10px] font-medium text-slate-400 mb-1">Page scale — 1 inch =</label>
@@ -769,7 +771,7 @@ export function PdfPrintMode() {
         projectId={projectId ?? ''}
         markupId={addWorkMarkupId}
         onPickType={startAddWork}
-        onClose={() => { setAddWorkModalOpen(false); setAddWorkMarkupId(null); setActiveTool('select'); setWorkSessionActive(false) }}
+        onClose={() => { setAddWorkModalOpen(false); setAddWorkMarkupId(null); setActiveTool('select'); setSessionTools(null) }}
       />
 
       {selectedMarkup && !panelCollapsed && (

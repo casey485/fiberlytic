@@ -2,13 +2,20 @@
  * FieldMapToolbar — the single top toolbar for the Field Map's editing engine.
  * Same tools regardless of whether the background is a KMZ vector layer or a
  * georeferenced PDF raster overlay — only the background differs.
+ *
+ * Clean by default: only Select + Add Work show until an Add Work session is
+ * active (a Work Type has been picked). Once active, only the tools relevant
+ * to that Work Type appear, plus a "More Tools" flyout for everything else —
+ * nothing is ever truly unreachable, just deprioritized. Saving/cancelling the
+ * session hides everything again.
  */
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
-  MousePointer2, Hand, Plus, Circle, Square, Minus, Waypoints, Spline, Type,
+  Hand, Plus, Circle, Square, Minus, Waypoints, Spline, Type,
   MessageSquare, ArrowUpRight, Ruler, Scissors, Combine, Magnet, Layers,
-  Undo2, Redo2, Trash2, Save, PenTool, MapPinPlus, ChevronDown, Cloud, Highlighter, MoreHorizontal,
+  Undo2, Redo2, Trash2, Save, PenTool, MapPinPlus, ChevronDown, Cloud, Highlighter,
+  MoreHorizontal, Wrench,
 } from 'lucide-react'
 import type { MarkupTool } from '../types'
 
@@ -38,16 +45,15 @@ interface Props {
   onMerge: () => void
   /** Optional menu items injected into the Advanced Tools dropdown (e.g. Export Report). */
   advancedToolsChildren?: React.ReactNode
-  /** True until Add Work → a Type is picked. Disables every shape-creating tool (Select, and the
-   * shape-editing tools Split/Merge/Vertex-Edit/Snap, stay usable — they act on existing work, not new). */
-  toolsLocked?: boolean
+  /** null = no Add Work session active — only Select + Add Work render. Otherwise, the curated
+   * list of drawing tools relevant to the current Work Type; everything else in ALL_DRAW_TOOLS
+   * still reachable via the "More Tools" flyout. */
+  activeTools: FieldMapDrawTool[] | null
 }
 
-/** Tools that stay usable even while toolsLocked — they modify existing shapes rather than create new ones. */
-const LOCK_EXEMPT_TOOLS = new Set<FieldMapDrawTool>(['select', 'split'])
-
-const TOOL_BUTTONS: { tool: FieldMapDrawTool; labelKey: string; icon: React.ReactNode }[] = [
-  { tool: 'select', labelKey: 'toolbar.select', icon: <MousePointer2 size={15} /> },
+/** Every drawing tool that can appear as a primary button or in "More Tools" — canonical display
+ * order. Select/Split/Merge are handled as their own dedicated buttons, not part of this set. */
+const ALL_DRAW_TOOLS: { tool: FieldMapDrawTool; labelKey: string; icon: React.ReactNode }[] = [
   { tool: 'point', labelKey: 'toolbar.point', icon: <MapPinPlus size={15} /> },
   { tool: 'line', labelKey: 'toolbar.line', icon: <Minus size={15} /> },
   { tool: 'multi_line', labelKey: 'toolbar.multiLine', icon: <Waypoints size={15} /> },
@@ -59,10 +65,6 @@ const TOOL_BUTTONS: { tool: FieldMapDrawTool; labelKey: string; icon: React.Reac
   { tool: 'callout', labelKey: 'toolbar.callout', icon: <MessageSquare size={15} /> },
   { tool: 'arrow', labelKey: 'toolbar.arrow', icon: <ArrowUpRight size={15} /> },
   { tool: 'measure', labelKey: 'toolbar.measure', icon: <Ruler size={15} /> },
-  { tool: 'split', labelKey: 'toolbar.split', icon: <Scissors size={15} /> },
-]
-
-const MORE_SHAPES: { tool: FieldMapDrawTool; labelKey: string; icon: React.ReactNode }[] = [
   { tool: 'cloud', labelKey: 'toolbar.cloud', icon: <Cloud size={14} /> },
   { tool: 'highlight', labelKey: 'toolbar.highlight', icon: <Highlighter size={14} /> },
   { tool: 'ellipse', labelKey: 'toolbar.ellipse', icon: <Circle size={14} /> },
@@ -85,18 +87,24 @@ function ToolbarButton({
   )
 }
 
+const Divider = () => <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
+
 export function FieldMapToolbar({
   activeTool, onSelectTool, onAddWork,
   editMode, onToggleVertexEdit, canVertexEdit,
   snapEnabled, onToggleSnap, onOpenLayerManager,
   onUndo, onRedo, onDelete, canDelete, onSave, canSave,
   canMerge, onMerge, advancedToolsChildren,
-  toolsLocked = false,
+  activeTools,
 }: Props) {
   const { t } = useTranslation()
-  const [moreShapesOpen, setMoreShapesOpen] = useState(false)
+  const [moreToolsOpen, setMoreToolsOpen] = useState(false)
   const [advancedOpen, setAdvancedOpen] = useState(false)
-  const isMoreShapeActive = MORE_SHAPES.some((s) => s.tool === activeTool)
+
+  const sessionActive = activeTools !== null
+  const primaryTools = sessionActive ? ALL_DRAW_TOOLS.filter((d) => activeTools.includes(d.tool)) : []
+  const overflowTools = sessionActive ? ALL_DRAW_TOOLS.filter((d) => !activeTools.includes(d.tool)) : []
+  const isOverflowActive = overflowTools.some((d) => d.tool === activeTool)
 
   return (
     <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-[#1e1e1e] bg-[#0d0d0d] px-2 py-1.5">
@@ -112,85 +120,89 @@ export function FieldMapToolbar({
         <Plus size={13} /> {t('toolbar.addWork')}
       </button>
 
-      <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
+      {sessionActive && (
+        <>
+          <Divider />
 
-      {TOOL_BUTTONS.map(({ tool, labelKey, icon }) => {
-        const locked = toolsLocked && !LOCK_EXEMPT_TOOLS.has(tool)
-        return (
-          <ToolbarButton key={tool} active={activeTool === tool} disabled={locked} title={locked ? t('toolbar.locked') : t(labelKey)} onClick={() => onSelectTool(tool)}>
-            {icon}
-          </ToolbarButton>
-        )
-      })}
+          {primaryTools.map(({ tool, labelKey, icon }) => (
+            <ToolbarButton key={tool} active={activeTool === tool} title={t(labelKey)} onClick={() => onSelectTool(tool)}>
+              {icon}
+            </ToolbarButton>
+          ))}
 
-      {/* More Shapes flyout: Cloud, Highlight, Ellipse — all pure drawing tools, so all lock together */}
-      <div className="relative shrink-0">
-        <button
-          onClick={() => setMoreShapesOpen((o) => !o)}
-          disabled={toolsLocked}
-          title={toolsLocked ? t('toolbar.locked') : t('toolbar.moreShapes')}
-          className={`flex items-center gap-0.5 rounded-md p-1.5 transition disabled:opacity-30 disabled:cursor-not-allowed ${
-            isMoreShapeActive ? 'bg-brand-600/25 text-brand-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
-          }`}
-        >
-          <Cloud size={15} />
-          <ChevronDown size={10} className={`transition-transform ${moreShapesOpen ? 'rotate-180' : ''}`} />
-        </button>
-        {moreShapesOpen && (
-          <div className="absolute left-0 top-full z-[2000] mt-1 w-40 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
-            {MORE_SHAPES.map(({ tool, labelKey, icon }) => (
+          {overflowTools.length > 0 && (
+            <div className="relative shrink-0">
               <button
-                key={tool}
-                onClick={() => { onSelectTool(tool); setMoreShapesOpen(false) }}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition hover:bg-white/5 ${
-                  activeTool === tool ? 'text-brand-300' : 'text-slate-300'
+                onClick={() => setMoreToolsOpen((o) => !o)}
+                title={t('toolbar.moreTools')}
+                className={`flex items-center gap-0.5 rounded-md p-1.5 transition ${
+                  isOverflowActive ? 'bg-brand-600/25 text-brand-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
                 }`}
               >
-                {icon} {t(labelKey)}
+                <Wrench size={15} />
+                <ChevronDown size={10} className={`transition-transform ${moreToolsOpen ? 'rotate-180' : ''}`} />
               </button>
-            ))}
-          </div>
-        )}
-      </div>
+              {moreToolsOpen && (
+                <div className="absolute left-0 top-full z-[2000] mt-1 w-40 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
+                  {overflowTools.map(({ tool, labelKey, icon }) => (
+                    <button
+                      key={tool}
+                      onClick={() => { onSelectTool(tool); setMoreToolsOpen(false) }}
+                      className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition hover:bg-white/5 ${
+                        activeTool === tool ? 'text-brand-300' : 'text-slate-300'
+                      }`}
+                    >
+                      {icon} {t(labelKey)}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
-      <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
+          <Divider />
 
-      <ToolbarButton active={canMerge && activeTool === 'merge'} disabled={!canMerge && activeTool !== 'merge'} title={t('toolbar.merge')} onClick={() => (activeTool === 'merge' ? onMerge() : onSelectTool('merge'))}>
-        <Combine size={15} />
-      </ToolbarButton>
-      <ToolbarButton active={editMode === 'vertices'} disabled={!canVertexEdit} title={t('toolbar.vertexEdit')} onClick={onToggleVertexEdit}>
-        <Spline size={15} />
-      </ToolbarButton>
-      <ToolbarButton active={snapEnabled} title={t('toolbar.snap')} onClick={onToggleSnap}>
-        <Magnet size={15} />
-      </ToolbarButton>
+          <ToolbarButton active={activeTool === 'split'} title={t('toolbar.split')} onClick={() => onSelectTool('split')}>
+            <Scissors size={15} />
+          </ToolbarButton>
+          <ToolbarButton active={canMerge && activeTool === 'merge'} disabled={!canMerge && activeTool !== 'merge'} title={t('toolbar.merge')} onClick={() => (activeTool === 'merge' ? onMerge() : onSelectTool('merge'))}>
+            <Combine size={15} />
+          </ToolbarButton>
+          <ToolbarButton active={editMode === 'vertices'} disabled={!canVertexEdit} title={t('toolbar.vertexEdit')} onClick={onToggleVertexEdit}>
+            <Spline size={15} />
+          </ToolbarButton>
+          <ToolbarButton active={snapEnabled} title={t('toolbar.snap')} onClick={onToggleSnap}>
+            <Magnet size={15} />
+          </ToolbarButton>
+
+          <Divider />
+
+          <ToolbarButton title={t('toolbar.undo')} onClick={onUndo}><Undo2 size={15} /></ToolbarButton>
+          <ToolbarButton title={t('toolbar.redo')} onClick={onRedo}><Redo2 size={15} /></ToolbarButton>
+          <ToolbarButton title={t('toolbar.delete')} disabled={!canDelete} onClick={onDelete}><Trash2 size={15} /></ToolbarButton>
+          <ToolbarButton title={t('toolbar.save')} disabled={!canSave} onClick={onSave}><Save size={15} /></ToolbarButton>
+        </>
+      )}
+
+      {(onOpenLayerManager || advancedToolsChildren) && <Divider />}
+
       {onOpenLayerManager && (
         <ToolbarButton title={t('toolbar.layerManager')} onClick={onOpenLayerManager}>
           <Layers size={15} />
         </ToolbarButton>
       )}
 
-      <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
-
-      <ToolbarButton title={t('toolbar.undo')} onClick={onUndo}><Undo2 size={15} /></ToolbarButton>
-      <ToolbarButton title={t('toolbar.redo')} onClick={onRedo}><Redo2 size={15} /></ToolbarButton>
-      <ToolbarButton title={t('toolbar.delete')} disabled={!canDelete} onClick={onDelete}><Trash2 size={15} /></ToolbarButton>
-      <ToolbarButton title={t('toolbar.save')} disabled={!canSave} onClick={onSave}><Save size={15} /></ToolbarButton>
-
       {advancedToolsChildren && (
-        <>
-          <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
-          <div className="relative shrink-0">
-            <ToolbarButton active={advancedOpen} title={t('toolbar.advancedTools')} onClick={() => setAdvancedOpen((o) => !o)}>
-              <MoreHorizontal size={15} />
-            </ToolbarButton>
-            {advancedOpen && (
-              <div className="absolute right-0 top-full z-[2000] mt-1 w-48 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
-                {advancedToolsChildren}
-              </div>
-            )}
-          </div>
-        </>
+        <div className="relative shrink-0">
+          <ToolbarButton active={advancedOpen} title={t('toolbar.advancedTools')} onClick={() => setAdvancedOpen((o) => !o)}>
+            <MoreHorizontal size={15} />
+          </ToolbarButton>
+          {advancedOpen && (
+            <div className="absolute right-0 top-full z-[2000] mt-1 w-48 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
+              {advancedToolsChildren}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

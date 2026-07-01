@@ -20,6 +20,7 @@ import {
   Box, Milestone, Anchor, Scissors, Sprout, ShieldCheck, AlertTriangle, FileWarning,
 } from 'lucide-react'
 import type { MarkupTool, MarkupStatus, WorkObjectTypeId, PhotoProofType } from '../types'
+import type { FieldMapDrawTool } from '../components/FieldMapToolbar'
 
 export type { WorkObjectTypeId, PhotoProofType }
 
@@ -162,3 +163,28 @@ export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
 
 export const WORK_OBJECT_TYPE_MAP: Record<WorkObjectTypeId, WorkObjectTypeDef> =
   Object.fromEntries(WORK_OBJECT_TYPES.map((t) => [t.id, t])) as Record<WorkObjectTypeId, WorkObjectTypeDef>
+
+// ---------------------------------------------------------------------------
+// Which drawing tools the Field Map toolbar shows once a Work Type is picked
+// — curated per type so the crew sees only what's relevant (e.g. Directional
+// Drill doesn't need Rectangle/Text/Circle). Everything else is still one
+// click away via the toolbar's "More Tools" flyout, never truly hidden.
+// ---------------------------------------------------------------------------
+
+const LINE_TYPE_TOOLS: FieldMapDrawTool[] = ['line', 'multi_line', 'pen', 'measure']
+const POINT_TYPE_TOOLS: FieldMapDrawTool[] = ['point', 'rect', 'callout']
+
+/** Explicit overrides for types with a distinct tool mix from their geometry-kind default. */
+const RELEVANT_TOOLS_OVERRIDE: Partial<Record<WorkObjectTypeId, FieldMapDrawTool[]>> = {
+  handhole_vault: POINT_TYPE_TOOLS,
+  restoration: ['polygon', 'rect', 'pen', 'measure'],
+  aerial_strand: ['line', 'multi_line', 'point', 'measure'],
+}
+
+export function relevantToolsForWorkType(typeId: WorkObjectTypeId): FieldMapDrawTool[] {
+  const override = RELEVANT_TOOLS_OVERRIDE[typeId]
+  if (override) return override
+  const type = WORK_OBJECT_TYPE_MAP[typeId]
+  if (type?.defaultGeometry === 'point') return POINT_TYPE_TOOLS
+  return LINE_TYPE_TOOLS
+}

@@ -15,7 +15,7 @@
     "measure": "Measure",
     "split": "Split (select 2)",
     "merge": "Merge (select 2)",
-    "moreShapes": "More shapes",
+    "moreTools": "More Tools",
     "cloud": "Cloud",
     "highlight": "Highlight",
     "ellipse": "Ellipse",
@@ -27,7 +27,6 @@
     "delete": "Delete",
     "save": "Save",
     "advancedTools": "Advanced Tools",
-    "locked": "Click Add Work to start a new item",
     "exportReport": "Export Report (PDF)",
     "exporting": "Exporting…"
   },
