@@ -36,6 +36,7 @@ import { generateSeedData } from '../data/seed'
 import { crewLaborCost } from '../lib/laborCost'
 import { daysInMonth, workTypeDivisions } from '../lib/analytics'
 import { saveBlob, deleteBlob } from '../lib/fileStore'
+import { enqueue as enqueueSyncEntry, flush as flushSyncEntries } from '../lib/syncQueue'
 
 const STORAGE_KEY = 'fiberlytic:data:v1'
 
@@ -408,6 +409,9 @@ interface DataContextValue {
   deleteFieldMapOverlay: (id: string) => void
   // Favorite billing unit codes
   toggleFavoriteUnitCode: (unitCode: string) => void
+  // Offline sync queue — drains queued Work Object mutations, marking each rolled-up
+  // FieldMarkup 'synced'. No real sync target is configured yet (see lib/syncQueue.ts).
+  flushSyncQueue: () => Promise<{ ok: boolean; flushed: number }>
   // Misc
   resetData: () => void
 }
@@ -990,9 +994,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
         const id = newId('mkp')
         setData((d) => ({
           ...d,
-          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: new Date().toISOString() }],
+          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: new Date().toISOString(), syncStatus: 'pending' }],
           markupHistory: [...(d.markupHistory ?? []), historyEntry(id, 'created', m.createdBy ?? null)],
         }))
+        enqueueSyncEntry('markup', id, id, 'create')
         return id
       },
       updateMarkup(id, patch, actor = null) {
@@ -1002,11 +1007,12 @@ export function DataProvider({ children }: { children: ReactNode }) {
           return {
             ...d,
             fieldMarkups: (d.fieldMarkups ?? []).map((m) =>
-              m.id === id ? { ...m, ...patch, updatedAt: new Date().toISOString() } : m,
+              m.id === id ? { ...m, ...patch, updatedAt: new Date().toISOString(), syncStatus: 'pending' } : m,
             ),
             markupHistory: newEntries.length ? [...(d.markupHistory ?? []), ...newEntries] : (d.markupHistory ?? []),
           }
         })
+        enqueueSyncEntry('markup', id, id, 'update')
       },
       deleteMarkup(id) {
         setData((d) => ({
@@ -1019,6 +1025,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           markupAttachments: (d.markupAttachments ?? []).filter((a) => a.markupId !== id),
           markupHistory: (d.markupHistory ?? []).filter((h) => h.markupId !== id),
         }))
+        enqueueSyncEntry('markup', id, id, 'delete')
         // Blobs in IndexedDB are cleaned up lazily — orphaned blobs are small and rarely accumulate
       },
       addMarkupPhoto(p, actor = null) {
@@ -1026,8 +1033,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setData((d) => ({
           ...d,
           markupPhotos: [...(d.markupPhotos ?? []), { ...p, id }],
+          fieldMarkups: (d.fieldMarkups ?? []).map((m) => m.id === p.markupId ? { ...m, syncStatus: 'pending' } : m),
           markupHistory: [...(d.markupHistory ?? []), historyEntry(p.markupId, 'photo_added', actor)],
         }))
+        enqueueSyncEntry('markupPhoto', id, p.markupId, 'create')
         return id
       },
       deleteMarkupPhoto(id, actor = null) {
@@ -1036,25 +1045,33 @@ export function DataProvider({ children }: { children: ReactNode }) {
           return {
             ...d,
             markupPhotos: (d.markupPhotos ?? []).filter((p) => p.id !== id),
+            fieldMarkups: photo ? (d.fieldMarkups ?? []).map((m) => m.id === photo.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
             markupHistory: photo ? [...(d.markupHistory ?? []), historyEntry(photo.markupId, 'photo_removed', actor)] : (d.markupHistory ?? []),
           }
         })
         void deleteBlob(`mkp-${id}`)
+        const photo = data.markupPhotos.find((p) => p.id === id)
+        enqueueSyncEntry('markupPhoto', id, photo?.markupId ?? null, 'delete')
       },
       addMarkupBilling(b, actor = null) {
         const id = newId('mkpb')
         setData((d) => ({
           ...d,
           markupBilling: [...(d.markupBilling ?? []), { ...b, id }],
+          fieldMarkups: (d.fieldMarkups ?? []).map((m) => m.id === b.markupId ? { ...m, syncStatus: 'pending' } : m),
           markupHistory: [...(d.markupHistory ?? []), historyEntry(b.markupId, 'billing_added', actor)],
         }))
+        enqueueSyncEntry('markupBilling', id, b.markupId, 'create')
         return id
       },
       updateMarkupBilling(id, patch) {
+        const billing = data.markupBilling.find((b) => b.id === id)
         setData((d) => ({
           ...d,
           markupBilling: (d.markupBilling ?? []).map((b) => b.id === id ? { ...b, ...patch } : b),
+          fieldMarkups: billing ? (d.fieldMarkups ?? []).map((m) => m.id === billing.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
         }))
+        enqueueSyncEntry('markupBilling', id, billing?.markupId ?? null, 'update')
       },
       deleteMarkupBilling(id, actor = null) {
         setData((d) => {
@@ -1062,20 +1079,34 @@ export function DataProvider({ children }: { children: ReactNode }) {
           return {
             ...d,
             markupBilling: (d.markupBilling ?? []).filter((b) => b.id !== id),
+            fieldMarkups: billing ? (d.fieldMarkups ?? []).map((m) => m.id === billing.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
             markupHistory: billing ? [...(d.markupHistory ?? []), historyEntry(billing.markupId, 'billing_removed', actor)] : (d.markupHistory ?? []),
           }
         })
+        const billing = data.markupBilling.find((b) => b.id === id)
+        enqueueSyncEntry('markupBilling', id, billing?.markupId ?? null, 'delete')
       },
 
       // ── Work Object videos ────────────────────────────────────────────────
       addMarkupVideo(v) {
         const id = newId('mkpv')
-        setData((d) => ({ ...d, markupVideos: [...(d.markupVideos ?? []), { ...v, id }] }))
+        setData((d) => ({
+          ...d,
+          markupVideos: [...(d.markupVideos ?? []), { ...v, id }],
+          fieldMarkups: (d.fieldMarkups ?? []).map((m) => m.id === v.markupId ? { ...m, syncStatus: 'pending' } : m),
+        }))
+        enqueueSyncEntry('markupVideo', id, v.markupId, 'create')
         return id
       },
       deleteMarkupVideo(id) {
-        setData((d) => ({ ...d, markupVideos: (d.markupVideos ?? []).filter((v) => v.id !== id) }))
+        const video = data.markupVideos.find((v) => v.id === id)
+        setData((d) => ({
+          ...d,
+          markupVideos: (d.markupVideos ?? []).filter((v) => v.id !== id),
+          fieldMarkups: video ? (d.fieldMarkups ?? []).map((m) => m.id === video.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
+        }))
         void deleteBlob(`mkp-${id}`)
+        enqueueSyncEntry('markupVideo', id, video?.markupId ?? null, 'delete')
       },
 
       // ── Work Object inspections ───────────────────────────────────────────
@@ -1084,29 +1115,47 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setData((d) => ({
           ...d,
           markupInspections: [...(d.markupInspections ?? []), { ...i, id, createdAt: new Date().toISOString() }],
+          fieldMarkups: (d.fieldMarkups ?? []).map((m) => m.id === i.markupId ? { ...m, syncStatus: 'pending' } : m),
           markupHistory: [...(d.markupHistory ?? []), historyEntry(i.markupId, 'inspection_added', i.createdBy ?? null)],
         }))
+        enqueueSyncEntry('markupInspection', id, i.markupId, 'create')
         return id
       },
       updateMarkupInspection(id, patch) {
+        const inspection = data.markupInspections.find((i) => i.id === id)
         setData((d) => ({
           ...d,
           markupInspections: (d.markupInspections ?? []).map((i) => (i.id === id ? { ...i, ...patch } : i)),
+          fieldMarkups: inspection ? (d.fieldMarkups ?? []).map((m) => m.id === inspection.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
         }))
+        enqueueSyncEntry('markupInspection', id, inspection?.markupId ?? null, 'update')
       },
       deleteMarkupInspection(id) {
+        const inspection = data.markupInspections.find((i) => i.id === id)
         setData((d) => ({ ...d, markupInspections: (d.markupInspections ?? []).filter((i) => i.id !== id) }))
+        enqueueSyncEntry('markupInspection', id, inspection?.markupId ?? null, 'delete')
       },
 
       // ── Work Object attachments ───────────────────────────────────────────
       addMarkupAttachment(a) {
         const id = newId('mkpa')
-        setData((d) => ({ ...d, markupAttachments: [...(d.markupAttachments ?? []), { ...a, id }] }))
+        setData((d) => ({
+          ...d,
+          markupAttachments: [...(d.markupAttachments ?? []), { ...a, id }],
+          fieldMarkups: (d.fieldMarkups ?? []).map((m) => m.id === a.markupId ? { ...m, syncStatus: 'pending' } : m),
+        }))
+        enqueueSyncEntry('markupAttachment', id, a.markupId, 'create')
         return id
       },
       deleteMarkupAttachment(id) {
-        setData((d) => ({ ...d, markupAttachments: (d.markupAttachments ?? []).filter((a) => a.id !== id) }))
+        const attachment = data.markupAttachments.find((a) => a.id === id)
+        setData((d) => ({
+          ...d,
+          markupAttachments: (d.markupAttachments ?? []).filter((a) => a.id !== id),
+          fieldMarkups: attachment ? (d.fieldMarkups ?? []).map((m) => m.id === attachment.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
+        }))
         void deleteBlob(`mkp-${id}`)
+        enqueueSyncEntry('markupAttachment', id, attachment?.markupId ?? null, 'delete')
       },
 
       // ── Aerial lash fiber runs ────────────────────────────────────────────
@@ -1142,6 +1191,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           ...d,
           fieldMapOverlays: [...(d.fieldMapOverlays ?? []), { ...overlay, id, createdAt: new Date().toISOString() }],
         }))
+        enqueueSyncEntry('fieldMapOverlay', id, null, 'create')
         return id
       },
       updateFieldMapOverlay(id, patch) {
@@ -1149,12 +1199,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
           ...d,
           fieldMapOverlays: (d.fieldMapOverlays ?? []).map((o) => (o.id === id ? { ...o, ...patch } : o)),
         }))
+        enqueueSyncEntry('fieldMapOverlay', id, null, 'update')
       },
       deleteFieldMapOverlay(id) {
         setData((d) => ({
           ...d,
           fieldMapOverlays: (d.fieldMapOverlays ?? []).filter((o) => o.id !== id),
         }))
+        enqueueSyncEntry('fieldMapOverlay', id, null, 'delete')
         // Blob cleanup is lazy, matching deleteMarkup's orphaned-blob convention above.
       },
 
@@ -1171,11 +1223,28 @@ export function DataProvider({ children }: { children: ReactNode }) {
         })
       },
 
+      async flushSyncQueue() {
+        return flushSyncEntries((entry) => {
+          if (!entry.markupId) return // fieldMapOverlay entries have no syncStatus field to update
+          setData((d) => ({
+            ...d,
+            fieldMarkups: (d.fieldMarkups ?? []).map((m) => m.id === entry.markupId ? { ...m, syncStatus: 'synced' } : m),
+          }))
+        })
+      },
+
       resetData() {
         setData(generateSeedData())
       },
     }
   }, [data])
+
+  // Drain the offline sync queue whenever the browser regains connectivity.
+  useEffect(() => {
+    const onOnline = () => { void value.flushSyncQueue() }
+    window.addEventListener('online', onOnline)
+    return () => window.removeEventListener('online', onOnline)
+  }, [value])
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>
 }
