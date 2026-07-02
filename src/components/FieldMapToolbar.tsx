@@ -120,6 +120,14 @@ export function FieldMapToolbar({
         <Plus size={13} /> {t('toolbar.addWork')}
       </button>
 
+      <Divider />
+
+      {/* Undo/Redo/Delete act on already-drawn work, not on starting new work — part of the
+          clean base toolbar alongside Select/Add Work, not gated on an Add Work session. */}
+      <ToolbarButton title={t('toolbar.undo')} onClick={onUndo}><Undo2 size={15} /></ToolbarButton>
+      <ToolbarButton title={t('toolbar.redo')} onClick={onRedo}><Redo2 size={15} /></ToolbarButton>
+      <ToolbarButton title={t('toolbar.delete')} disabled={!canDelete} onClick={onDelete}><Trash2 size={15} /></ToolbarButton>
+
       {sessionActive && (
         <>
           <Divider />
@@ -177,9 +185,6 @@ export function FieldMapToolbar({
 
           <Divider />
 
-          <ToolbarButton title={t('toolbar.undo')} onClick={onUndo}><Undo2 size={15} /></ToolbarButton>
-          <ToolbarButton title={t('toolbar.redo')} onClick={onRedo}><Redo2 size={15} /></ToolbarButton>
-          <ToolbarButton title={t('toolbar.delete')} disabled={!canDelete} onClick={onDelete}><Trash2 size={15} /></ToolbarButton>
           <ToolbarButton title={t('toolbar.save')} disabled={!canSave} onClick={onSave}><Save size={15} /></ToolbarButton>
         </>
       )}
