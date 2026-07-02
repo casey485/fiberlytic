@@ -610,6 +610,7 @@ export function PdfPrintMode() {
         </button>
         <span className="text-[12px] font-medium text-slate-300 truncate">{file.name}</span>
         <span className="text-[10px] text-amber-500 bg-amber-950/40 rounded px-1.5 py-0.5 shrink-0">{t('pdfPrintMode.badge')}</span>
+        <span className="text-[10px] text-slate-600 shrink-0">{pageMarkups.length} work object{pageMarkups.length === 1 ? '' : 's'}</span>
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {pageCount > 1 && (
@@ -684,28 +685,29 @@ export function PdfPrintMode() {
         }
       />
 
-      {/* Style presets */}
-      <div className="flex items-center gap-2 border-b border-[#1e1e1e] bg-[#0a0a0a] px-3 py-1.5 overflow-x-auto shrink-0">
-        <div className="flex items-center gap-1 shrink-0">
-          {MARKUP_COLORS.map((c) => (
-            <button key={c} onClick={() => setColor(c)} title={c}
-              className={`h-4 w-4 rounded-full border-2 transition shrink-0 ${color === c ? 'border-white scale-110' : 'border-transparent hover:scale-110'}`}
-              style={{ background: c, boxShadow: c === '#ffffff' ? 'inset 0 0 0 1px #555' : undefined }} />
-          ))}
+      {/* Style presets — only while a Work Type is being drawn */}
+      {sessionTools && (
+        <div className="flex items-center gap-2 border-b border-[#1e1e1e] bg-[#0a0a0a] px-3 py-1.5 overflow-x-auto shrink-0">
+          <div className="flex items-center gap-1 shrink-0">
+            {MARKUP_COLORS.map((c) => (
+              <button key={c} onClick={() => setColor(c)} title={c}
+                className={`h-4 w-4 rounded-full border-2 transition shrink-0 ${color === c ? 'border-white scale-110' : 'border-transparent hover:scale-110'}`}
+                style={{ background: c, boxShadow: c === '#ffffff' ? 'inset 0 0 0 1px #555' : undefined }} />
+            ))}
+          </div>
+          <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
+          <div className="flex items-center gap-0.5 shrink-0">
+            {WEIGHT_OPTIONS.map(({ value, label }) => (
+              <button key={value} onClick={() => setWeight(value)} className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition ${weight === value ? 'bg-[#2a3347] text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}>{label}</button>
+            ))}
+          </div>
+          <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
+          <select value={opacity} onChange={(e) => setOpacity(Number(e.target.value))}
+            className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-0.5 text-[10px] outline-none shrink-0">
+            {[1, 0.75, 0.5, 0.25].map((o) => <option key={o} value={o}>{Math.round(o * 100)}%</option>)}
+          </select>
         </div>
-        <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
-        <div className="flex items-center gap-0.5 shrink-0">
-          {WEIGHT_OPTIONS.map(({ value, label }) => (
-            <button key={value} onClick={() => setWeight(value)} className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition ${weight === value ? 'bg-[#2a3347] text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}>{label}</button>
-          ))}
-        </div>
-        <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
-        <select value={opacity} onChange={(e) => setOpacity(Number(e.target.value))}
-          className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-0.5 text-[10px] outline-none shrink-0">
-          {[1, 0.75, 0.5, 0.25].map((o) => <option key={o} value={o}>{Math.round(o * 100)}%</option>)}
-        </select>
-        <span className="ml-auto text-[10px] text-slate-600 shrink-0">{pageMarkups.length} work object{pageMarkups.length === 1 ? '' : 's'} on this page</span>
-      </div>
+      )}
 
       {/* Canvas */}
       <div className="relative flex-1 overflow-auto flex items-start justify-center bg-[#050505]" onWheel={onCanvasWheel}>

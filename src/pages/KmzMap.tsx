@@ -1921,24 +1921,6 @@ export function KmzMap() {
           <Plus size={11} /> Report Line
         </button>
 
-        {/* Draw toggle */}
-        <button
-          onClick={() => {
-            const next = !rlActive
-            setRlActive(next)
-            setActiveColorCode(null); activeColorCodeRef.current = null
-            if (next) setActiveTool('select')
-          }}
-          title={rlActive ? 'Exit draw mode' : 'Draw / Mark up map'}
-          className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition shrink-0 ${
-            rlActive
-              ? 'border-red-500/50 bg-red-500/10 text-red-400 hover:bg-red-500/20'
-              : 'border-[#2a3347] text-slate-300 hover:bg-white/5'
-          }`}
-        >
-          <Pencil size={11} /> {rlActive ? 'Exit Markup' : 'Mark Up'}
-        </button>
-
         {/* Fullscreen */}
         <button onClick={toggleFullscreen} className="rounded p-1.5 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
           {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
@@ -1978,83 +1960,86 @@ export function KmzMap() {
         </button>
       </div>
 
-      {/* ── Unified Field Map editing toolbar ────────────────────────── */}
-      {rlActive && (
-        <div className="shrink-0">
-          <FieldMapToolbar
-            activeTool={activeTool}
-            onSelectTool={(tool) => {
-              setActiveTool(tool)
-              if (tool === 'highlight') { setRlColor('#facc15'); setRlWeight(14); setRlOpacity(0.4) }
-            }}
-            onAddWork={() => { setAddWorkMarkupId(null); setAddWorkModalOpen(true) }}
-            editMode={editMode}
-            canVertexEdit={!!selectedMarkup && !selectedMarkup.lockedAt}
-            onToggleVertexEdit={() => setEditMode((m) => (m === 'vertices' ? 'none' : 'vertices'))}
-            snapEnabled={snapEnabled}
-            onToggleSnap={() => setSnapEnabled((s) => !s)}
-            onOpenLayerManager={() => setShowLayerManager(true)}
-            onUndo={undoLast}
-            onRedo={redoLast}
-            onDelete={() => {
-              if (!selectedMarkup) return
-              const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === selectedMarkup.id)
-              const result = attemptDeleteMarkup(selectedMarkup, billingLines, softDeleteMarkup, activeEmployeeId)
-              if (!result.ok && result.message) alert(result.message)
-              else if (result.ok) setSelectedMarkup(null)
-            }}
-            canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
-            onSave={() => { if (aerialRunInProgress) finishAerialRunRef.current?.(); else finishPolygonRef.current?.() }}
-            canSave={polygonInProgress || aerialRunInProgress}
-            canMerge={toolSelectedIds.size === 2}
-            onMerge={performMerge}
-            activeTools={sessionTools}
-            advancedToolsChildren={
-              <button
-                onClick={handleExportReport}
-                disabled={exportingReport}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5 disabled:opacity-40 transition"
-              >
-                <Download size={12} /> {exportingReport ? t('toolbar.exporting') : t('toolbar.exportReport')}
-              </button>
-            }
-          />
-          <div className="flex items-center gap-2 border-b border-[#1e1e1e] bg-[#0a0a0a] px-3 py-1.5 overflow-x-auto">
-            <div className="flex items-center gap-1 shrink-0">
-              {MARKUP_COLORS.map((c) => (
-                <button key={c} onClick={() => setRlColor(c)} title={c}
-                  className={`h-4 w-4 rounded-full border-2 transition shrink-0 ${rlColor === c ? 'border-white scale-110' : 'border-transparent hover:scale-110'}`}
-                  style={{ background: c, boxShadow: c === '#ffffff' ? 'inset 0 0 0 1px #555' : undefined }} />
-              ))}
-            </div>
-            <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
-            <div className="flex items-center gap-0.5 shrink-0">
-              {WEIGHT_OPTIONS.map(({ value, label }) => (
-                <button key={value} onClick={() => setRlWeight(value)} className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition ${rlWeight === value ? 'bg-[#2a3347] text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}>{label}</button>
-              ))}
-            </div>
-            <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
-            <select value={rlOpacity} onChange={(e) => setRlOpacity(Number(e.target.value))}
-              className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-0.5 text-[10px] outline-none shrink-0">
-              {[1, 0.75, 0.5, 0.25].map((o) => (
-                <option key={o} value={o}>{Math.round(o * 100)}%</option>
-              ))}
-            </select>
-            <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
-            <select value={rlLayer} onChange={(e) => setRlLayer(e.target.value as MarkupLayer)}
-              className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-0.5 text-[10px] outline-none shrink-0"
-              style={{ color: MARKUP_LAYER_META[rlLayer]?.color }}>
-              {(Object.keys(MARKUP_LAYER_META) as MarkupLayer[]).map((l) => (
-                <option key={l} value={l}>{MARKUP_LAYER_META[l].label}</option>
-              ))}
-            </select>
-            <button onClick={() => setMarkupVisible((v) => !v)} title="Toggle markup visibility" className="ml-auto rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
-              {markupVisible ? <Eye size={13} /> : <EyeOff size={13} />}
+      {/* ── Unified Field Map editing toolbar — always visible; shows only Select+Add
+           Work until a Work Type is picked (activeTools={sessionTools} is null until then) ── */}
+      <div className="shrink-0">
+        <FieldMapToolbar
+          activeTool={activeTool}
+          onSelectTool={(tool) => {
+            setActiveTool(tool)
+            if (tool === 'highlight') { setRlColor('#facc15'); setRlWeight(14); setRlOpacity(0.4) }
+          }}
+          onAddWork={() => { setAddWorkMarkupId(null); setAddWorkModalOpen(true) }}
+          editMode={editMode}
+          canVertexEdit={!!selectedMarkup && !selectedMarkup.lockedAt}
+          onToggleVertexEdit={() => setEditMode((m) => (m === 'vertices' ? 'none' : 'vertices'))}
+          snapEnabled={snapEnabled}
+          onToggleSnap={() => setSnapEnabled((s) => !s)}
+          onOpenLayerManager={() => setShowLayerManager(true)}
+          onUndo={undoLast}
+          onRedo={redoLast}
+          onDelete={() => {
+            if (!selectedMarkup) return
+            const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === selectedMarkup.id)
+            const result = attemptDeleteMarkup(selectedMarkup, billingLines, softDeleteMarkup, activeEmployeeId)
+            if (!result.ok && result.message) alert(result.message)
+            else if (result.ok) setSelectedMarkup(null)
+          }}
+          canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
+          onSave={() => { if (aerialRunInProgress) finishAerialRunRef.current?.(); else finishPolygonRef.current?.() }}
+          canSave={polygonInProgress || aerialRunInProgress}
+          canMerge={toolSelectedIds.size === 2}
+          onMerge={performMerge}
+          activeTools={sessionTools}
+          advancedToolsChildren={
+            <button
+              onClick={handleExportReport}
+              disabled={exportingReport}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5 disabled:opacity-40 transition"
+            >
+              <Download size={12} /> {exportingReport ? t('toolbar.exporting') : t('toolbar.exportReport')}
             </button>
-            <span className="text-[10px] text-slate-600 shrink-0">{allMarkups.length}</span>
-          </div>
+          }
+        />
+        <div className="flex items-center gap-2 border-b border-[#1e1e1e] bg-[#0a0a0a] px-3 py-1.5 overflow-x-auto">
+          {sessionTools && (
+            <>
+              <div className="flex items-center gap-1 shrink-0">
+                {MARKUP_COLORS.map((c) => (
+                  <button key={c} onClick={() => setRlColor(c)} title={c}
+                    className={`h-4 w-4 rounded-full border-2 transition shrink-0 ${rlColor === c ? 'border-white scale-110' : 'border-transparent hover:scale-110'}`}
+                    style={{ background: c, boxShadow: c === '#ffffff' ? 'inset 0 0 0 1px #555' : undefined }} />
+                ))}
+              </div>
+              <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
+              <div className="flex items-center gap-0.5 shrink-0">
+                {WEIGHT_OPTIONS.map(({ value, label }) => (
+                  <button key={value} onClick={() => setRlWeight(value)} className={`rounded px-1.5 py-0.5 text-[10px] font-medium transition ${rlWeight === value ? 'bg-[#2a3347] text-slate-100' : 'text-slate-500 hover:text-slate-300'}`}>{label}</button>
+                ))}
+              </div>
+              <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
+              <select value={rlOpacity} onChange={(e) => setRlOpacity(Number(e.target.value))}
+                className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-0.5 text-[10px] outline-none shrink-0">
+                {[1, 0.75, 0.5, 0.25].map((o) => (
+                  <option key={o} value={o}>{Math.round(o * 100)}%</option>
+                ))}
+              </select>
+              <div className="h-3 w-px bg-[#2a2a2a] shrink-0" />
+              <select value={rlLayer} onChange={(e) => setRlLayer(e.target.value as MarkupLayer)}
+                className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-0.5 text-[10px] outline-none shrink-0"
+                style={{ color: MARKUP_LAYER_META[rlLayer]?.color }}>
+                {(Object.keys(MARKUP_LAYER_META) as MarkupLayer[]).map((l) => (
+                  <option key={l} value={l}>{MARKUP_LAYER_META[l].label}</option>
+                ))}
+              </select>
+            </>
+          )}
+          <button onClick={() => setMarkupVisible((v) => !v)} title="Toggle markup visibility" className="ml-auto rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
+            {markupVisible ? <Eye size={13} /> : <EyeOff size={13} />}
+          </button>
+          <span className="text-[10px] text-slate-600 shrink-0">{allMarkups.length}</span>
         </div>
-      )}
+      </div>
 
       {/* ── Three-panel layout ──────────────────────────────────────── */}
       <div className="flex flex-1 overflow-hidden">
@@ -2589,6 +2574,7 @@ export function KmzMap() {
             setDistModalId(null)
             setActiveTool('select')
             setSessionTools(null)
+            setRlActive(false)
             // Show the markup in the right panel after closing without saving
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
             if (mk) { setSelectedMarkup(mk); setPanelCollapsed(false) }
@@ -2597,6 +2583,7 @@ export function KmzMap() {
             setDistModalId(null)
             setActiveTool('select')
             setSessionTools(null)
+            setRlActive(false)
             // Refresh selected markup so right panel shows updated data
             const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
             if (mk) { setSelectedMarkup({ ...mk }); setPanelCollapsed(false) }
@@ -2615,6 +2602,7 @@ export function KmzMap() {
           setAddWorkMarkupId(null)
           setActiveTool('select')
           setSessionTools(null)
+          setRlActive(false)
         }}
       />
     </div>
