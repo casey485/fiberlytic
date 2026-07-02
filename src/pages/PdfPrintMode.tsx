@@ -627,7 +627,10 @@ export function PdfPrintMode() {
     <div className="-mx-4 -my-6 lg:-mx-6 flex flex-col overflow-hidden bg-[#0a0a0a]" style={{ height: 'calc(100vh - 56px)' }}>
       {/* Top bar */}
       <div className="flex items-center shrink-0 h-11 border-b border-[#1e1e1e] bg-[#0a0a0a] px-3 gap-2">
-        <button onClick={() => nav(`/projects/${projectId}`)} className="rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
+        {/* Genuine history-back, not a hardcoded destination: lands on the project page when
+            reached directly from it, but on the Field Map when reached from within it (e.g.
+            clicking a PDF in its Prints bar) — whichever is actually true for this visit. */}
+        <button onClick={() => nav(-1)} className="rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
           <ArrowLeft size={14} />
         </button>
         <span className="text-[12px] font-medium text-slate-300 truncate">{file.name}</span>

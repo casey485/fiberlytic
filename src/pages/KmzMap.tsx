@@ -1706,9 +1706,9 @@ export function KmzMap() {
   }
 
   function openPdf(fileId: string) {
-    // replace: true — Field Map's own history entry gets swapped out rather than stacked
-    // under, so a single Back from Print Mode reaches the project directly.
-    nav(`/kmz/${projectId}/print/${fileId}`, { replace: true })
+    // Plain push (not replace) — Print Mode's Back button uses real history-back, so it should
+    // return here when the PDF was opened from within Field Map, not skip past it to the project.
+    nav(`/kmz/${projectId}/print/${fileId}`)
   }
 
   // Arriving from PDF Print Mode's "Georeference to Map" advanced-tools action —
