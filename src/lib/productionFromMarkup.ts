@@ -80,13 +80,19 @@ export function submitMarkupToProduction(args: SubmitMarkupToProductionArgs): Su
       rateSnapshot:  b.rate,
       extendedTotal: b.total,
     }))
+    // Prefer the actual billed LF quantity — matches Production.tsx's manual-entry
+    // convention (crewTotalLF) — over the drawn geometry's raw length. These can
+    // otherwise disagree (e.g. markup.lengthFt is null for non-line geometry, or the
+    // crew billed a manually-adjusted quantity), silently zeroing footage while the
+    // dollar amount stays correct. Falls back to geometry length only when this
+    // crew's billing has no LF-unit line at all (e.g. purely per-unit billing).
+    const crewFootageFromLF = lines.filter((b) => b.unitType === 'LF').reduce((s, b) => s + b.quantity, 0)
     addProduction(
       {
         date:      today,
         projectId: markup.projectId,
         crewId:    bCrewId,
-        // Only the first/primary crew gets the measured footage to avoid double-counting
-        footage:   !primaryCrewHandled ? Math.round(markup.lengthFt ?? 0) : 0,
+        footage:   crewFootageFromLF > 0 ? Math.round(crewFootageFromLF) : (!primaryCrewHandled ? Math.round(markup.lengthFt ?? 0) : 0),
         hours:     0,
         notes:     baseNotes,
         sourceMarkupId: markup.id,
