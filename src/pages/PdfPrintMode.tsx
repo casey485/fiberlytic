@@ -12,7 +12,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2, ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2, ZoomIn, ZoomOut, Maximize2, Search } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { attemptDeleteMarkup } from '../lib/markupDelete'
@@ -142,6 +142,8 @@ export function PdfPrintMode() {
   const [scaleInput, setScaleInput] = useState('')
   useEffect(() => { setScaleInput(file?.pdfScaleFeetPerInch != null ? String(file.pdfScaleFeetPerInch) : '') }, [file?.pdfScaleFeetPerInch])
 
+  const [markupSearch, setMarkupSearch] = useState('')
+
   const [snapEnabled, setSnapEnabled] = useState(false)
   const [toolSelectedIds, setToolSelectedIds] = useState<Set<string>>(new Set())
   const splitPickedIndicesRef = useRef<number[]>([])
@@ -200,6 +202,26 @@ export function PdfPrintMode() {
   const pageMarkups = (data.fieldMarkups ?? []).filter(
     (m) => m.projectId === projectId && !m.deletedAt && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId && m.pageIndex === pageNum,
   )
+
+  // All of this file's Work Objects across every page — search reaches beyond just the
+  // current page, since the whole point is finding something you don't already have open.
+  const fileMarkups = (data.fieldMarkups ?? []).filter(
+    (m) => m.projectId === projectId && !m.deletedAt && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId,
+  )
+  const searchResults = markupSearch.trim()
+    ? fileMarkups.filter((m) => {
+        const q = markupSearch.trim().toLowerCase()
+        return (m.featureName ?? '').toLowerCase().includes(q) ||
+          (m.label ?? '').toLowerCase().includes(q) ||
+          (m.notes ?? '').toLowerCase().includes(q)
+      })
+    : []
+
+  function goToSearchResult(m: FieldMarkup) {
+    setPageNum(m.pageIndex ?? 0)
+    setSelectedMarkup(m)
+    setMarkupSearch('')
+  }
 
   // selectedMarkup is a point-in-time snapshot passed to MarkupPanel; some of its fields
   // (weight/opacity/lineStyle/font controls) bind directly to the prop, not local state,
@@ -594,7 +616,7 @@ export function PdfPrintMode() {
     return (
       <div className="p-10 text-center text-slate-500">
         <p>Project or file not found.</p>
-        <button onClick={() => nav(`/kmz/${projectId}`)} className="mt-3 text-sm text-brand-400 hover:underline">Back to Field Map</button>
+        <button onClick={() => nav(`/projects/${projectId}`)} className="mt-3 text-sm text-brand-400 hover:underline">Back to Project</button>
       </div>
     )
   }
@@ -605,12 +627,40 @@ export function PdfPrintMode() {
     <div className="-mx-4 -my-6 lg:-mx-6 flex flex-col overflow-hidden bg-[#0a0a0a]" style={{ height: 'calc(100vh - 56px)' }}>
       {/* Top bar */}
       <div className="flex items-center shrink-0 h-11 border-b border-[#1e1e1e] bg-[#0a0a0a] px-3 gap-2">
-        <button onClick={() => nav(`/kmz/${projectId}`)} className="rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
+        <button onClick={() => nav(`/projects/${projectId}`)} className="rounded p-1 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
           <ArrowLeft size={14} />
         </button>
         <span className="text-[12px] font-medium text-slate-300 truncate">{file.name}</span>
         <span className="text-[10px] text-amber-500 bg-amber-950/40 rounded px-1.5 py-0.5 shrink-0">{t('pdfPrintMode.badge')}</span>
         <span className="text-[10px] text-slate-600 shrink-0">{pageMarkups.length} work object{pageMarkups.length === 1 ? '' : 's'}</span>
+
+        <div className="relative shrink-0 w-40">
+          <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-600" />
+          <input
+            type="text" value={markupSearch} onChange={(e) => setMarkupSearch(e.target.value)}
+            placeholder={t('pdfPrintMode.searchPlaceholder')}
+            className="w-full rounded border border-[#2a3347] bg-[#141414] pl-6 pr-2 py-1 text-[11px] text-slate-200 outline-none focus:border-brand-500"
+          />
+          {searchResults.length > 0 && (
+            <div className="absolute left-0 top-full z-[2000] mt-1 max-h-64 w-64 overflow-y-auto rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
+              {searchResults.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => goToSearchResult(m)}
+                  className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5"
+                >
+                  <span className="truncate">{m.featureName || m.label || m.tool}</span>
+                  <span className="shrink-0 text-slate-600">{t('pdfPrintMode.page', { n: (m.pageIndex ?? 0) + 1, total: pageCount })}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {markupSearch.trim() && searchResults.length === 0 && (
+            <div className="absolute left-0 top-full z-[2000] mt-1 w-64 rounded-md border border-[#2a3347] bg-[#0d0d0d] px-3 py-2 text-[11px] text-slate-600 shadow-xl">
+              {t('pdfPrintMode.noResults')}
+            </div>
+          )}
+        </div>
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {pageCount > 1 && (

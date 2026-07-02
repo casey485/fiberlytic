@@ -92,6 +92,8 @@
     "page": "Página {{n}} / {{total}}",
     "zoomIn": "Acercar (Ctrl/Cmd + desplazamiento)",
     "zoomOut": "Alejar (Ctrl/Cmd + desplazamiento)",
-    "resetView": "Restablecer zoom/posición"
+    "resetView": "Restablecer zoom/posición",
+    "searchPlaceholder": "Buscar elementos de trabajo…",
+    "noResults": "No se encontraron elementos de trabajo."
   }
 }

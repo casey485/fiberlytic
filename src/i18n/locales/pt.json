@@ -92,6 +92,8 @@
     "page": "Página {{n}} / {{total}}",
     "zoomIn": "Aumentar zoom (Ctrl/Cmd + rolagem)",
     "zoomOut": "Diminuir zoom (Ctrl/Cmd + rolagem)",
-    "resetView": "Redefinir zoom/posição"
+    "resetView": "Redefinir zoom/posição",
+    "searchPlaceholder": "Buscar itens de trabalho…",
+    "noResults": "Nenhum item de trabalho encontrado."
   }
 }

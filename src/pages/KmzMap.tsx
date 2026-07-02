@@ -1758,8 +1758,10 @@ export function KmzMap() {
       })
       const newId = addProjectFile({ projectId, name: file.name, fileType: 'pdf', size: file.size, uploadedAt: new Date().toISOString(), dataUrl })
       // Default entry point for a freshly-uploaded PDF is Print Mode (draw directly on the
-      // page), not the Leaflet map's georeference-calibration flow.
-      nav(`/kmz/${projectId}/print/${newId}`)
+      // page), not the Leaflet map's georeference-calibration flow. replace: true so this
+      // Field Map history entry is swapped out, not stacked under — Back from Print Mode
+      // should go straight to the project, not bounce through Field Map first.
+      nav(`/kmz/${projectId}/print/${newId}`, { replace: true })
     } catch (err) {
       alert(`Upload failed: ${(err as Error).message}`)
     } finally {
@@ -1768,7 +1770,8 @@ export function KmzMap() {
   }
 
   function openPdf(fileId: string) {
-    nav(`/kmz/${projectId}/print/${fileId}`)
+    // replace: true — same reasoning as the upload redirect above.
+    nav(`/kmz/${projectId}/print/${fileId}`, { replace: true })
   }
 
   async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
