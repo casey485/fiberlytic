@@ -731,6 +731,12 @@ export function PdfPrintMode() {
               </button>
             </div>
             <p className="mt-1.5 text-[9px] text-slate-600">Drawn line lengths auto-fill from this scale once set.</p>
+            <button
+              onClick={() => nav(`/kmz/${projectId}`, { state: { openPdfFileId: fileId } })}
+              className="mt-2 w-full rounded border border-[#2a3347] px-2 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5"
+            >
+              Georeference to Map…
+            </button>
           </div>
         }
       />

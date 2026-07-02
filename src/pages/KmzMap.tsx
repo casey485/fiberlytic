@@ -4,7 +4,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import {
-  ArrowLeft, Layers, Search, Download, Map as MapIcon, Satellite, Upload, Globe,
+  ArrowLeft, Layers, Search, Download, Map as MapIcon, Satellite, Upload,
   Maximize2, Minimize2, Pencil,
   Eye, EyeOff, Trash2, PanelRightOpen, PanelRightClose,
   ChevronRight, ChevronDown, FolderOpen, Folder,
@@ -12,7 +12,6 @@ import {
   MapPin, DollarSign, Settings, Plus,
   AlertTriangle, CheckCircle2, X,
 } from 'lucide-react'
-import { DistributionLineModal } from '../components/DistributionLineModal'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { attemptDeleteMarkup } from '../lib/markupDelete'
@@ -22,7 +21,6 @@ import { AerialLashRunPanel } from '../components/AerialLashRunPanel'
 import { PoleFormModal } from '../components/PoleFormModal'
 import { FEATURE_TOOL_LABELS, FEATURE_DROP_TOOLS } from '../lib/markupMeta'
 import { exportFeaturesToKmz, exportFieldMarkupsToKmz, triggerDownload } from '../lib/kmzExport'
-import { parseKmzOrKml } from '../lib/kmzParser'
 import { markupToLayer, buildEditHandles, buildSplitVertexMarkers } from '../lib/markupLayer'
 import { computeTransform, computeScreenMatrix, type GeoTransform } from '../lib/georeference'
 import { GeoreferencePanel } from '../components/GeoreferencePanel'
@@ -71,10 +69,6 @@ function isFeatureDrop(tool: string): boolean {
 const DRAG_DRAW_TOOLS = new Set(['pen', 'dashed_line', 'dotted_line', 'arrow', 'double_arrow', 'rect', 'circle', 'highlight', 'ellipse'])
 function isDragDrawTool(tool: string) { return DRAG_DRAW_TOOLS.has(tool) }
 
-/** Report Line isn't Add-Work-Type-driven (no WorkObjectTypeDef involved), so it gets its own
- * fixed curated toolbar set instead of relevantToolsForWorkType — covers the polygon/polyline
- * trace it defaults into plus the other line-tracing tools. */
-const REPORT_LINE_TOOLS: FieldMapDrawTool[] = ['line', 'multi_line', 'polygon', 'pen', 'measure']
 
 const WEIGHT_OPTIONS = [
   { value: 1,  label: 'XS' },
@@ -108,7 +102,7 @@ export function KmzMap() {
   const { projectId } = useParams<{ projectId: string }>()
   const nav = useNavigate()
   const location = useLocation()
-  const { data, setFeatureStatus, addKmzUpload, deleteMapFeature, addMarkup, updateMarkup, deleteMarkup, softDeleteMarkup, addProjectFile,
+  const { data, setFeatureStatus, deleteMapFeature, addMarkup, updateMarkup, deleteMarkup, softDeleteMarkup,
     addAerialLashFiberRun, deleteAerialLashFiberRun, updateFieldMapOverlay,
     addProduction, addCrewDayEntry, addPhoto } = useData()
   const { activeEmployeeId } = useRole()
@@ -116,8 +110,6 @@ export function KmzMap() {
   // DOM refs
   const wrapperRef      = useRef<HTMLDivElement>(null)
   const mapContainerRef = useRef<HTMLDivElement>(null)
-  const fileRef         = useRef<HTMLInputElement>(null)
-  const pdfFileRef      = useRef<HTMLInputElement>(null)
   const textInputRef    = useRef<HTMLInputElement>(null)
 
   // Leaflet refs
@@ -157,11 +149,9 @@ export function KmzMap() {
   const [listOpen,        setListOpen]        = useState(true)
   const [collapsedLayers, setCollapsedLayers] = useState<Set<string>>(new Set())
   const [mapLayer,        setMapLayer]        = useState<'street' | 'satellite'>('street')
-  const [colorMode,       setColorMode]       = useState<'kmz' | 'status'>('kmz')
+  // Status Colors mode was retired along with its toggle button — always 'kmz' now.
+  const colorMode = 'kmz' as const
   const [exporting,       setExporting]       = useState(false)
-  const [importing,       setImporting]       = useState(false)
-  const [importMsg,       setImportMsg]       = useState<{ text: string; ok: boolean } | null>(null)
-  const [uploadingPdf,    setUploadingPdf]    = useState(false)
   const [showGeoreference, setShowGeoreference] = useState(false)
   const [preloadPdfFile, setPreloadPdfFile] = useState<{ id: string; name: string } | null>(null)
 
@@ -226,10 +216,6 @@ export function KmzMap() {
 
   // Edit mode for the selected markup's geometry (vertex handles / whole-shape move)
   const [editMode, setEditMode] = useState<'none' | 'vertices' | 'move'>('none')
-
-  // Distribution line modal (Report Line workflow)
-  const [distModalId,   setDistModalId]   = useState<string | null>(null)
-  const reportModeRef = useRef(false)  // when true, next commitMarkup → modal instead of panel
 
   // Add Work modal (Type → Draw → Details → Photos → Billing workflow)
   const [addWorkModalOpen, setAddWorkModalOpen] = useState(false)
@@ -817,17 +803,13 @@ export function KmzMap() {
     })
     undoStackRef.current.push(id)
     redoStackRef.current = []
-    // Open the Add Work modal, the Distribution Line modal (Report mode), or the right panel
+    // Open the Add Work modal or the right panel
     setTimeout(() => {
       if (addWorkModeRef.current) {
         addWorkModeRef.current = false
         pendingWorkTypeRef.current = null
         setAddWorkMarkupId(id)
         setAddWorkModalOpen(true)
-        setSelectedMarkup(null)
-      } else if (reportModeRef.current) {
-        reportModeRef.current = false
-        setDistModalId(id)
         setSelectedMarkup(null)
       } else {
         const mk = (data.fieldMarkups ?? []).find((m) => m.id === id)
@@ -1402,17 +1384,6 @@ export function KmzMap() {
     undoStackRef.current.push(newId)
   }
 
-  // Enter "Report Line" mode — draw a polyline then show the Distribution Line modal
-  function handleReportLine() {
-    reportModeRef.current = true
-    setRlActive(true)
-    setSessionTools(REPORT_LINE_TOOLS)
-    setActiveColorCode(null); activeColorCodeRef.current = null
-    setActiveTool('polygon')
-    setActiveSubtype('polyline')
-    setMobileNav('map')
-  }
-
   /**
    * Add Work Step 1 (Type) → arm the map with this type's defaults and close the modal to draw.
    * `activeWorkType` (pendingWorkTypeRef) and `activeSubtype` track WHAT is being recorded;
@@ -1424,7 +1395,6 @@ export function KmzMap() {
   function startAddWork(type: WorkObjectTypeDef) {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
-    reportModeRef.current = false
     setSessionTools(relevantToolsForWorkType(type.id))
     setActiveColorCode(null); activeColorCodeRef.current = null
     setRlColor(type.defaultColor)
@@ -1669,17 +1639,8 @@ export function KmzMap() {
     drawEnd(touchToLatLng(e.changedTouches[0]))
   }
 
-  function applyStatusColor(featureId: string, status: FeatureStatus) {
-    if (colorMode !== 'status') return
-    const lyr = layerMapRef.current.get(featureId)
-    if (!lyr) return
-    const c = FEATURE_STATUS_META[status].color
-    if ((lyr as L.Path).setStyle) (lyr as L.Path).setStyle({ color: c, fillColor: c })
-  }
-
   function handleStatusChange(id: string, status: FeatureStatus) {
     setFeatureStatus(id, status)
-    applyStatusColor(id, status)
     setSelectedFeature((prev) => prev?.id === id ? { ...prev, status } : prev)
   }
 
@@ -1744,55 +1705,25 @@ export function KmzMap() {
     } finally { setExporting(false) }
   }
 
-  async function onPdfUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !projectId) return
-    e.target.value = ''
-    setUploadingPdf(true)
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload  = () => resolve(reader.result as string)
-        reader.onerror = () => reject(new Error('Failed to read file'))
-        reader.readAsDataURL(file)
-      })
-      const newId = addProjectFile({ projectId, name: file.name, fileType: 'pdf', size: file.size, uploadedAt: new Date().toISOString(), dataUrl })
-      // Default entry point for a freshly-uploaded PDF is Print Mode (draw directly on the
-      // page), not the Leaflet map's georeference-calibration flow. replace: true so this
-      // Field Map history entry is swapped out, not stacked under — Back from Print Mode
-      // should go straight to the project, not bounce through Field Map first.
-      nav(`/kmz/${projectId}/print/${newId}`, { replace: true })
-    } catch (err) {
-      alert(`Upload failed: ${(err as Error).message}`)
-    } finally {
-      setUploadingPdf(false)
-    }
-  }
-
   function openPdf(fileId: string) {
-    // replace: true — same reasoning as the upload redirect above.
+    // replace: true — Field Map's own history entry gets swapped out rather than stacked
+    // under, so a single Back from Print Mode reaches the project directly.
     nav(`/kmz/${projectId}/print/${fileId}`, { replace: true })
   }
 
-  async function onImportFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file || !projectId) return
-    e.target.value = ''
-    setImporting(true)
-    setImportMsg({ text: `Parsing ${file.name}…`, ok: true })
-    try {
-      const result = await parseKmzOrKml(file)
-      addKmzUpload(
-        { projectId, fileName: file.name, uploadedAt: new Date().toISOString(), featureCount: result.featureCount },
-        result.features,
-      )
-      setImportMsg({ text: `✓ ${result.featureCount} features imported from ${file.name}`, ok: true })
-      setTimeout(() => setImportMsg(null), 4000)
-    } catch (err) {
-      setImportMsg({ text: `Error: ${(err as Error).message}`, ok: false })
-      setTimeout(() => setImportMsg(null), 6000)
-    } finally { setImporting(false) }
-  }
+  // Arriving from PDF Print Mode's "Georeference to Map" advanced-tools action —
+  // the only remaining way to open GeoreferencePanel, now that KMZ mode's own
+  // "Georeference PDF Directly" button has been retired.
+  useEffect(() => {
+    const openPdfFileId = (location.state as { openPdfFileId?: string } | null)?.openPdfFileId
+    if (!openPdfFileId) return
+    const file = (data.projectFiles ?? []).find((f) => f.id === openPdfFileId)
+    if (!file) return
+    setPreloadPdfFile({ id: file.id, name: file.name })
+    setActiveTool('select')
+    setShowGeoreference(true)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const currentToolLabel = (() => {
     if (activeTool === 'select') return 'Pan'
@@ -1878,26 +1809,7 @@ export function KmzMap() {
 
         <div className="flex-1" />
 
-        {/* Color mode toggle */}
-        <div className="hidden sm:flex items-center gap-0.5 rounded-md bg-[#141414] border border-[#2a2a2a] p-0.5 shrink-0">
-          {(['kmz', 'status'] as const).map((cm) => (
-            <button key={cm} onClick={() => setColorMode(cm)}
-              className={`px-2 py-0.5 rounded text-[11px] font-medium transition ${
-                colorMode === cm ? 'bg-[#2a3347] text-slate-100 shadow' : 'text-slate-500 hover:text-slate-300'
-              }`}
-            >
-              {cm === 'kmz' ? 'KMZ Colors' : 'Status Colors'}
-            </button>
-          ))}
-        </div>
-
-        <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0 hidden sm:block" />
-
-        {/* Import / Export */}
-        <button onClick={() => fileRef.current?.click()} disabled={importing}
-          className="flex items-center gap-1.5 rounded-md border border-[#2a3347] px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5 disabled:opacity-50 transition shrink-0">
-          <Upload size={11} /> {importing ? 'Importing…' : 'Import KMZ'}
-        </button>
+        {/* Export */}
         <button onClick={() => handleExportKmz(false)} disabled={exporting || allFeatures.length === 0}
           className="hidden sm:flex items-center gap-1.5 rounded-md border border-[#2a3347] px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5 disabled:opacity-40 transition shrink-0">
           <Download size={11} /> Export KMZ
@@ -1908,21 +1820,8 @@ export function KmzMap() {
             <Download size={11} /> Export Markups
           </button>
         )}
-        <button onClick={() => handleExportKmz(true)} disabled={exporting || allFeatures.length === 0}
-          className="hidden sm:flex items-center gap-1.5 rounded-md border border-[#1a73e8]/40 bg-[#1a73e8]/10 px-2.5 py-1 text-[11px] font-medium text-[#5aadff] hover:bg-[#1a73e8]/20 disabled:opacity-40 transition shrink-0">
-          <Globe size={11} /> Google Maps
-        </button>
 
         <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
-
-        {/* Report Line — enters polyline draw mode then shows billing modal */}
-        <button
-          onClick={handleReportLine}
-          title="Report a production line with billing"
-          className="hidden sm:flex items-center gap-1.5 rounded-md border border-brand-500/40 bg-brand-500/10 px-2.5 py-1 text-[11px] font-medium text-brand-400 hover:bg-brand-500/20 transition shrink-0"
-        >
-          <Plus size={11} /> Report Line
-        </button>
 
         {/* Fullscreen */}
         <button onClick={toggleFullscreen} className="rounded p-1.5 text-slate-500 hover:text-slate-300 hover:bg-white/5 transition shrink-0">
@@ -1947,20 +1846,6 @@ export function KmzMap() {
             <span className="max-w-[160px] truncate">{f.name}</span>
           </button>
         ))}
-        <button
-          onClick={() => { setActiveTool('select'); setPreloadPdfFile(null); setShowGeoreference(true) }}
-          title="Anchor a PDF directly onto the map without going through Print Mode first"
-          className="flex shrink-0 items-center gap-1 rounded border border-brand-700/60 px-2.5 py-0.5 text-[11px] font-medium text-brand-400 hover:bg-brand-900/20 transition ml-auto"
-        >
-          <Upload size={10} /> Georeference PDF Directly
-        </button>
-        <button
-          onClick={() => pdfFileRef.current?.click()}
-          disabled={uploadingPdf}
-          className="flex shrink-0 items-center gap-1 rounded border border-emerald-800/60 px-2.5 py-0.5 text-[11px] font-medium text-emerald-400 hover:bg-emerald-900/20 disabled:opacity-40 transition"
-        >
-          <Upload size={10} /> {uploadingPdf ? 'Uploading…' : 'Upload PDF'}
-        </button>
       </div>
 
       {/* ── Unified Field Map editing toolbar — always visible; shows only Select+Add
@@ -2278,15 +2163,6 @@ export function KmzMap() {
             <Layers size={13} />
           </button>
 
-          {/* Import toast */}
-          {importMsg && (
-            <div className={`absolute top-2 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-medium shadow-lg ${
-              importMsg.ok ? 'bg-[#0d0d0d]/95 border-emerald-600/40 text-emerald-400' : 'bg-[#0d0d0d]/95 border-red-600/40 text-red-400'
-            }`}>
-              {importMsg.text}
-            </div>
-          )}
-
           {/* Text input overlay */}
           {textPos && (
             <div className="absolute z-[1001] flex items-center" style={{ left: textPos.x + 4, top: textPos.y - 16 }}>
@@ -2424,9 +2300,6 @@ export function KmzMap() {
           />
         )}
       </div>
-
-      <input ref={fileRef}    type="file" accept=".kmz,.kml" className="hidden" onChange={onImportFile} />
-      <input ref={pdfFileRef} type="file" accept=".pdf"       className="hidden" onChange={onPdfUpload} />
 
       {/* Text input */}
       <input
@@ -2566,33 +2439,6 @@ export function KmzMap() {
         </button>
       </div>
 
-      {/* ── Distribution Line Modal ───────────────────────────────── */}
-      {distModalId && (
-        <DistributionLineModal
-          key={distModalId}
-          markupId={distModalId}
-          projectId={projectId ?? ''}
-          lengthFt={(data.fieldMarkups ?? []).find((m) => m.id === distModalId)?.lengthFt ?? null}
-          onClose={() => {
-            setDistModalId(null)
-            setActiveTool('select')
-            setSessionTools(null)
-            setRlActive(false)
-            // Show the markup in the right panel after closing without saving
-            const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
-            if (mk) { setSelectedMarkup(mk); setPanelCollapsed(false) }
-          }}
-          onSaved={() => {
-            setDistModalId(null)
-            setActiveTool('select')
-            setSessionTools(null)
-            setRlActive(false)
-            // Refresh selected markup so right panel shows updated data
-            const mk = (data.fieldMarkups ?? []).find((m) => m.id === distModalId)
-            if (mk) { setSelectedMarkup({ ...mk }); setPanelCollapsed(false) }
-          }}
-        />
-      )}
 
       {/* ── Add Work Modal ────────────────────────────────────────── */}
       <AddWorkModal
