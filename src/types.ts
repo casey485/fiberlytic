@@ -441,6 +441,16 @@ export type MarkupTool =
   | 'struct_s' | 'struct_m' | 'struct_l' | 'struct_xl'
   | 'struct_fp' | 'struct_lv' | 'struct_xlv'
   | 'struct_ped' | 'struct_cab' | 'struct_hh'
+  // Engineering symbols — Directional Drill (see src/lib/engineeringSymbols.ts)
+  | 'directional_bore' | 'road_bore' | 'railroad_bore' | 'bridge_bore'
+  | 'bore_start' | 'bore_end' | 'conduit_run' | 'direction_arrow'
+  | 'riser' | 'handhole_connection'
+  // Engineering symbols — Aerial Strand
+  | 'new_strand' | 'existing_strand' | 'pole_attachment' | 'dead_end'
+  | 'anchor' | 'guy_attachment' | 'riser_guard' | 'pole_marker'
+  // Engineering symbols — Handhole / Vault
+  | 'hh17' | 'hh24' | 'hh30' | 'hh36' | 'existing_handhole' | 'proposed_handhole'
+  | 'concrete_pad' | 'lid_label' | 'storage_loop' | 'conduit_entry'
 
 export type MarkupStatus = 'pending' | 'in_progress' | 'complete' | 'qc_needed' | 'rejected' | 'approved' | 'billed'
 export type MarkupLayer  = 'crew' | 'supervisor' | 'qc' | 'as_built' | 'production' | 'billing'

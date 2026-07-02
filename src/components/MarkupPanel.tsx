@@ -17,6 +17,7 @@ import { MARKUP_STATUS_META } from '../types'
 import type { FieldMarkup, MarkupBilling, MarkupPhoto, MarkupAttachment, InspectionItem, InspectionResult, MarkupStatus } from '../types'
 import type { EditMode } from '../lib/markupLayer'
 import { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS } from '../lib/markupMeta'
+import { ENGINEERING_SYMBOL_MAP } from '../lib/engineeringSymbols'
 import { submitMarkupToProduction } from '../lib/productionFromMarkup'
 import { WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
 
@@ -27,6 +28,7 @@ export { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS }
 
 function isFeatureDrop(tool: string): boolean {
   return FEATURE_DROP_TOOLS.includes(tool as typeof FEATURE_DROP_TOOLS[number])
+    || ENGINEERING_SYMBOL_MAP[tool]?.geometryKind === 'point'
 }
 
 const STYLE_COLORS = ['#ef4444', '#f97316', '#facc15', '#4ade80', '#60a5fa', '#a78bfa', '#f472b6', '#ffffff']
@@ -284,7 +286,7 @@ export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editM
     }
   }
 
-  const toolLabel = FEATURE_TOOL_LABELS[markup.tool]
+  const toolLabel = ENGINEERING_SYMBOL_MAP[markup.tool] ?? FEATURE_TOOL_LABELS[markup.tool]
   const toolMeta  = MARKUP_STATUS_META[status]
 
   function subtypeLabel(id: string | undefined): string {

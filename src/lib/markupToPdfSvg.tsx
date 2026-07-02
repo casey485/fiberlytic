@@ -13,6 +13,7 @@
  */
 import type { FieldMarkup } from '../types'
 import { FEATURE_TOOL_LABELS } from './markupMeta'
+import { ENGINEERING_SYMBOL_MAP, type SymbolShape } from './engineeringSymbols'
 
 const DASH: Record<string, string | undefined> = {
   dashed_line: '10 6',
@@ -22,9 +23,16 @@ const DASH_BY_STYLE: Record<string, string | undefined> = {
   solid: undefined,
   dashed: '10 6',
   dotted: '2 6',
+  tickMarked: undefined,
+  arrowTerminated: undefined,
 }
+/** `lineStyle` (if set) takes priority; an engineering symbol's own catalog lineStyle
+ * is checked next, then the legacy per-tool fallback. Mirrors markupLayer.ts exactly. */
 function dashArrayFor(m: FieldMarkup): string | undefined {
-  return m.lineStyle ? DASH_BY_STYLE[m.lineStyle] : DASH[m.tool]
+  if (m.lineStyle) return DASH_BY_STYLE[m.lineStyle]
+  const symbolStyle = ENGINEERING_SYMBOL_MAP[m.tool]?.lineStyle
+  if (symbolStyle) return DASH_BY_STYLE[symbolStyle]
+  return DASH[m.tool]
 }
 
 function ptsToPolyPoints(pts: [number, number][]): string {
@@ -42,6 +50,59 @@ function arrowHeadPoints(from: [number, number], to: [number, number], size = 14
   return `${a1x},${a1y} ${to[0]},${to[1]} ${a2x},${a2y}`
 }
 
+/**
+ * Renders one of the shared engineering-symbol point shapes as an SVG group, centered
+ * at the origin (the caller wraps it in a <g transform="translate(cx,cy)">). `filled`
+ * drives the standard drafting convention: hollow outline = existing, solid fill =
+ * new/proposed. Mirrors markupLayer.ts's symbolShapeSvg() exactly, shape for shape.
+ */
+function symbolShapeSvg(shape: SymbolShape, color: string, abbr: string, filled: boolean): JSX.Element {
+  const fill = filled ? color : 'none'
+  const fillOpacity = filled ? 0.85 : 0
+  switch (shape) {
+    case 'hexagon':
+      return (
+        <>
+          <polygon points="0,-13 8,-13 16,0 8,13 0,13 -8,0" fill={fill} fillOpacity={fillOpacity} stroke={color} strokeWidth={2.5} />
+          <text x={0} y={0} textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={800} fontFamily="monospace" fill={filled ? '#fff' : color}>{abbr}</text>
+        </>
+      )
+    case 'circleDot':
+      return (
+        <>
+          <circle cx={0} cy={0} r={9} fill={color} fillOpacity={0.15} stroke={color} strokeWidth={2.5} />
+          <circle cx={0} cy={0} r={3} fill={color} />
+        </>
+      )
+    case 'diamond':
+      return <rect x={-7} y={-7} width={14} height={14} transform="rotate(45)" fill={fill} fillOpacity={filled ? 0.85 : 0} stroke={color} strokeWidth={2.5} />
+    case 'flag':
+      return (
+        <>
+          <line x1={0} y1={-11} x2={0} y2={11} stroke={color} strokeWidth={2} />
+          <polygon points="0,-11 14,-6 0,-1" fill={filled ? color : 'none'} fillOpacity={0.9} stroke={color} strokeWidth={2} />
+        </>
+      )
+    case 'oval':
+      return <ellipse cx={0} cy={0} rx={12} ry={7} fill={fill} fillOpacity={fillOpacity} stroke={color} strokeWidth={2.5} />
+    case 'coil':
+      return <path d="M0 -7 a5 5 0 1 1 -4.5 7 a3.5 3.5 0 1 1 3-5.4" fill="none" stroke={color} strokeWidth={2.2} strokeLinecap="round" />
+    case 'cross':
+      return (
+        <>
+          <circle cx={0} cy={0} r={8} fill="#0d0d0d" fillOpacity={0.5} stroke={color} strokeWidth={2} />
+          <line x1={0} y1={-6} x2={0} y2={6} stroke={color} strokeWidth={2} />
+          <line x1={-6} y1={0} x2={6} y2={0} stroke={color} strokeWidth={2} />
+        </>
+      )
+    case 'square':
+      return <rect x={-8} y={-8} width={16} height={16} fill={fill} fillOpacity={fillOpacity} stroke={color} strokeWidth={2.5} />
+    case 'pinBadge':
+    default:
+      return <circle cx={0} cy={0} r={9} fill={color} fillOpacity={0.85} stroke="#fff" strokeWidth={1.5} />
+  }
+}
+
 /** Build an SVG element for a FieldMarkup on a PDF page. Returns null if geometry is missing/invalid or not applicable. */
 export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
   const color = m.color || '#ef4444'
@@ -50,6 +111,9 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
   const dashArray = dashArrayFor(m)
   const geo = m.geometry
 
+  // Engineering symbol line tools render as plain polylines, styled via dashArrayFor
+  // above ('direction_arrow' is excluded from this group — it renders through the
+  // arrow case below instead, since it needs an arrowhead). Mirrors markupLayer.ts.
   switch (m.tool) {
     case 'pen':
     case 'line':
@@ -57,7 +121,14 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
     case 'dotted_line':
     case 'multi_line':
     case 'measure':
-    case 'highlight': {
+    case 'highlight':
+    case 'directional_bore':
+    case 'road_bore':
+    case 'railroad_bore':
+    case 'bridge_bore':
+    case 'conduit_run':
+    case 'new_strand':
+    case 'existing_strand': {
       if (!geo.latlngs?.length) return null
       return (
         <polyline
@@ -68,6 +139,7 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
       )
     }
 
+    case 'direction_arrow':
     case 'arrow':
     case 'double_arrow': {
       if (!geo.latlngs || geo.latlngs.length < 2) return null
@@ -174,10 +246,26 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
     default: {
       // Feature drop — labeled pin (or circular badge for struct_ types)
       if (!geo.center) return null
-      const meta = FEATURE_TOOL_LABELS[m.tool] ?? { abbr: '?', color: '#6b7280', label: m.tool }
-      const pinColor = meta.color
       const [cx, cy] = geo.center
       const featureLabel = m.featureName ?? ''
+
+      // Engineering symbol point tools — a genuinely distinct shape per catalog entry,
+      // instead of the generic pin below. See src/lib/engineeringSymbols.ts.
+      const symbolDef = ENGINEERING_SYMBOL_MAP[m.tool]
+      if (symbolDef && symbolDef.geometryKind === 'point' && symbolDef.shape) {
+        const filled = symbolDef.variant !== 'existing'
+        return (
+          <g transform={`translate(${cx},${cy})`}>
+            {symbolShapeSvg(symbolDef.shape, symbolDef.color, symbolDef.abbr, filled)}
+            {featureLabel && (
+              <text x={0} y={20} fill="#fff" fontSize={9} textAnchor="middle" dominantBaseline="hanging">{featureLabel}</text>
+            )}
+          </g>
+        )
+      }
+
+      const meta = FEATURE_TOOL_LABELS[m.tool] ?? { abbr: '?', color: '#6b7280', label: m.tool }
+      const pinColor = meta.color
 
       if (m.tool.startsWith('struct_')) {
         const abbr = meta.abbr

@@ -20,6 +20,7 @@ import { MarkupPanel } from '../components/MarkupPanel'
 import { AerialLashRunPanel } from '../components/AerialLashRunPanel'
 import { PoleFormModal } from '../components/PoleFormModal'
 import { FEATURE_TOOL_LABELS, FEATURE_DROP_TOOLS } from '../lib/markupMeta'
+import { ENGINEERING_SYMBOL_MAP, ENGINEERING_POINT_TOOLS, ENGINEERING_LINE_TOOLS } from '../lib/engineeringSymbols'
 import { exportFeaturesToKmz, exportFieldMarkupsToKmz, triggerDownload } from '../lib/kmzExport'
 import { markupToLayer, buildEditHandles, buildSplitVertexMarkers } from '../lib/markupLayer'
 import { computeTransform, computeScreenMatrix, type GeoTransform } from '../lib/georeference'
@@ -58,16 +59,24 @@ const MARKUP_COLORS = ['#ef4444', '#f97316', '#facc15', '#4ade80', '#60a5fa', '#
 
 
 function isFeatureDrop(tool: string): boolean {
-  return FEATURE_DROP_TOOLS.includes(tool as typeof FEATURE_DROP_TOOLS[number])
+  return FEATURE_DROP_TOOLS.includes(tool as typeof FEATURE_DROP_TOOLS[number]) || ENGINEERING_POINT_TOOLS.includes(tool as MarkupTool)
 }
-
 
 // 'line' is deliberately NOT drag-based: a straight line is a 2-click gesture (click to
 // start, click to finish) via the click-accumulation effect below, not a drag gesture —
 // a plain click is a zero-movement mousedown+mouseup, which used to commit a degenerate
 // zero-length "line" and open the Work Object dialog after a single click.
-const DRAG_DRAW_TOOLS = new Set(['pen', 'dashed_line', 'dotted_line', 'arrow', 'double_arrow', 'rect', 'circle', 'highlight', 'ellipse'])
+const DRAG_DRAW_TOOLS = new Set(['pen', 'dashed_line', 'dotted_line', 'arrow', 'double_arrow', 'rect', 'circle', 'highlight', 'ellipse', 'direction_arrow'])
 function isDragDrawTool(tool: string) { return DRAG_DRAW_TOOLS.has(tool) }
+
+/** Engineering symbol line tools that draw via click-accumulation like 'line' (2-point,
+ * auto-finish) — excludes 'direction_arrow', which is drag-based (see DRAG_DRAW_TOOLS). */
+const LINE_ACCUM_SYMBOL_TOOLS = new Set<MarkupTool>(ENGINEERING_LINE_TOOLS.filter((t) => t !== 'direction_arrow'))
+function isLineAccumSymbol(tool: string) { return LINE_ACCUM_SYMBOL_TOOLS.has(tool as MarkupTool) }
+
+/** relevantToolsForWorkType's generic per-geometry fallbacks — used to detect whether a
+ * Work Type has been migrated to a real engineering symbol catalog (see startAddWork). */
+const GENERIC_FIRST_TOOLS = new Set(['point', 'line', 'polygon', 'rect', 'multi_line', 'pen', 'measure', 'callout'])
 
 
 const WEIGHT_OPTIONS = [
@@ -834,7 +843,7 @@ export function KmzMap() {
     // Line / Polygon / Multi-Line / Measure / Cloud: click-to-add-point, finish on completion
     // (never on the first click — geometryComplete, not geometryStart, is what may open the
     // Work Object dialog via commitMarkup).
-    if (activeTool === 'line' || activeTool === 'polygon' || activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud') {
+    if (activeTool === 'line' || activeTool === 'polygon' || activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || isLineAccumSymbol(activeTool as string)) {
       const pmap: L.Map = map
       // Without this, Leaflet's own pan/drag handling can absorb a slightly-moved
       // mousedown→mouseup as a pan instead of firing 'click', and the container
@@ -847,7 +856,7 @@ export function KmzMap() {
       let startMarker: L.CircleMarker | null = null
 
       // Open-path modes render as a polyline preview (not a closed, filled polygon) and commit with their own tool value.
-      const isMultiLine = () => activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'line'
+      const isMultiLine = () => activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'line' || isLineAccumSymbol(activeTool as string)
 
       // lastTouchMs guards against double-fire: on touch devices the browser fires
       // touchend → (synthetic) click in sequence; we handle touchend directly and
@@ -879,7 +888,7 @@ export function KmzMap() {
         redrawPreview(polygonPtsRef.current)
         // A straight line is always exactly 2 points — finish immediately on the 2nd
         // click instead of waiting for a double-click/Enter/Finish button.
-        if (activeTool === 'line' && polygonPtsRef.current.length >= 2) finishPolygon()
+        if ((activeTool === 'line' || isLineAccumSymbol(activeTool as string)) && polygonPtsRef.current.length >= 2) finishPolygon()
       }
 
       const finishPolygon = () => {
@@ -890,7 +899,7 @@ export function KmzMap() {
         if (startMarker) { startMarker.remove(); startMarker = null }
         const minPts = isMultiLine() ? 2 : 3
         if (pts.length >= minPts) {
-          const committedTool: MarkupTool = activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || activeTool === 'line' ? activeTool : 'polygon'
+          const committedTool: MarkupTool = (activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || activeTool === 'line' || isLineAccumSymbol(activeTool as string)) ? activeTool as MarkupTool : 'polygon'
           commitMarkup({
             tool: committedTool, subtype: activeSubtype, color: rlColor, weight: rlWeight,
             fillColor: rlColor, fillOpacity: rlFillOpacity, opacity: rlOpacity,
@@ -1017,10 +1026,11 @@ export function KmzMap() {
     // Feature drop — single click
     if (isFeatureDrop(activeTool as string)) {
       const onDropClick = (e: L.LeafletMouseEvent) => {
+        const symbolColor = ENGINEERING_SYMBOL_MAP[activeTool as string]?.color
         const meta = FEATURE_TOOL_LABELS[activeTool as string]
         commitMarkup({
           tool: activeTool as MarkupTool, subtype: activeTool as string,
-          color: meta?.color ?? rlColor, weight: rlWeight,
+          color: symbolColor ?? meta?.color ?? rlColor, weight: rlWeight,
           fillColor: null, fillOpacity: 0, opacity: 1,
           geometry: { center: [e.latlng.lat, e.latlng.lng] },
           label: null, fontSize: 13,
@@ -1395,12 +1405,19 @@ export function KmzMap() {
   function startAddWork(type: WorkObjectTypeDef) {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
-    setSessionTools(relevantToolsForWorkType(type.id))
+    const tools = relevantToolsForWorkType(type.id)
+    setSessionTools(tools)
     setActiveColorCode(null); activeColorCodeRef.current = null
     setRlColor(type.defaultColor)
     setRlActive(true)
     setActiveSubtype(type.defaultMarkupTool)
-    if (type.defaultGeometry === 'polygon') {
+    // A curated tool list whose first entry is a genuine engineering symbol (not one of
+    // the generic drawing primitives) preselects that symbol directly — matches clicking
+    // it in the toolbar. Work Types not yet migrated to a symbol catalog (relevantTools
+    // falls back to the generic per-geometry defaults) keep the original behavior below.
+    if (tools.length > 0 && !GENERIC_FIRST_TOOLS.has(tools[0])) {
+      setActiveTool(tools[0])
+    } else if (type.defaultGeometry === 'polygon') {
       setActiveTool('polygon')
     } else if (type.defaultGeometry === 'line') {
       setActiveTool('line')
@@ -1727,7 +1744,7 @@ export function KmzMap() {
 
   const currentToolLabel = (() => {
     if (activeTool === 'select') return 'Pan'
-    return FEATURE_TOOL_LABELS[activeTool as string]?.label ?? String(activeTool)
+    return ENGINEERING_SYMBOL_MAP[activeTool as string]?.label ?? FEATURE_TOOL_LABELS[activeTool as string]?.label ?? String(activeTool)
   })()
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -1856,6 +1873,11 @@ export function KmzMap() {
           onSelectTool={(tool) => {
             setActiveTool(tool)
             if (tool === 'highlight') { setRlColor('#facc15'); setRlWeight(14); setRlOpacity(0.4) }
+            // Engineering symbol tools each carry their own distinguishing color (e.g. Road
+            // Bore vs. Railroad Bore vs. Bridge Bore) — auto-sync so switching tools mid-session
+            // doesn't silently draw the next symbol in whatever color was last selected.
+            const symbolColor = ENGINEERING_SYMBOL_MAP[tool]?.color
+            if (symbolColor) setRlColor(symbolColor)
           }}
           onAddWork={() => { setAddWorkMarkupId(null); setAddWorkModalOpen(true) }}
           editMode={editMode}
@@ -2023,7 +2045,7 @@ export function KmzMap() {
                     <span className="ml-auto text-[9px] text-slate-600 pr-1">{allMarkups.length}</span>
                   </div>
                   {allMarkups.map((m) => {
-                    const meta = FEATURE_TOOL_LABELS[m.tool]
+                    const meta = ENGINEERING_SYMBOL_MAP[m.tool] ?? FEATURE_TOOL_LABELS[m.tool]
                     const isSelected = selectedMarkup?.id === m.id
                     return (
                       <div key={m.id}

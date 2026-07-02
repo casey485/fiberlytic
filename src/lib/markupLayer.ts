@@ -5,6 +5,7 @@
 import L from 'leaflet'
 import type { FieldMarkup } from '../types'
 import { FEATURE_TOOL_LABELS } from './markupMeta'
+import { ENGINEERING_SYMBOL_MAP, type SymbolShape } from './engineeringSymbols'
 
 /** Escapes user-entered text before it's interpolated into a divIcon's innerHTML. */
 function escapeHtml(s: string): string {
@@ -25,10 +26,71 @@ const DASH_BY_STYLE: Record<string, string | undefined> = {
   solid: undefined,
   dashed: '10 6',
   dotted: '2 6',
+  tickMarked: undefined, // ticks are drawn as a separate decoration, not a dash pattern
+  arrowTerminated: undefined,
 }
-/** `lineStyle` (if set) takes priority over the tool-based dash lookup, which stays as a fallback for older records. */
+/** `lineStyle` (if set) takes priority over the tool-based dash lookup; an engineering
+ * symbol's own catalog lineStyle is checked next, then the legacy per-tool fallback. */
 function dashArrayFor(m: FieldMarkup): string | undefined {
-  return m.lineStyle ? DASH_BY_STYLE[m.lineStyle] : DASH[m.tool]
+  if (m.lineStyle) return DASH_BY_STYLE[m.lineStyle]
+  const symbolStyle = ENGINEERING_SYMBOL_MAP[m.tool]?.lineStyle
+  if (symbolStyle) return DASH_BY_STYLE[symbolStyle]
+  return DASH[m.tool]
+}
+
+/**
+ * Renders one of the shared engineering-symbol point shapes as an inline SVG string.
+ * `filled` drives the standard drafting convention: hollow outline = existing,
+ * solid fill = new/proposed. Mirrored exactly in src/lib/markupToPdfSvg.tsx and
+ * src/components/SymbolIcon.tsx — all three read the same shape name.
+ */
+function symbolShapeSvg(shape: SymbolShape, color: string, abbr: string, filled: boolean): string {
+  const fill = filled ? color : 'none'
+  const fillOpacity = filled ? 0.85 : 0
+  switch (shape) {
+    case 'hexagon':
+      return `<svg width="34" height="30" viewBox="0 0 34 30">
+        <polygon points="9,2 25,2 33,15 25,28 9,28 1,15" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${color}" stroke-width="2.5"/>
+        <text x="17" y="19" text-anchor="middle" font-size="10" font-weight="800" font-family="monospace" fill="${filled ? '#fff' : color}">${abbr}</text>
+      </svg>`
+    case 'circleDot':
+      return `<svg width="24" height="24" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" fill="${color}" fill-opacity="0.15" stroke="${color}" stroke-width="2.5"/>
+        <circle cx="12" cy="12" r="3" fill="${color}"/>
+      </svg>`
+    case 'diamond':
+      return `<svg width="22" height="22" viewBox="0 0 22 22">
+        <rect x="4" y="4" width="14" height="14" transform="rotate(45 11 11)" fill="${fill}" fill-opacity="${filled ? 0.85 : 0}" stroke="${color}" stroke-width="2.5"/>
+      </svg>`
+    case 'flag':
+      return `<svg width="20" height="26" viewBox="0 0 20 26">
+        <line x1="3" y1="2" x2="3" y2="24" stroke="${color}" stroke-width="2"/>
+        <polygon points="3,2 17,7 3,12" fill="${filled ? color : 'none'}" fill-opacity="0.9" stroke="${color}" stroke-width="2"/>
+      </svg>`
+    case 'oval':
+      return `<svg width="28" height="18" viewBox="0 0 28 18">
+        <ellipse cx="14" cy="9" rx="12" ry="7" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${color}" stroke-width="2.5"/>
+      </svg>`
+    case 'coil':
+      return `<svg width="22" height="22" viewBox="0 0 22 22">
+        <path d="M11 4 a5 5 0 1 1 -4.5 7 a3.5 3.5 0 1 1 3-5.4" fill="none" stroke="${color}" stroke-width="2.2" stroke-linecap="round"/>
+      </svg>`
+    case 'cross':
+      return `<svg width="20" height="20" viewBox="0 0 20 20">
+        <circle cx="10" cy="10" r="8" fill="#0d0d0d" fill-opacity="0.5" stroke="${color}" stroke-width="2"/>
+        <line x1="10" y1="4" x2="10" y2="16" stroke="${color}" stroke-width="2"/>
+        <line x1="4" y1="10" x2="16" y2="10" stroke="${color}" stroke-width="2"/>
+      </svg>`
+    case 'square':
+      return `<svg width="22" height="22" viewBox="0 0 22 22">
+        <rect x="3" y="3" width="16" height="16" fill="${fill}" fill-opacity="${fillOpacity}" stroke="${color}" stroke-width="2.5"/>
+      </svg>`
+    case 'pinBadge':
+    default:
+      return `<svg width="24" height="24" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="9" fill="${color}" fill-opacity="0.85" stroke="#fff" stroke-width="1.5"/>
+      </svg>`
+  }
 }
 
 /** Calculate arrow head points for a polyline endpoint. */
@@ -166,6 +228,9 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
 
   const geo = m.geometry
 
+  // Engineering symbol line tools render as plain polylines, styled via dashArrayFor
+  // above ('direction_arrow' is excluded from this group — it renders through the
+  // arrow case below instead, since it needs an arrowhead).
   switch (m.tool) {
     case 'pen':
     case 'line':
@@ -173,11 +238,19 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
     case 'dotted_line':
     case 'multi_line':
     case 'measure':
-    case 'highlight': {
+    case 'highlight':
+    case 'directional_bore':
+    case 'road_bore':
+    case 'railroad_bore':
+    case 'bridge_bore':
+    case 'conduit_run':
+    case 'new_strand':
+    case 'existing_strand': {
       if (!geo.latlngs?.length) return null
       return L.polyline(geo.latlngs, opts)
     }
 
+    case 'direction_arrow':
     case 'arrow':
     case 'double_arrow': {
       if (!geo.latlngs || geo.latlngs.length < 2) return null
@@ -327,9 +400,30 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
     default: {
       // Feature drop — render as a labeled pin (or circular marker for struct_ types)
       if (!geo.center) return null
+      const featureLabel = escapeHtml(m.featureName ?? '')
+
+      // Engineering symbol point tools — a genuinely distinct shape per catalog entry,
+      // instead of the generic pin below. See src/lib/engineeringSymbols.ts.
+      const symbolDef = ENGINEERING_SYMBOL_MAP[m.tool]
+      if (symbolDef && symbolDef.geometryKind === 'point' && symbolDef.shape) {
+        const filled = symbolDef.variant !== 'existing'
+        return L.marker(geo.center as L.LatLngExpression, {
+          pane: 'markups',
+          interactive: true,
+          icon: L.divIcon({
+            className: '',
+            html: `<div style="display:flex;flex-direction:column;align-items:center;pointer-events:none">
+              ${symbolShapeSvg(symbolDef.shape, symbolDef.color, escapeHtml(symbolDef.abbr), filled)}
+              ${featureLabel ? `<div style="background:rgba(0,0,0,0.75);color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;white-space:nowrap;margin-top:2px">${featureLabel}</div>` : ''}
+            </div>`,
+            iconAnchor: [17, 15],
+            iconSize: [34, featureLabel ? 48 : 30],
+          }),
+        })
+      }
+
       const meta = FEATURE_TOOL_LABELS[m.tool] ?? { abbr: '?', color: '#6b7280', label: m.tool }
       const pinColor = meta.color
-      const featureLabel = escapeHtml(m.featureName ?? '')
 
       // Structure markers render as circular icons matching field drawings
       if (m.tool.startsWith('struct_')) {

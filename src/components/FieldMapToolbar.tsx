@@ -18,11 +18,14 @@ import {
   MoreHorizontal, Wrench,
 } from 'lucide-react'
 import type { MarkupTool } from '../types'
+import { ENGINEERING_SYMBOLS } from '../lib/engineeringSymbols'
+import { SymbolIcon } from './SymbolIcon'
 
 export type FieldMapDrawTool =
   | 'select' | 'point' | 'line' | 'multi_line' | 'polygon' | 'rect' | 'circle'
   | 'pen' | 'text' | 'callout' | 'arrow' | 'measure' | 'split' | 'merge'
   | 'cloud' | 'highlight' | 'ellipse'
+  | MarkupTool
 
 interface Props {
   activeTool: FieldMapDrawTool | MarkupTool | string
@@ -51,9 +54,12 @@ interface Props {
   activeTools: FieldMapDrawTool[] | null
 }
 
-/** Every drawing tool that can appear as a primary button or in "More Tools" — canonical display
- * order. Select/Split/Merge are handled as their own dedicated buttons, not part of this set. */
-const ALL_DRAW_TOOLS: { tool: FieldMapDrawTool; labelKey: string; icon: React.ReactNode }[] = [
+interface ToolButtonDef { tool: FieldMapDrawTool; labelKey?: string; label?: string; icon: React.ReactNode }
+
+/** Every generic drawing tool that can appear as a primary button or in "More Tools" —
+ * canonical display order. Select/Split/Merge are handled as their own dedicated
+ * buttons, not part of this set. */
+const GENERIC_DRAW_TOOLS: ToolButtonDef[] = [
   { tool: 'point', labelKey: 'toolbar.point', icon: <MapPinPlus size={15} /> },
   { tool: 'line', labelKey: 'toolbar.line', icon: <Minus size={15} /> },
   { tool: 'multi_line', labelKey: 'toolbar.multiLine', icon: <Waypoints size={15} /> },
@@ -69,6 +75,14 @@ const ALL_DRAW_TOOLS: { tool: FieldMapDrawTool; labelKey: string; icon: React.Re
   { tool: 'highlight', labelKey: 'toolbar.highlight', icon: <Highlighter size={14} /> },
   { tool: 'ellipse', labelKey: 'toolbar.ellipse', icon: <Circle size={14} /> },
 ]
+
+/** Engineering symbol tools (src/lib/engineeringSymbols.ts) — plain-text labels, not
+ * i18n keys, since the symbol catalog isn't localized in this pass. */
+const SYMBOL_DRAW_TOOLS: ToolButtonDef[] = ENGINEERING_SYMBOLS.map((s) => ({
+  tool: s.tool, label: s.label, icon: <SymbolIcon def={s} />,
+}))
+
+const ALL_DRAW_TOOLS: ToolButtonDef[] = [...GENERIC_DRAW_TOOLS, ...SYMBOL_DRAW_TOOLS]
 
 function ToolbarButton({
   active, disabled, title, onClick, children,
@@ -132,8 +146,8 @@ export function FieldMapToolbar({
         <>
           <Divider />
 
-          {primaryTools.map(({ tool, labelKey, icon }) => (
-            <ToolbarButton key={tool} active={activeTool === tool} title={t(labelKey)} onClick={() => onSelectTool(tool)}>
+          {primaryTools.map(({ tool, label, labelKey, icon }) => (
+            <ToolbarButton key={tool} active={activeTool === tool} title={label ?? t(labelKey!)} onClick={() => onSelectTool(tool)}>
               {icon}
             </ToolbarButton>
           ))}
@@ -152,7 +166,7 @@ export function FieldMapToolbar({
               </button>
               {moreToolsOpen && (
                 <div className="absolute left-0 top-full z-[2000] mt-1 w-40 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
-                  {overflowTools.map(({ tool, labelKey, icon }) => (
+                  {overflowTools.map(({ tool, label, labelKey, icon }) => (
                     <button
                       key={tool}
                       onClick={() => { onSelectTool(tool); setMoreToolsOpen(false) }}
@@ -160,7 +174,7 @@ export function FieldMapToolbar({
                         activeTool === tool ? 'text-brand-300' : 'text-slate-300'
                       }`}
                     >
-                      {icon} {t(labelKey)}
+                      {icon} {label ?? t(labelKey!)}
                     </button>
                   ))}
                 </div>

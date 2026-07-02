@@ -25,6 +25,7 @@ import { FieldMapToolbar, type FieldMapDrawTool } from '../components/FieldMapTo
 import { AddWorkModal } from '../components/AddWorkModal'
 import { MarkupPanel } from '../components/MarkupPanel'
 import { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS } from '../lib/markupMeta'
+import { ENGINEERING_SYMBOL_MAP, ENGINEERING_POINT_TOOLS, ENGINEERING_LINE_TOOLS } from '../lib/engineeringSymbols'
 import { findSnapPointFlat, collectSnapCandidates } from '../lib/snap'
 import { splitLine, splitPolygon, mergeLines, unionPolygons } from '../lib/geometryOps'
 import type { FieldMarkup, MarkupTool } from '../types'
@@ -39,8 +40,14 @@ const WEIGHT_OPTIONS = [
   { value: 12, label: 'XL' },
 ] as const
 
-const DRAG_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'circle', 'arrow', 'double_arrow'])
-const CLICK_ACCUM_TOOLS = new Set(['line', 'polygon', 'multi_line', 'measure', 'cloud'])
+const DRAG_TOOLS = new Set(['pen', 'highlight', 'rect', 'ellipse', 'circle', 'arrow', 'double_arrow', 'direction_arrow'])
+// Engineering symbol line tools draw via click-accumulation like 'line' (2-point,
+// auto-finish) — excludes 'direction_arrow', which is drag-based (see DRAG_TOOLS above).
+const LINE_ACCUM_SYMBOL_TOOLS = new Set<MarkupTool>(ENGINEERING_LINE_TOOLS.filter((t) => t !== 'direction_arrow'))
+const CLICK_ACCUM_TOOLS = new Set<string>(['line', 'polygon', 'multi_line', 'measure', 'cloud', ...LINE_ACCUM_SYMBOL_TOOLS])
+/** relevantToolsForWorkType's generic per-geometry fallbacks — used to detect whether a
+ * Work Type has been migrated to a real engineering symbol catalog (see startAddWork). */
+const GENERIC_FIRST_TOOLS = new Set(['point', 'line', 'polygon', 'rect', 'multi_line', 'pen', 'measure', 'callout'])
 
 const ZOOM_MIN = 0.5
 const ZOOM_MAX = 3
@@ -284,9 +291,15 @@ export function PdfPrintMode() {
   function startAddWork(type: WorkObjectTypeDef) {
     pendingWorkTypeRef.current = type
     addWorkModeRef.current = true
-    setSessionTools(relevantToolsForWorkType(type.id))
+    const tools = relevantToolsForWorkType(type.id)
+    setSessionTools(tools)
     setColor(type.defaultColor)
-    if (type.defaultGeometry === 'polygon') setActiveTool('polygon')
+    // A curated tool list whose first entry is a genuine engineering symbol (not one of
+    // the generic drawing primitives) preselects that symbol directly — matches clicking
+    // it in the toolbar. Work Types not yet migrated to a symbol catalog (relevantTools
+    // falls back to the generic per-geometry defaults) keep the original behavior below.
+    if (tools.length > 0 && !GENERIC_FIRST_TOOLS.has(tools[0])) setActiveTool(tools[0])
+    else if (type.defaultGeometry === 'polygon') setActiveTool('polygon')
     else if (type.defaultGeometry === 'line') setActiveTool('line')
     else setActiveTool(type.defaultMarkupTool)
     setActiveSubtype(type.defaultMarkupTool)
@@ -343,11 +356,12 @@ export function PdfPrintMode() {
       downPtRef.current = pt
       return
     }
-    if (activeTool === 'point' || FEATURE_DROP_TOOLS.includes(activeTool as (typeof FEATURE_DROP_TOOLS)[number])) {
+    if (activeTool === 'point' || FEATURE_DROP_TOOLS.includes(activeTool as (typeof FEATURE_DROP_TOOLS)[number]) || ENGINEERING_POINT_TOOLS.includes(activeTool as MarkupTool)) {
+      const symbolColor = ENGINEERING_SYMBOL_MAP[activeTool as string]?.color
       const meta = FEATURE_TOOL_LABELS[activeTool as string]
       commitMarkup({
         tool: activeTool as MarkupTool, subtype: activeTool as string,
-        color: meta?.color ?? color, weight, fillColor: null, fillOpacity: 0, opacity: 1,
+        color: symbolColor ?? meta?.color ?? color, weight, fillColor: null, fillOpacity: 0, opacity: 1,
         geometry: { center: pt }, label: null, fontSize: 13,
         featureType: activeTool as string, featureName: null, notes: null, lengthFt: null, quantity: null,
       })
@@ -439,7 +453,7 @@ export function PdfPrintMode() {
     // instead of waiting for Enter/Save. finishAccumulation has side effects (setState,
     // commitMarkup), so this must NOT run inside the setAccumPts updater below — React's
     // StrictMode double-invokes updaters in dev, which would otherwise double-commit.
-    if (activeTool === 'line' && accumPts.length >= 1) {
+    if ((activeTool === 'line' || LINE_ACCUM_SYMBOL_TOOLS.has(activeTool as MarkupTool)) && accumPts.length >= 1) {
       finishAccumulation([...accumPts, pt])
       return
     }
@@ -450,10 +464,10 @@ export function PdfPrintMode() {
     const pts = ptsOverride ?? accumPts
     setAccumPts([])
     setGhostPt(null)
-    const isMultiLine = activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'line'
+    const isMultiLine = activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'line' || LINE_ACCUM_SYMBOL_TOOLS.has(activeTool as MarkupTool)
     const minPts = isMultiLine ? 2 : 3
     if (pts.length < minPts) return
-    const committedTool: MarkupTool = (activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || activeTool === 'line') ? activeTool as MarkupTool : 'polygon'
+    const committedTool: MarkupTool = (activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'cloud' || activeTool === 'line' || LINE_ACCUM_SYMBOL_TOOLS.has(activeTool as MarkupTool)) ? activeTool as MarkupTool : 'polygon'
     const feet = isMultiLine ? feetForPageLength(euclideanLength(pts), file?.pdfScaleFeetPerInch) : null
     commitMarkup({
       tool: committedTool, subtype: activeSubtype, color, weight,
@@ -696,7 +710,15 @@ export function PdfPrintMode() {
       {/* Toolbar */}
       <FieldMapToolbar
         activeTool={activeTool}
-        onSelectTool={(tool) => { setActiveTool(tool); cancelAccumulation(); if (tool === 'highlight') { setColor('#facc15'); setWeight(14); setOpacity(0.4) } }}
+        onSelectTool={(tool) => {
+          setActiveTool(tool)
+          cancelAccumulation()
+          if (tool === 'highlight') { setColor('#facc15'); setWeight(14); setOpacity(0.4) }
+          // Engineering symbol tools each carry their own distinguishing color — auto-sync
+          // so switching tools mid-session doesn't draw the next symbol in the wrong color.
+          const symbolColor = ENGINEERING_SYMBOL_MAP[tool]?.color
+          if (symbolColor) setColor(symbolColor)
+        }}
         onAddWork={() => { setAddWorkMarkupId(null); setAddWorkModalOpen(true) }}
         editMode={editMode}
         canVertexEdit={!!selectedMarkup && !selectedMarkup.lockedAt}

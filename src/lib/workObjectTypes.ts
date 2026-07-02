@@ -49,14 +49,14 @@ const NON_BILLABLE_STATUSES: MarkupStatus[] = ['pending', 'in_progress', 'comple
 export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
   {
     id: 'aerial_strand', label: 'Aerial Strand', icon: Cable,
-    defaultColor: '#06b6d4', defaultGeometry: 'line', defaultMarkupTool: 'aerial_cable',
+    defaultColor: '#06b6d4', defaultGeometry: 'line', defaultMarkupTool: 'new_strand',
     defaultUnit: 'Feet', billingKeywords: ['strand', 'aerial'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Strand tension correct', 'Attachment height correct', 'Clearance from other utilities'],
   },
   {
     id: 'directional_drill', label: 'Directional Drill', icon: Drill,
-    defaultColor: '#3b82f6', defaultGeometry: 'line', defaultMarkupTool: 'bore_pit',
+    defaultColor: '#3b82f6', defaultGeometry: 'line', defaultMarkupTool: 'directional_bore',
     defaultUnit: 'Feet', billingKeywords: ['bore', 'directional', 'hdd', 'drill'],
     requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Bore depth correct', 'No utility strikes', 'Conduit continuity verified'],
@@ -105,7 +105,7 @@ export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
   },
   {
     id: 'handhole_vault', label: 'Handhole / Vault', icon: Box,
-    defaultColor: '#f59e0b', defaultGeometry: 'point', defaultMarkupTool: 'handhole',
+    defaultColor: '#f59e0b', defaultGeometry: 'point', defaultMarkupTool: 'proposed_handhole',
     defaultUnit: 'Each', billingKeywords: ['vault', 'handhole', 'pedestal', 'cabinet'],
     requiredPhotoPhases: ['handhole_proof'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'Lid seated', 'Grounding present'],
@@ -176,9 +176,25 @@ const POINT_TYPE_TOOLS: FieldMapDrawTool[] = ['point', 'rect', 'callout']
 
 /** Explicit overrides for types with a distinct tool mix from their geometry-kind default. */
 const RELEVANT_TOOLS_OVERRIDE: Partial<Record<WorkObjectTypeId, FieldMapDrawTool[]>> = {
-  handhole_vault: POINT_TYPE_TOOLS,
   restoration: ['polygon', 'rect', 'pen', 'measure'],
-  aerial_strand: ['line', 'multi_line', 'point', 'measure'],
+
+  // Engineering symbol catalog (src/lib/engineeringSymbols.ts) — Phase 1 pilot
+  // categories. The other Work Types below keep the generic geometry-kind
+  // defaults until they're migrated the same way.
+  directional_drill: [
+    'directional_bore', 'road_bore', 'railroad_bore', 'bridge_bore',
+    'bore_start', 'bore_end', 'conduit_run', 'direction_arrow',
+    'riser', 'handhole_connection', 'callout',
+  ],
+  aerial_strand: [
+    'new_strand', 'existing_strand', 'pole_attachment', 'dead_end',
+    'slack_loop', 'anchor', 'guy_attachment', 'riser_guard', 'pole_marker',
+    'direction_arrow', 'callout',
+  ],
+  handhole_vault: [
+    'hh17', 'hh24', 'hh30', 'hh36', 'vault', 'existing_handhole', 'proposed_handhole',
+    'concrete_pad', 'lid_label', 'storage_loop', 'conduit_entry', 'callout',
+  ],
 }
 
 export function relevantToolsForWorkType(typeId: WorkObjectTypeId): FieldMapDrawTool[] {

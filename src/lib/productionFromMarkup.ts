@@ -9,6 +9,7 @@
 import type { AppData, FieldMarkup, MarkupBilling, MarkupPhoto, ProductionEntry } from '../types'
 import type { LineItemInput } from '../store/DataContext'
 import { FEATURE_TOOL_LABELS } from './markupMeta'
+import { ENGINEERING_SYMBOL_MAP } from './engineeringSymbols'
 
 function subtypeLabel(subtype: string): string {
   const parts = subtype.split('/')
@@ -125,7 +126,7 @@ export function submitMarkupToProduction(args: SubmitMarkupToProductionArgs): Su
 
   if (!calloutCenter) return { calloutCenter: null, calloutLabel: null, calloutPhotoBlobKey: null }
 
-  const toolLabel = FEATURE_TOOL_LABELS[markup.tool]
+  const toolLabel = ENGINEERING_SYMBOL_MAP[markup.tool] ?? FEATURE_TOOL_LABELS[markup.tool]
   const calloutName = featureName.trim()
     || (markup.subtype ? subtypeLabel(markup.subtype) : null)
     || toolLabel?.label
