@@ -5,7 +5,7 @@
 import L from 'leaflet'
 import type { FieldMarkup } from '../types'
 import { FEATURE_TOOL_LABELS } from './markupMeta'
-import { ENGINEERING_SYMBOL_MAP, type SymbolShape } from './engineeringSymbols'
+import { ENGINEERING_SYMBOL_MAP, computeTickMarks, type SymbolShape } from './engineeringSymbols'
 
 /** Escapes user-entered text before it's interpolated into a divIcon's innerHTML. */
 function escapeHtml(s: string): string {
@@ -228,9 +228,22 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
 
   const geo = m.geometry
 
-  // Engineering symbol line tools render as plain polylines, styled via dashArrayFor
-  // above ('direction_arrow' is excluded from this group — it renders through the
-  // arrow case below instead, since it needs an arrowhead).
+  // Engineering symbol line tools — catalog-driven, so adding a new line-kind symbol
+  // to engineeringSymbols.ts never requires touching this file. 'direction_arrow' is
+  // excluded here; it renders through the arrow case in the switch below instead,
+  // since it needs an arrowhead, not a plain polyline.
+  const lineSymbolDef = ENGINEERING_SYMBOL_MAP[m.tool]
+  if (lineSymbolDef?.geometryKind === 'line' && m.tool !== 'direction_arrow') {
+    if (!geo.latlngs?.length) return null
+    const line = L.polyline(geo.latlngs, opts)
+    if (lineSymbolDef.lineStyle !== 'tickMarked') return line
+    const group = L.layerGroup([line])
+    for (const tick of computeTickMarks(geo.latlngs)) {
+      group.addLayer(L.polyline([tick.p1, tick.p2], { ...opts, dashArray: undefined }))
+    }
+    return group
+  }
+
   switch (m.tool) {
     case 'pen':
     case 'line':
@@ -238,14 +251,7 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
     case 'dotted_line':
     case 'multi_line':
     case 'measure':
-    case 'highlight':
-    case 'directional_bore':
-    case 'road_bore':
-    case 'railroad_bore':
-    case 'bridge_bore':
-    case 'conduit_run':
-    case 'new_strand':
-    case 'existing_strand': {
+    case 'highlight': {
       if (!geo.latlngs?.length) return null
       return L.polyline(geo.latlngs, opts)
     }

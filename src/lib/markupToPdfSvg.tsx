@@ -13,7 +13,7 @@
  */
 import type { FieldMarkup } from '../types'
 import { FEATURE_TOOL_LABELS } from './markupMeta'
-import { ENGINEERING_SYMBOL_MAP, type SymbolShape } from './engineeringSymbols'
+import { ENGINEERING_SYMBOL_MAP, computeTickMarks, type SymbolShape } from './engineeringSymbols'
 
 const DASH: Record<string, string | undefined> = {
   dashed_line: '10 6',
@@ -111,9 +111,32 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
   const dashArray = dashArrayFor(m)
   const geo = m.geometry
 
-  // Engineering symbol line tools render as plain polylines, styled via dashArrayFor
-  // above ('direction_arrow' is excluded from this group — it renders through the
-  // arrow case below instead, since it needs an arrowhead). Mirrors markupLayer.ts.
+  // Engineering symbol line tools — catalog-driven, so adding a new line-kind symbol
+  // to engineeringSymbols.ts never requires touching this file. 'direction_arrow' is
+  // excluded here; it renders through the arrow case in the switch below instead,
+  // since it needs an arrowhead, not a plain polyline. Mirrors markupLayer.ts.
+  const lineSymbolDef = ENGINEERING_SYMBOL_MAP[m.tool]
+  if (lineSymbolDef?.geometryKind === 'line' && m.tool !== 'direction_arrow') {
+    if (!geo.latlngs?.length) return null
+    const line = (
+      <polyline
+        points={ptsToPolyPoints(geo.latlngs)}
+        fill="none" stroke={color} strokeWidth={weight} strokeOpacity={opacity}
+        strokeDasharray={dashArray} strokeLinecap="round" strokeLinejoin="round"
+      />
+    )
+    if (lineSymbolDef.lineStyle !== 'tickMarked') return line
+    return (
+      <g>
+        {line}
+        {computeTickMarks(geo.latlngs).map((tick, i) => (
+          <line key={i} x1={tick.p1[0]} y1={tick.p1[1]} x2={tick.p2[0]} y2={tick.p2[1]}
+            stroke={color} strokeWidth={weight} strokeOpacity={opacity} strokeLinecap="round" />
+        ))}
+      </g>
+    )
+  }
+
   switch (m.tool) {
     case 'pen':
     case 'line':
@@ -121,14 +144,7 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
     case 'dotted_line':
     case 'multi_line':
     case 'measure':
-    case 'highlight':
-    case 'directional_bore':
-    case 'road_bore':
-    case 'railroad_bore':
-    case 'bridge_bore':
-    case 'conduit_run':
-    case 'new_strand':
-    case 'existing_strand': {
+    case 'highlight': {
       if (!geo.latlngs?.length) return null
       return (
         <polyline

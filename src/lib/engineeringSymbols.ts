@@ -12,10 +12,12 @@
 // oval, etc.) — not any single company's proprietary CAD block library,
 // which isn't publicly documented.
 //
-// Phase 1 (this file, current pass): Directional Drill, Aerial Strand,
-// Handhole / Vault. The other 10 Work Types keep using the existing generic
-// line/point tools (src/lib/workObjectTypes.ts's LINE_TYPE_TOOLS/
-// POINT_TYPE_TOOLS defaults) until they're migrated the same way.
+// Covers 12 Work Types: Directional Drill, Aerial Strand, Handhole/Vault,
+// Distribution Fiber, Feeder Fiber, Drop, Pole, Anchor/Down Guy, Splicing,
+// Trenching, Plowing, Sub-Ducting. Restoration/QA-QC/Utility Conflict/Damage
+// Report weren't given engineering-symbol specs — they keep their existing
+// generic tools (src/lib/workObjectTypes.ts's LINE_TYPE_TOOLS/POINT_TYPE_TOOLS
+// defaults, or Restoration's own polygon/rect/pen/measure override).
 // ---------------------------------------------------------------------------
 
 import type { MarkupTool } from '../types'
@@ -92,7 +94,112 @@ export const ENGINEERING_SYMBOLS: EngineeringSymbolDef[] = [
   { tool: 'conduit_entry',     label: 'Conduit Entry',     abbr: 'CE', color: '#64748b', geometryKind: 'point', shape: 'cross' },
   // Reuses the existing 'vault' MarkupTool (types.ts) — just upgrades its shape.
   { tool: 'vault',             label: 'Vault',             abbr: 'VT', color: '#64748b', geometryKind: 'point', shape: 'hexagon', variant: 'new' },
+
+  // ── Distribution Fiber ───────────────────────────────────────────────────
+  { tool: 'distribution_fiber_route', label: 'Distribution Fiber Route', abbr: 'DFR', color: '#22c55e', geometryKind: 'line', lineStyle: 'solid' },
+  { tool: 'fiber_tick_marks',  label: 'Fiber Tick Marks', abbr: 'FTM', color: '#22c55e', geometryKind: 'line', lineStyle: 'tickMarked' },
+  { tool: 'slack_storage',     label: 'Slack Storage',    abbr: 'SS',  color: '#22c55e', geometryKind: 'point', shape: 'coil' },
+  { tool: 'fiber_label',       label: 'Fiber Label',      abbr: 'FL',  color: '#22c55e', geometryKind: 'point', shape: 'diamond' },
+
+  // ── Feeder Fiber ─────────────────────────────────────────────────────────
+  { tool: 'feeder_fiber_route', label: 'Feeder Fiber Route', abbr: 'FFR', color: '#4ade80', geometryKind: 'line', lineStyle: 'solid' },
+  { tool: 'fiber_count_label', label: 'Fiber Count Label', abbr: 'FC', color: '#4ade80', geometryKind: 'point', shape: 'diamond' },
+
+  // ── Drop ─────────────────────────────────────────────────────────────────
+  { tool: 'drop_line',        label: 'Drop Line',        abbr: 'DL',  color: '#22d3ee', geometryKind: 'line', lineStyle: 'solid' },
+  { tool: 'house_drop',       label: 'House Drop',       abbr: 'HD',  color: '#22d3ee', geometryKind: 'point', shape: 'square' },
+  { tool: 'service_point',    label: 'Service Point',    abbr: 'SP',  color: '#0891b2', geometryKind: 'point', shape: 'circleDot' },
+  { tool: 'ont_location',     label: 'ONT Location',     abbr: 'ONT', color: '#0e7490', geometryKind: 'point', shape: 'diamond' },
+
+  // ── Pole ─────────────────────────────────────────────────────────────────
+  { tool: 'existing_pole',    label: 'Existing Pole',    abbr: 'EP',  color: '#78716c', geometryKind: 'point', shape: 'circleDot', variant: 'existing' },
+  { tool: 'new_pole',         label: 'New Pole',         abbr: 'NP',  color: '#78716c', geometryKind: 'point', shape: 'circleDot', variant: 'new' },
+  { tool: 'pole_number',      label: 'Pole Number',      abbr: '#',   color: '#57534e', geometryKind: 'point', shape: 'diamond' },
+  { tool: 'transformer',      label: 'Transformer',      abbr: 'TR',  color: '#eab308', geometryKind: 'point', shape: 'square' },
+  { tool: 'street_light',     label: 'Street Light',     abbr: 'SL',  color: '#facc15', geometryKind: 'point', shape: 'diamond' },
+  { tool: 'comm_attachment',  label: 'Communication Attachment', abbr: 'CA', color: '#06b6d4', geometryKind: 'point', shape: 'circleDot' },
+  { tool: 'anchor_attachment', label: 'Anchor Attachment', abbr: 'AA', color: '#f59e0b', geometryKind: 'point', shape: 'flag' },
+
+  // ── Anchor / Down Guy ────────────────────────────────────────────────────
+  { tool: 'existing_anchor',  label: 'Existing Anchor',  abbr: 'EA',  color: '#f59e0b', geometryKind: 'point', shape: 'flag', variant: 'existing' },
+  { tool: 'new_anchor',       label: 'New Anchor',       abbr: 'NA',  color: '#f59e0b', geometryKind: 'point', shape: 'flag', variant: 'new' },
+  { tool: 'down_guy',         label: 'Down Guy',         abbr: 'DG',  color: '#d97706', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'sidewalk_guy',     label: 'Sidewalk Guy',     abbr: 'SG',  color: '#b45309', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'stub_pole_guy',    label: 'Stub Pole Guy',    abbr: 'SPG', color: '#92400e', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'anchor_label',     label: 'Anchor Label',     abbr: 'AL',  color: '#78350f', geometryKind: 'point', shape: 'diamond' },
+
+  // ── Splicing ─────────────────────────────────────────────────────────────
+  { tool: 'splice_case',      label: 'Splice Case',      abbr: 'SC',  color: '#ec4899', geometryKind: 'point', shape: 'oval' },
+  { tool: 'mst',               label: 'MST',              abbr: 'MST', color: '#db2777', geometryKind: 'point', shape: 'oval' },
+  { tool: 'terminal',         label: 'Terminal',         abbr: 'T',   color: '#be185d', geometryKind: 'point', shape: 'diamond' },
+  { tool: 'closure',          label: 'Closure',          abbr: 'CL',  color: '#9d174d', geometryKind: 'point', shape: 'oval' },
+  { tool: 'fiber_storage',    label: 'Fiber Storage',    abbr: 'FS',  color: '#10b981', geometryKind: 'point', shape: 'coil' },
+  { tool: 'splice_label',     label: 'Splice Label',     abbr: 'SPL', color: '#ec4899', geometryKind: 'point', shape: 'diamond' },
+
+  // ── Trenching ────────────────────────────────────────────────────────────
+  { tool: 'open_trench',      label: 'Open Trench',      abbr: 'OT',  color: '#92400e', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'road_cut',         label: 'Road Cut',         abbr: 'RC',  color: '#f97316', geometryKind: 'line', lineStyle: 'dotted' },
+  { tool: 'driveway_crossing', label: 'Driveway Crossing', abbr: 'DC', color: '#fb923c', geometryKind: 'line', lineStyle: 'dotted' },
+  { tool: 'concrete_cut',     label: 'Concrete Cut',     abbr: 'CC',  color: '#9ca3af', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'saw_cut',          label: 'Saw Cut',          abbr: 'SWC', color: '#6b7280', geometryKind: 'line', lineStyle: 'dotted' },
+
+  // ── Plowing ──────────────────────────────────────────────────────────────
+  { tool: 'plow_route',       label: 'Plow Route',       abbr: 'PR',  color: '#a855f7', geometryKind: 'line', lineStyle: 'solid' },
+  { tool: 'depth_marker',     label: 'Depth Marker',     abbr: 'DM',  color: '#7e22ce', geometryKind: 'point', shape: 'cross' },
+
+  // ── Sub-Ducting ──────────────────────────────────────────────────────────
+  { tool: 'duct_1way',        label: '1-Way Duct',       abbr: '1W',  color: '#8b5cf6', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'duct_2way',        label: '2-Way Duct',       abbr: '2W',  color: '#8b5cf6', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'duct_3way',        label: '3-Way Duct',       abbr: '3W',  color: '#8b5cf6', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'duct_4way',        label: '4-Way Duct',       abbr: '4W',  color: '#8b5cf6', geometryKind: 'line', lineStyle: 'dashed' },
+  { tool: 'innerduct',        label: 'Innerduct',        abbr: 'ID',  color: '#7c3aed', geometryKind: 'line', lineStyle: 'dotted' },
 ]
+
+export interface TickSegment { p1: [number, number]; p2: [number, number] }
+
+/**
+ * Evenly-spaced perpendicular tick marks along a polyline — the 'tickMarked' line
+ * style (fiber count / route marking). Sizes and spacing are fractions of the path's
+ * own total length, not absolute units, so this works unchanged in either flat
+ * coordinate space markupLayer.ts/markupToPdfSvg.tsx use (lat/lng degrees or PDF
+ * page-points) — one shared implementation for both renderers.
+ */
+export function computeTickMarks(pts: [number, number][], count = 8, tickFraction = 0.035): TickSegment[] {
+  if (pts.length < 2) return []
+  const segLens: number[] = []
+  let total = 0
+  for (let i = 1; i < pts.length; i++) {
+    const d = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1])
+    segLens.push(d)
+    total += d
+  }
+  if (total === 0) return []
+  const tickLen = total * tickFraction
+  const ticks: TickSegment[] = []
+  for (let i = 1; i <= count; i++) {
+    const targetDist = (total * i) / (count + 1)
+    let acc = 0
+    for (let s = 0; s < segLens.length; s++) {
+      if (acc + segLens[s] >= targetDist) {
+        const segFrac = segLens[s] === 0 ? 0 : (targetDist - acc) / segLens[s]
+        const [x1, y1] = pts[s]
+        const [x2, y2] = pts[s + 1]
+        const px = x1 + (x2 - x1) * segFrac
+        const py = y1 + (y2 - y1) * segFrac
+        const dx = x2 - x1, dy = y2 - y1
+        const len = Math.hypot(dx, dy) || 1
+        const perpX = -dy / len, perpY = dx / len
+        ticks.push({
+          p1: [px + (perpX * tickLen) / 2, py + (perpY * tickLen) / 2],
+          p2: [px - (perpX * tickLen) / 2, py - (perpY * tickLen) / 2],
+        })
+        break
+      }
+      acc += segLens[s]
+    }
+  }
+  return ticks
+}
 
 export const ENGINEERING_SYMBOL_MAP: Record<string, EngineeringSymbolDef> =
   Object.fromEntries(ENGINEERING_SYMBOLS.map((s) => [s.tool, s]))

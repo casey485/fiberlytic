@@ -451,6 +451,26 @@ export type MarkupTool =
   // Engineering symbols — Handhole / Vault
   | 'hh17' | 'hh24' | 'hh30' | 'hh36' | 'existing_handhole' | 'proposed_handhole'
   | 'concrete_pad' | 'lid_label' | 'storage_loop' | 'conduit_entry'
+  // Engineering symbols — Distribution Fiber
+  | 'distribution_fiber_route' | 'fiber_tick_marks' | 'slack_storage' | 'fiber_label'
+  // Engineering symbols — Feeder Fiber
+  | 'feeder_fiber_route' | 'fiber_count_label'
+  // Engineering symbols — Drop
+  | 'drop_line' | 'house_drop' | 'service_point' | 'ont_location'
+  // Engineering symbols — Pole
+  | 'existing_pole' | 'new_pole' | 'pole_number' | 'transformer'
+  | 'street_light' | 'comm_attachment' | 'anchor_attachment'
+  // Engineering symbols — Anchor / Down Guy
+  | 'existing_anchor' | 'new_anchor' | 'down_guy' | 'sidewalk_guy'
+  | 'stub_pole_guy' | 'anchor_label'
+  // Engineering symbols — Splicing
+  | 'splice_case' | 'mst' | 'terminal' | 'closure' | 'fiber_storage' | 'splice_label'
+  // Engineering symbols — Trenching
+  | 'open_trench' | 'road_cut' | 'driveway_crossing' | 'concrete_cut' | 'saw_cut'
+  // Engineering symbols — Plowing
+  | 'plow_route' | 'depth_marker'
+  // Engineering symbols — Sub-Ducting
+  | 'duct_1way' | 'duct_2way' | 'duct_3way' | 'duct_4way' | 'innerduct'
 
 export type MarkupStatus = 'pending' | 'in_progress' | 'complete' | 'qc_needed' | 'rejected' | 'approved' | 'billed'
 export type MarkupLayer  = 'crew' | 'supervisor' | 'qc' | 'as_built' | 'production' | 'billing'

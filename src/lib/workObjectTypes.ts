@@ -63,42 +63,42 @@ export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
   },
   {
     id: 'distribution_fiber', label: 'Distribution Fiber', icon: GitBranch,
-    defaultColor: '#22c55e', defaultGeometry: 'line', defaultMarkupTool: 'fiber_pull',
+    defaultColor: '#22c55e', defaultGeometry: 'line', defaultMarkupTool: 'distribution_fiber_route',
     defaultUnit: 'Feet', billingKeywords: ['fiber', 'distribution', 'duct'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Fiber count correct', 'No visible damage', 'Proper slack maintained'],
   },
   {
     id: 'feeder_fiber', label: 'Feeder Fiber', icon: Waypoints,
-    defaultColor: '#4ade80', defaultGeometry: 'line', defaultMarkupTool: 'fiber_pull',
+    defaultColor: '#4ade80', defaultGeometry: 'line', defaultMarkupTool: 'feeder_fiber_route',
     defaultUnit: 'Feet', billingKeywords: ['fiber', 'feeder', 'trunk'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Fiber count correct', 'Splice points documented', 'Proper slack maintained'],
   },
   {
     id: 'drop', label: 'Drop', icon: Home,
-    defaultColor: '#22d3ee', defaultGeometry: 'line', defaultMarkupTool: 'fiber_pull',
+    defaultColor: '#22d3ee', defaultGeometry: 'line', defaultMarkupTool: 'drop_line',
     defaultUnit: 'Feet', billingKeywords: ['drop', 'service'],
     requiredPhotoPhases: ['after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Drop routed correctly', 'Weatherproofing sealed', 'Customer premise entry secure'],
   },
   {
     id: 'plowing', label: 'Plowing', icon: Tractor,
-    defaultColor: '#a855f7', defaultGeometry: 'line', defaultMarkupTool: 'underground_conduit',
+    defaultColor: '#a855f7', defaultGeometry: 'line', defaultMarkupTool: 'plow_route',
     defaultUnit: 'Feet', billingKeywords: ['plow'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'No utility strikes', 'Surface restored'],
   },
   {
     id: 'sub_ducting', label: 'Sub-Ducting', icon: Layers,
-    defaultColor: '#a855f7', defaultGeometry: 'line', defaultMarkupTool: 'underground_conduit',
+    defaultColor: '#a855f7', defaultGeometry: 'line', defaultMarkupTool: 'duct_1way',
     defaultUnit: 'Feet', billingKeywords: ['duct', 'innerduct', 'microduct'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Duct size correct', 'Couplings sealed', 'Tracer wire continuous'],
   },
   {
     id: 'trenching', label: 'Trenching', icon: Shovel,
-    defaultColor: '#3b82f6', defaultGeometry: 'line', defaultMarkupTool: 'bore_pit',
+    defaultColor: '#3b82f6', defaultGeometry: 'line', defaultMarkupTool: 'open_trench',
     defaultUnit: 'Feet', billingKeywords: ['trench', 'open trench'],
     requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'Bedding/backfill proper', 'No utility strikes'],
@@ -112,21 +112,21 @@ export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
   },
   {
     id: 'pole', label: 'Pole', icon: Milestone,
-    defaultColor: '#92400e', defaultGeometry: 'point', defaultMarkupTool: 'pole',
+    defaultColor: '#92400e', defaultGeometry: 'point', defaultMarkupTool: 'new_pole',
     defaultUnit: 'Each', billingKeywords: ['pole'],
     requiredPhotoPhases: ['pole_anchor_proof'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Pole plumb', 'Attachment hardware secure', 'Grounding present'],
   },
   {
     id: 'anchor_down_guy', label: 'Anchor / Down Guy', icon: Anchor,
-    defaultColor: '#60a5fa', defaultGeometry: 'point', defaultMarkupTool: 'dtap',
+    defaultColor: '#60a5fa', defaultGeometry: 'point', defaultMarkupTool: 'new_anchor',
     defaultUnit: 'Each', billingKeywords: ['anchor', 'guy'],
     requiredPhotoPhases: ['pole_anchor_proof'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Guy tension correct', 'Anchor set to spec', 'Guy guard installed'],
   },
   {
     id: 'splicing', label: 'Splicing', icon: Scissors,
-    defaultColor: '#10b981', defaultGeometry: 'point', defaultMarkupTool: 'splice_point',
+    defaultColor: '#10b981', defaultGeometry: 'point', defaultMarkupTool: 'splice_case',
     defaultUnit: 'Each', billingKeywords: ['splice', 'closure'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Splice loss within spec', 'Enclosure sealed', 'Slack stored properly'],
@@ -194,6 +194,37 @@ const RELEVANT_TOOLS_OVERRIDE: Partial<Record<WorkObjectTypeId, FieldMapDrawTool
   handhole_vault: [
     'hh17', 'hh24', 'hh30', 'hh36', 'vault', 'existing_handhole', 'proposed_handhole',
     'concrete_pad', 'lid_label', 'storage_loop', 'conduit_entry', 'callout',
+  ],
+  distribution_fiber: [
+    'distribution_fiber_route', 'direction_arrow', 'fiber_tick_marks',
+    'slack_storage', 'fiber_label', 'callout',
+  ],
+  feeder_fiber: [
+    'feeder_fiber_route', 'direction_arrow', 'fiber_count_label', 'slack_loop', 'callout',
+  ],
+  drop: [
+    'drop_line', 'house_drop', 'service_point', 'ont_location', 'direction_arrow', 'callout',
+  ],
+  pole: [
+    'existing_pole', 'new_pole', 'pole_number', 'riser', 'transformer',
+    'street_light', 'comm_attachment', 'anchor_attachment', 'callout',
+  ],
+  anchor_down_guy: [
+    'anchor', 'existing_anchor', 'new_anchor', 'down_guy',
+    'sidewalk_guy', 'stub_pole_guy', 'anchor_label',
+  ],
+  splicing: [
+    'splice_case', 'mst', 'terminal', 'closure', 'slack_loop', 'fiber_storage', 'splice_label',
+  ],
+  trenching: [
+    'open_trench', 'road_cut', 'driveway_crossing', 'concrete_cut',
+    'saw_cut', 'direction_arrow', 'callout',
+  ],
+  plowing: [
+    'plow_route', 'direction_arrow', 'depth_marker', 'callout',
+  ],
+  sub_ducting: [
+    'duct_1way', 'duct_2way', 'duct_3way', 'duct_4way', 'innerduct', 'direction_arrow', 'callout',
   ],
 }
 
