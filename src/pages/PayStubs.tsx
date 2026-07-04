@@ -1,10 +1,14 @@
 import { useState, useMemo } from 'react'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Trash2, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 import { useData } from '../store/DataContext'
-import { Card, CardBody } from '../components/ui/Card'
+import { useRole } from '../store/RoleContext'
+import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { PageHeader } from '../components/ui/PageHeader'
+import { Select, Input } from '../components/ui/Form'
 import { weekStart, weekEnd, weekDates } from '../lib/analytics'
-import { money } from '../lib/format'
+import { money, moneyExact } from '../lib/format'
+import { calculateProductionPay } from '../lib/productionPay'
+import type { ProductionEntry, ProductionLineItem, ProductionPayAllocation } from '../types'
 
 const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
@@ -28,8 +32,206 @@ function MetricTile({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Allocate Production — admin manually attributes part (or all) of a crew's
+// production-entry quantity to specific employees. Nothing today ties
+// quantity to an individual automatically, so this step is deliberately
+// explicit rather than computed (confirmed with the business owner).
+// ---------------------------------------------------------------------------
+
+function AllocationLineRow({
+  entry,
+  lineItem,
+  projectName,
+  crewName,
+  allocations,
+  employees,
+  findRate,
+  onAdd,
+  onDelete,
+}: {
+  entry: ProductionEntry
+  lineItem: ProductionLineItem
+  projectName: string
+  crewName: string
+  allocations: ProductionPayAllocation[]
+  employees: { id: string; name: string }[]
+  findRate: (employeeId: string, unitCode: string, asOfDate: string) => boolean
+  onAdd: (employeeId: string, quantity: number) => void
+  onDelete: (id: string) => void
+}) {
+  const [empId, setEmpId] = useState('')
+  const [qty, setQty] = useState('')
+  const allocatedSoFar = allocations.reduce((s, a) => s + a.quantity, 0)
+  const remaining = Math.max(0, lineItem.quantity - allocatedSoFar)
+
+  return (
+    <tr className="border-b border-slate-50 align-top">
+      <td className="px-3 py-2 text-xs text-slate-500">{entry.date}</td>
+      <td className="px-3 py-2 text-xs text-slate-500">{projectName}{crewName ? ` · ${crewName}` : ''}</td>
+      <td className="px-3 py-2 font-mono text-xs font-semibold text-brand-700">{lineItem.unitCode}</td>
+      <td className="px-3 py-2 text-xs text-slate-600">{lineItem.description}</td>
+      <td className="px-3 py-2 text-right text-xs text-slate-700">
+        {lineItem.quantity} {lineItem.uom}
+        {remaining > 0 && <span className="ml-1.5 text-amber-600">({remaining} unallocated)</span>}
+      </td>
+      <td className="px-3 py-2">
+        <div className="space-y-1">
+          {allocations.map((a) => {
+            const emp = employees.find((e) => e.id === a.employeeId)
+            const hasRate = findRate(a.employeeId, lineItem.unitCode, entry.date)
+            return (
+              <div key={a.id} className="flex items-center gap-2 text-xs">
+                <span className="text-slate-700">{emp?.name ?? '—'}</span>
+                <span className="text-slate-400">· {a.quantity} {lineItem.uom}</span>
+                {!hasRate && (
+                  <span className="flex items-center gap-1 text-amber-600" title="No production pay rate found for this employee and unit.">
+                    <AlertTriangle size={11} /> No rate
+                  </span>
+                )}
+                <button onClick={() => onDelete(a.id)} className="text-slate-300 hover:text-rose-600" aria-label="Remove allocation">
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            )
+          })}
+          <div className="flex items-center gap-1.5 pt-1">
+            <Select value={empId} onChange={(e) => setEmpId(e.target.value)} className="!h-7 !py-0 text-xs">
+              <option value="">Assign to…</option>
+              {employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}
+            </Select>
+            <Input
+              type="number" min="0" step="0.01" value={qty} onChange={(e) => setQty(e.target.value)}
+              placeholder="Qty" className="!h-7 w-20 !py-0 text-xs"
+            />
+            <button
+              onClick={() => {
+                const q = parseFloat(qty)
+                if (empId && q > 0) { onAdd(empId, q); setEmpId(''); setQty('') }
+              }}
+              className="rounded p-1 text-slate-400 hover:text-brand-600"
+              aria-label="Add allocation"
+            >
+              <Plus size={14} />
+            </button>
+          </div>
+        </div>
+      </td>
+    </tr>
+  )
+}
+
+function AllocateProductionSection({ wStart, wEnd }: { wStart: string; wEnd: string }) {
+  const {
+    data, addProductionPayAllocation, deleteProductionPayAllocation,
+  } = useData()
+  const [expanded, setExpanded] = useState(false)
+
+  const entries = useMemo(
+    () => data.production.filter((e) => e.date >= wStart && e.date <= wEnd),
+    [data.production, wStart, wEnd],
+  )
+  const entryIds = useMemo(() => new Set(entries.map((e) => e.id)), [entries])
+  const lineItems = useMemo(
+    () => data.productionLineItems.filter((li) => entryIds.has(li.productionEntryId)),
+    [data.productionLineItems, entryIds],
+  )
+  const entriesById = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries])
+  const allocationsByLineItem = useMemo(() => {
+    const map = new Map<string, ProductionPayAllocation[]>()
+    for (const a of data.productionPayAllocations) {
+      if (!map.has(a.productionLineItemId)) map.set(a.productionLineItemId, [])
+      map.get(a.productionLineItemId)!.push(a)
+    }
+    return map
+  }, [data.productionPayAllocations])
+
+  const employees = useMemo(
+    () => data.employees.filter((e) => e.active).map((e) => ({ id: e.id, name: e.name })).sort((a, b) => a.name.localeCompare(b.name)),
+    [data.employees],
+  )
+
+  const findRate = (employeeId: string, unitCode: string, asOfDate: string) =>
+    data.employeeProductionRates.some(
+      (r) => r.employeeId === employeeId && r.unitCode === unitCode && r.active && r.effectiveDate <= asOfDate,
+    )
+
+  const totalLines = lineItems.length
+  const unallocatedCount = lineItems.filter((li) => {
+    const allocated = (allocationsByLineItem.get(li.id) ?? []).reduce((s, a) => s + a.quantity, 0)
+    return allocated < li.quantity
+  }).length
+
+  return (
+    <Card className="mb-6">
+      <CardHeader
+        title={
+          <button className="flex items-center gap-1.5 text-left" onClick={() => setExpanded((x) => !x)}>
+            {expanded ? <ChevronDown size={15} className="text-slate-400" /> : <ChevronUp size={15} className="text-slate-400" />}
+            Allocate Production
+          </button>
+        }
+        subtitle={
+          totalLines === 0
+            ? 'No production entries this week'
+            : `${totalLines} line item${totalLines === 1 ? '' : 's'} this week · ${unallocatedCount} not fully allocated`
+        }
+      />
+      {expanded && (
+        <CardBody className="p-0">
+          {lineItems.length === 0 ? (
+            <p className="px-5 py-6 text-sm text-slate-400">No production entries logged in this week's date range.</p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <th className="px-3 py-2 font-medium">Date</th>
+                  <th className="px-3 py-2 font-medium">Project / Crew</th>
+                  <th className="px-3 py-2 font-medium">Unit</th>
+                  <th className="px-3 py-2 font-medium">Description</th>
+                  <th className="px-3 py-2 text-right font-medium">Quantity</th>
+                  <th className="px-3 py-2 font-medium">Allocations</th>
+                </tr>
+              </thead>
+              <tbody>
+                {lineItems.map((li) => {
+                  const entry = entriesById.get(li.productionEntryId)
+                  if (!entry) return null
+                  const project = data.projects.find((p) => p.id === entry.projectId)
+                  const crew = data.crews.find((c) => c.id === entry.crewId)
+                  return (
+                    <AllocationLineRow
+                      key={li.id}
+                      entry={entry}
+                      lineItem={li}
+                      projectName={project?.name ?? '—'}
+                      crewName={crew?.name ?? ''}
+                      allocations={allocationsByLineItem.get(li.id) ?? []}
+                      employees={employees}
+                      findRate={findRate}
+                      onAdd={(employeeId, quantity) =>
+                        addProductionPayAllocation({ productionEntryId: entry.id, productionLineItemId: li.id, employeeId, quantity, createdBy: null })
+                      }
+                      onDelete={deleteProductionPayAllocation}
+                    />
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </CardBody>
+      )}
+    </Card>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
+
 export function PayStubs() {
   const { data } = useData()
+  const { isAdmin } = useRole()
   const [weekOffset, setWeekOffset] = useState(0)
   const [showAll, setShowAll] = useState(false)
 
@@ -41,6 +243,22 @@ export function PayStubs() {
 
   const isCurrentWeek = weekOffset === 0
   const weekLabel = `${new Date(wStart + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} – ${new Date(wEnd + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+
+  // Production entries/line items/allocations within this week's range —
+  // shared by both the Allocate Production section and each employee's
+  // production-pay figure below.
+  const productionPeriod = useMemo(() => {
+    const entries = data.production.filter((e) => e.date >= wStart && e.date <= wEnd)
+    const entryIds = new Set(entries.map((e) => e.id))
+    const lineItems = data.productionLineItems.filter((li) => entryIds.has(li.productionEntryId))
+    const lineItemIds = new Set(lineItems.map((li) => li.id))
+    const allocations = data.productionPayAllocations.filter((a) => lineItemIds.has(a.productionLineItemId))
+    return {
+      allocations,
+      entriesById: new Map(entries.map((e) => [e.id, e])),
+      lineItemsById: new Map(lineItems.map((li) => [li.id, li])),
+    }
+  }, [data.production, data.productionLineItems, data.productionPayAllocations, wStart, wEnd])
 
   const rows = useMemo(() => {
     const weekClock = (data.clockEntries ?? []).filter(
@@ -64,7 +282,14 @@ export function PayStubs() {
           (s, ce) => s + (new Date(ce.clockOut!).getTime() - new Date(ce.clockIn).getTime()) / 3_600_000,
           0,
         )
-        const totalPay = totalHours * emp.hourlyRate
+        const hourlyPay = totalHours * emp.hourlyRate
+
+        const production = calculateProductionPay(
+          emp.id, productionPeriod.allocations, productionPeriod.lineItemsById, productionPeriod.entriesById,
+          data.employeeProductionRates,
+        )
+        const missingRateCount = production.lines.filter((l) => !l.rate).length
+        const totalPay = hourlyPay + production.total
 
         const crewIdSet = new Set<string>()
         for (const ce of empClock) { if (ce.crewId) crewIdSet.add(ce.crewId) }
@@ -74,20 +299,25 @@ export function PayStubs() {
           .filter(Boolean)
           .join(', ')
 
-        return { emp, byDate, totalHours, totalPay, crewNames, hasWork: totalHours > 0 }
+        return {
+          emp, byDate, totalHours, hourlyPay, productionPay: production.total, missingRateCount, totalPay, crewNames,
+          hasWork: totalHours > 0 || production.lines.length > 0,
+        }
       })
       .sort((a, b) => {
         if (a.hasWork && !b.hasWork) return -1
         if (!a.hasWork && b.hasWork) return 1
-        if (a.hasWork && b.hasWork) return b.totalHours - a.totalHours
+        if (a.hasWork && b.hasWork) return b.totalPay - a.totalPay
         return a.emp.name.localeCompare(b.emp.name)
       })
-  }, [data.clockEntries, data.employees, data.crews, wStart, wEnd, dates])
+  }, [data.clockEntries, data.employees, data.crews, data.employeeProductionRates, productionPeriod, wStart, wEnd, dates])
 
-  const display       = showAll ? rows : rows.filter((r) => r.hasWork)
-  const workedCount   = rows.filter((r) => r.hasWork).length
-  const totalHoursAll = display.reduce((s, r) => s + r.totalHours, 0)
-  const totalPayAll   = display.reduce((s, r) => s + r.totalPay, 0)
+  const display        = showAll ? rows : rows.filter((r) => r.hasWork)
+  const workedCount     = rows.filter((r) => r.hasWork).length
+  const totalHoursAll   = display.reduce((s, r) => s + r.totalHours, 0)
+  const hourlyPayAll    = display.reduce((s, r) => s + r.hourlyPay, 0)
+  const productionPayAll = display.reduce((s, r) => s + r.productionPay, 0)
+  const totalPayAll     = display.reduce((s, r) => s + r.totalPay, 0)
 
   return (
     <div>
@@ -127,12 +357,14 @@ export function PayStubs() {
       <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <MetricTile label="Employees Working" value={String(workedCount)} sub="this week" />
         <MetricTile label="Total Hours"        value={`${totalHoursAll.toFixed(1)} h`} />
-        <MetricTile label="Total Labor Cost"   value={money(totalPayAll)} tone="green" />
+        <MetricTile label="Hourly + Production" value={money(totalPayAll)} sub={`${money(hourlyPayAll)} hourly · ${money(productionPayAll)} production`} tone="green" />
         <MetricTile
           label="Avg Hrs / Employee"
           value={workedCount > 0 ? `${(totalHoursAll / workedCount).toFixed(1)} h` : '—'}
         />
       </div>
+
+      {isAdmin && <AllocateProductionSection wStart={wStart} wEnd={wEnd} />}
 
       {/* Controls row */}
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -168,7 +400,7 @@ export function PayStubs() {
               No clock entries found for this week.
             </div>
           ) : (
-            <table className="w-full min-w-[800px] text-sm">
+            <table className="w-full min-w-[1000px] text-sm">
               <thead>
                 <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
                   <th className="px-5 py-3 font-medium">Employee</th>
@@ -184,11 +416,13 @@ export function PayStubs() {
                   ))}
                   <th className="px-4 py-3 text-right font-medium">Total Hrs</th>
                   <th className="px-4 py-3 text-right font-medium">Rate</th>
+                  <th className="px-4 py-3 text-right font-medium">Hourly Pay</th>
+                  <th className="px-4 py-3 text-right font-medium">Production Pay</th>
                   <th className="px-5 py-3 text-right font-medium">Total Pay</th>
                 </tr>
               </thead>
               <tbody>
-                {display.map(({ emp, byDate, totalHours, totalPay, crewNames, hasWork }) => (
+                {display.map(({ emp, byDate, totalHours, hourlyPay, productionPay, missingRateCount, totalPay, crewNames, hasWork }) => (
                   <tr
                     key={emp.id}
                     className={`border-b border-slate-50 hover:bg-slate-50/60 ${!hasWork ? 'opacity-40' : ''}`}
@@ -234,6 +468,22 @@ export function PayStubs() {
                     <td className="px-4 py-3 text-right text-slate-400">
                       ${emp.hourlyRate.toFixed(2)}/h
                     </td>
+                    {/* Hourly pay */}
+                    <td className="px-4 py-3 text-right font-semibold text-slate-700">
+                      {hourlyPay > 0 ? money(hourlyPay) : '—'}
+                    </td>
+                    {/* Production pay */}
+                    <td className="px-4 py-3 text-right font-semibold text-slate-700">
+                      {productionPay > 0 ? moneyExact(productionPay) : '—'}
+                      {missingRateCount > 0 && (
+                        <span
+                          className="ml-1.5 inline-flex items-center gap-0.5 text-amber-600"
+                          title="No production pay rate found for this employee and unit."
+                        >
+                          <AlertTriangle size={11} />
+                        </span>
+                      )}
+                    </td>
                     {/* Total pay */}
                     <td className="px-5 py-3 text-right font-bold text-emerald-700">
                       {totalPay > 0 ? money(totalPay) : '—'}
@@ -258,6 +508,12 @@ export function PayStubs() {
                     {totalHoursAll.toFixed(1)} h
                   </td>
                   <td className="px-4 py-2.5" />
+                  <td className="px-4 py-2.5 text-right font-bold text-slate-700">
+                    {money(hourlyPayAll)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-bold text-slate-700">
+                    {moneyExact(productionPayAll)}
+                  </td>
                   <td className="px-5 py-2.5 text-right font-bold text-emerald-700">
                     {money(totalPayAll)}
                   </td>

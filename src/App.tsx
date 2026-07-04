@@ -20,6 +20,8 @@ import { PayStubs } from './pages/PayStubs'
 import { KmzProduction } from './pages/KmzProduction'
 import { KmzMap } from './pages/KmzMap'
 import { PdfPrintMode } from './pages/PdfPrintMode'
+import { MapCuts } from './pages/MapCuts'
+import { MapReading } from './pages/MapReading'
 import { Login } from './pages/Login'
 import { SetupWizard } from './pages/SetupWizard'
 import { useRole } from './store/RoleContext'
@@ -72,6 +74,8 @@ export default function App() {
           <Route path="/pay-stubs"  element={<AdminRoute element={<PayStubs />} />} />
           <Route path="/rate-cards" element={<AdminRoute element={<RateCards />} />} />
           <Route path="/equipment"  element={<AdminRoute element={<EquipmentPage />} />} />
+          <Route path="/map-cuts"   element={<AdminRoute element={<MapCuts />} />} />
+          <Route path="/map-reading" element={<AdminRoute element={<MapReading />} />} />
           <Route path="/photos"     element={<AdminRoute element={<Photos />} />} />
           <Route path="/invoicing"  element={<AdminRoute element={<Invoicing />} />} />
           <Route path="/project-prints"          element={<ProjectPrints />} />

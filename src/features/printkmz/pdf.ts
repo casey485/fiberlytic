@@ -18,7 +18,7 @@ function canvasToDataUrl(canvas: HTMLCanvasElement, quality: number) {
   return canvas.toDataURL('image/jpeg', quality)
 }
 
-function downscale(source: HTMLCanvasElement, maxWidth: number): string {
+export function downscale(source: HTMLCanvasElement, maxWidth: number): string {
   if (source.width <= maxWidth) return canvasToDataUrl(source, 0.6)
   const scale = maxWidth / source.width
   const c = document.createElement('canvas')

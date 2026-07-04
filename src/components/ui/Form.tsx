@@ -3,12 +3,18 @@ import type { ReactNode, SelectHTMLAttributes, InputHTMLAttributes, TextareaHTML
 const baseField =
   'w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-sm text-slate-200 shadow-sm placeholder:text-slate-500 focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-900/40'
 
-export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
+export function Field({ label, children, hint, error, required }: { label: string; children: ReactNode; hint?: string; error?: string; required?: boolean }) {
   return (
     <label className="block">
-      <span className="mb-1 block text-xs font-medium text-slate-400">{label}</span>
+      <span className="mb-1 block text-xs font-medium text-slate-400">
+        {label}{required && <span className="ml-0.5 text-red-400">*</span>}
+      </span>
       {children}
-      {hint && <span className="mt-1 block text-xs text-slate-500">{hint}</span>}
+      {error ? (
+        <span className="mt-1 block text-xs text-red-400">{error}</span>
+      ) : hint ? (
+        <span className="mt-1 block text-xs text-slate-500">{hint}</span>
+      ) : null}
     </label>
   )
 }

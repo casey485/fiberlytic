@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Plus, Pencil, Trash2, AlertTriangle } from 'lucide-react'
+import { Plus, Pencil, Trash2, AlertTriangle, DollarSign, Copy } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { PageHeader } from '../components/ui/PageHeader'
@@ -7,6 +7,8 @@ import { Card, CardBody } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
+import { ProductionPayRatesModal } from '../components/employees/ProductionPayRatesModal'
+import { CopyProductionRatesModal } from '../components/employees/CopyProductionRatesModal'
 import { moneyExact } from '../lib/format'
 import { weekStart, weekEnd } from '../lib/analytics'
 import type { Employee } from '../types'
@@ -101,6 +103,8 @@ export function Employees() {
   const { data, addEmployee, updateEmployee, deleteEmployee } = useData()
   const { isAdmin } = useRole()
   const [dialog, setDialog] = useState<{ open: boolean; emp: Employee | null }>({ open: false, emp: null })
+  const [ratesEmployee, setRatesEmployee] = useState<Employee | null>(null)
+  const [copyRatesOpen, setCopyRatesOpen] = useState(false)
   const today = new Date().toISOString().slice(0, 10)
 
   // Build weekly hours from clock entries (actual time worked) so hours show
@@ -143,9 +147,16 @@ export function Employees() {
         title="Employees"
         description="Named workers with hourly rates. Rates are admin-visible only."
         action={
-          <Button onClick={() => setDialog({ open: true, emp: null })}>
-            <Plus size={16} /> Add employee
-          </Button>
+          <div className="flex gap-2">
+            {isAdmin && (
+              <Button variant="secondary" onClick={() => setCopyRatesOpen(true)}>
+                <Copy size={15} /> Copy production rates
+              </Button>
+            )}
+            <Button onClick={() => setDialog({ open: true, emp: null })}>
+              <Plus size={16} /> Add employee
+            </Button>
+          </div>
         }
       />
 
@@ -203,6 +214,14 @@ export function Employees() {
                     </td>
                     <td className="px-5 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => setRatesEmployee(emp)}
+                          className="p-1.5 text-slate-300 hover:text-brand-600"
+                          aria-label="Production pay rates"
+                          title="Production Pay Rates"
+                        >
+                          <DollarSign size={14} />
+                        </button>
                         <button onClick={() => setDialog({ open: true, emp })} className="p-1.5 text-slate-300 hover:text-brand-600" aria-label="Edit">
                           <Pencil size={14} />
                         </button>
@@ -254,6 +273,12 @@ export function Employees() {
           onClose={() => setDialog({ open: false, emp: null })}
         />
       )}
+
+      {ratesEmployee && (
+        <ProductionPayRatesModal employee={ratesEmployee} onClose={() => setRatesEmployee(null)} />
+      )}
+
+      {copyRatesOpen && <CopyProductionRatesModal onClose={() => setCopyRatesOpen(false)} />}
     </div>
   )
 }

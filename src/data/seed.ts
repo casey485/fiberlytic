@@ -385,5 +385,9 @@ export function generateSeedData(): AppData {
     markupInspections: [],
     markupAttachments: [],
     markupHistory: [],
+    mapCutPackages: [],
+    mapReadingSessions: [],
+    employeeProductionRates: [],
+    productionPayAllocations: [],
   }
 }

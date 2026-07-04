@@ -14,15 +14,20 @@ import {
 } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
-import { attemptDeleteMarkup } from '../lib/markupDelete'
+import { useMarkupDeleteFlow } from '../lib/markupDelete'
+import { isTypingTarget } from '../lib/domGuards'
 import { FeaturePanel } from '../components/FeaturePanel'
 import { MarkupPanel } from '../components/MarkupPanel'
+import { WorkObjectPropertiesPanel } from '../components/WorkObjectPropertiesPanel'
+import { MarkupQuickActions } from '../components/MarkupQuickActions'
+import { MarkupDeleteConfirm } from '../components/MarkupDeleteConfirm'
 import { AerialLashRunPanel } from '../components/AerialLashRunPanel'
 import { PoleFormModal } from '../components/PoleFormModal'
 import { FEATURE_TOOL_LABELS, FEATURE_DROP_TOOLS } from '../lib/markupMeta'
 import { ENGINEERING_SYMBOL_MAP, ENGINEERING_POINT_TOOLS, ENGINEERING_LINE_TOOLS } from '../lib/engineeringSymbols'
 import { exportFeaturesToKmz, exportFieldMarkupsToKmz, triggerDownload } from '../lib/kmzExport'
 import { markupToLayer, buildEditHandles, buildSplitVertexMarkers } from '../lib/markupLayer'
+import { buildWorkObjectCalloutLines, geometryAnchor } from '../lib/workObjectCallout'
 import { computeTransform, computeScreenMatrix, type GeoTransform } from '../lib/georeference'
 import { GeoreferencePanel } from '../components/GeoreferencePanel'
 import { AddWorkModal } from '../components/AddWorkModal'
@@ -131,7 +136,7 @@ export function KmzMap() {
   const seenLayersRef       = useRef<Set<string>>(new Set())
   const calloutOverlaysRef  = useRef<HTMLDivElement[]>([])
   // Persists callout layout state across re-renders (session-only; not in DataContext)
-  const calloutStateRef     = useRef<Map<string, { offsetX: number; offsetY: number; createdAtZoom: number; baseWidth?: number; baseHeight?: number }>>(new Map())
+  const calloutStateRef     = useRef<Map<string, { offsetX: number; offsetY: number; baseWidth?: number; baseHeight?: number }>>(new Map())
   const polygonPtsRef     = useRef<[number, number][]>([])
   const splitPickedIndicesRef = useRef<number[]>([])
   const polygonPreviewRef = useRef<L.Polygon | L.Polyline | null>(null)
@@ -217,6 +222,23 @@ export function KmzMap() {
 
   // Selected markup (for the right panel)
   const [selectedMarkup, setSelectedMarkup] = useState<FieldMarkup | null>(null)
+  // Work Objects get the small floating WorkObjectPropertiesPanel instead of the
+  // big MarkupPanel sidebar — see its render block further down.
+  const isSelectedWorkObject = !!selectedMarkup?.workObjectType
+  // Screen-space anchor for the floating quick-actions toolbar, tracked live
+  // against Leaflet pan/zoom (see the callout overlay's identical technique).
+  const [quickActionsAnchor, setQuickActionsAnchor] = useState<{ x: number; y: number } | null>(null)
+  const [openTabRequest, setOpenTabRequest] = useState<{ tab: 'notes' | 'photos' | 'billing'; nonce: number } | null>(null)
+  const deleteFlow = useMarkupDeleteFlow(softDeleteMarkup, activeEmployeeId)
+  function requestDeleteMarkup(m: FieldMarkup) {
+    const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === m.id)
+    deleteFlow.requestDelete(m, billingLines)
+  }
+  function confirmDeleteMarkup() {
+    const deletedId = deleteFlow.pendingDelete?.id
+    deleteFlow.confirmDelete()
+    if (deletedId && selectedMarkup?.id === deletedId) setSelectedMarkup(null)
+  }
 
   // Undo stack (just IDs of markup items added this session)
   const undoStackRef = useRef<string[]>([])
@@ -411,102 +433,103 @@ export function KmzMap() {
       return arrowSVG
     }
 
-    for (const m of allMarkups) {
-      if (!visibleLayers.has(m.layer)) continue
+    // ── Callout: fixed screen size + leader line, independent of map zoom ─────
+    // Deliberately does NOT scale with zoom (unlike every other markup layer) —
+    // a callout's whole purpose is to stay readable, so its box keeps a constant
+    // on-screen size and constant pixel offset from its anchor at any zoom level
+    // (standard map info-window behavior). Only its anchor position is re-derived
+    // per frame via latLngToContainerPoint. A custom resize handle (position:fixed
+    // on body) stays at the rendered corner. Used both for manual free-typed
+    // callouts (tool==='callout') and for the auto-generated companion callout
+    // every Work Object gets — `id` is whichever markup's own id should be selected
+    // when the box is clicked, so the two cases share one selection/highlight path.
+    function renderCallout(opts: {
+      id: string; geo: [number, number]; color: string; fontSize: number; text: string
+      showInlineDelete: boolean; onDeleteInline?: () => void
+    }) {
+      const { id, geo, color, fontSize, text, showInlineDelete, onDeleteInline } = opts
+      const saved = calloutStateRef.current.get(id)
 
-      // ── Callout: scales with map zoom exactly like other markup layers ────────
-      // Uses CSS transform:scale() keyed to zoom delta from creation zoom.
-      // A custom resize handle (position:fixed on body) stays at the rendered
-      // corner regardless of the scale factor.
-      if (m.tool === 'callout') {
-        if (!m.geometry.center) continue
-        const color = m.color || '#ef4444'
-        const geo   = m.geometry.center as [number, number]
-        const saved = calloutStateRef.current.get(m.id)
+      let offsetX    = saved?.offsetX   ?? 40
+      let offsetY    = saved?.offsetY   ?? -60
+      let baseWidth  = saved?.baseWidth
+      let baseHeight = saved?.baseHeight
 
-        const createdAtZoom = saved?.createdAtZoom ?? lMap.getZoom()
-        let offsetX    = saved?.offsetX   ?? 40
-        let offsetY    = saved?.offsetY   ?? -60
-        let baseWidth  = saved?.baseWidth
-        let baseHeight = saved?.baseHeight
+      const anchor0  = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
 
-        // Scale factor relative to the zoom level when the callout was created
-        const getScale = () => Math.pow(2, lMap.getZoom() - createdAtZoom)
+      // Overlay div — no CSS resize (custom handle below drives width/height directly)
+      const overlay = document.createElement('div')
+      const isSelected = selectedMarkup?.id === id
+      overlay.style.cssText = `position:absolute;left:${anchor0.x + offsetX}px;top:${anchor0.y + offsetY}px;z-index:1000;background:rgba(0,0,0,0.88);border:2px solid ${color};border-radius:5px;padding:8px 10px;color:${color};font-size:${fontSize}px;font-weight:600;box-shadow:0 3px 14px rgba(0,0,0,0.75);overflow:hidden;min-width:180px;max-width:none;width:max-content;cursor:pointer${isSelected ? ';outline:3px solid #22d3ee;outline-offset:2px' : ''}`
+      if (baseWidth)  overlay.style.width  = baseWidth  + 'px'
+      if (baseHeight) overlay.style.height = baseHeight + 'px'
 
-        const scale0   = getScale()
-        const anchor0  = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
+      // SVG dashed arrow: from overlay center → markup geo point
+      const svg       = ensureArrowSVG()
+      const arrowLine = document.createElementNS(ns, 'line') as SVGLineElement
+      arrowLine.setAttribute('stroke', color)
+      arrowLine.setAttribute('stroke-width', '1.5')
+      arrowLine.setAttribute('stroke-dasharray', '6 3')
+      arrowLine.setAttribute('opacity', '0.75')
+      arrowLine.setAttribute('marker-end', 'url(#callout-arrowhead)')
+      svg.appendChild(arrowLine)
 
-        // Overlay div — no CSS resize (transform:scale breaks the native handle's hit area)
-        const overlay = document.createElement('div')
-        overlay.style.cssText = `position:absolute;left:${anchor0.x + offsetX * scale0}px;top:${anchor0.y + offsetY * scale0}px;z-index:1000;background:rgba(0,0,0,0.88);border:2px solid ${color};border-radius:5px;padding:8px 10px;color:${color};font-size:${m.fontSize ?? 11}px;font-weight:600;box-shadow:0 3px 14px rgba(0,0,0,0.75);overflow:hidden;min-width:180px;max-width:none;width:max-content;transform-origin:0 0;transform:scale(${scale0})`
-        if (baseWidth)  overlay.style.width  = baseWidth  + 'px'
-        if (baseHeight) overlay.style.height = baseHeight + 'px'
+      // Custom resize handle — fixed on body so it's always at the visual corner
+      const rh = document.createElement('div')
+      rh.style.cssText = 'position:fixed;width:14px;height:14px;background:rgba(255,255,255,0.85);border:1.5px solid rgba(0,0,0,0.35);border-radius:2px;cursor:se-resize;z-index:2000;display:none'
+      document.body.appendChild(rh)
+      resizeHandles.push(rh)
 
-        // SVG dashed arrow: from overlay center → markup geo point
-        const svg       = ensureArrowSVG()
-        const arrowLine = document.createElementNS(ns, 'line') as SVGLineElement
-        arrowLine.setAttribute('stroke', color)
-        arrowLine.setAttribute('stroke-width', '1.5')
-        arrowLine.setAttribute('stroke-dasharray', '6 3')
-        arrowLine.setAttribute('opacity', '0.75')
-        arrowLine.setAttribute('marker-end', 'url(#callout-arrowhead)')
-        svg.appendChild(arrowLine)
+      // Recomputes and applies position, arrow, and resize-handle location
+      const updateAll = () => {
+        const pt    = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
+        const left  = pt.x + offsetX
+        const top   = pt.y + offsetY
+        overlay.style.left = left + 'px'
+        overlay.style.top  = top  + 'px'
+        // Arrow: center of rendered box → geo anchor
+        arrowLine.setAttribute('x1', String(left + overlay.offsetWidth  / 2))
+        arrowLine.setAttribute('y1', String(top  + overlay.offsetHeight / 2))
+        arrowLine.setAttribute('x2', String(pt.x))
+        arrowLine.setAttribute('y2', String(pt.y))
+        // Resize handle: bottom-right of rendered box in viewport coordinates
+        const cr = mapContainer.getBoundingClientRect()
+        rh.style.left    = (cr.left + left + overlay.offsetWidth  - 7) + 'px'
+        rh.style.top     = (cr.top  + top  + overlay.offsetHeight - 7) + 'px'
+        rh.style.display = 'block'
+      }
+      lMap.on('move zoom viewreset', updateAll)
+      geoListeners.push(updateAll)
 
-        // Custom resize handle — fixed on body so it's always at the visual corner
-        const rh = document.createElement('div')
-        rh.style.cssText = 'position:fixed;width:14px;height:14px;background:rgba(255,255,255,0.85);border:1.5px solid rgba(0,0,0,0.35);border-radius:2px;cursor:se-resize;z-index:2000;display:none'
-        document.body.appendChild(rh)
-        resizeHandles.push(rh)
-
-        // Recomputes and applies position, scale, arrow, and resize-handle location
-        const updateAll = () => {
-          const scale = getScale()
-          const pt    = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
-          const left  = pt.x + offsetX * scale
-          const top   = pt.y + offsetY * scale
-          overlay.style.left      = left + 'px'
-          overlay.style.top       = top  + 'px'
-          overlay.style.transform = `scale(${scale})`
-          // Arrow: center of rendered box → geo anchor
-          arrowLine.setAttribute('x1', String(left + overlay.offsetWidth  * scale / 2))
-          arrowLine.setAttribute('y1', String(top  + overlay.offsetHeight * scale / 2))
-          arrowLine.setAttribute('x2', String(pt.x))
-          arrowLine.setAttribute('y2', String(pt.y))
-          // Resize handle: bottom-right of rendered box in viewport coordinates
-          const cr = mapContainer.getBoundingClientRect()
-          rh.style.left    = (cr.left + left + overlay.offsetWidth  * scale - 7) + 'px'
-          rh.style.top     = (cr.top  + top  + overlay.offsetHeight * scale - 7) + 'px'
-          rh.style.display = 'block'
+      // Resize handle drag
+      rh.addEventListener('mousedown', (e) => {
+        e.stopPropagation()
+        e.preventDefault()
+        lMap.dragging.disable()
+        const startX = e.clientX, startY = e.clientY
+        const startW = overlay.offsetWidth, startH = overlay.offsetHeight
+        const onMove = (ev: MouseEvent) => {
+          baseWidth  = Math.max(140, startW + (ev.clientX - startX))
+          baseHeight = Math.max( 40, startH + (ev.clientY - startY))
+          overlay.style.width  = baseWidth  + 'px'
+          overlay.style.height = baseHeight + 'px'
+          updateAll()
         }
-        lMap.on('move zoom viewreset', updateAll)
-        geoListeners.push(updateAll)
+        const onUp = () => {
+          lMap.dragging.enable()
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup',  onUp)
+          calloutStateRef.current.set(id, { offsetX, offsetY, baseWidth, baseHeight })
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup',  onUp)
+      })
 
-        // Resize handle drag
-        rh.addEventListener('mousedown', (e) => {
-          e.stopPropagation()
-          e.preventDefault()
-          lMap.dragging.disable()
-          const scale  = getScale()
-          const startX = e.clientX, startY = e.clientY
-          const startW = overlay.offsetWidth, startH = overlay.offsetHeight
-          const onMove = (ev: MouseEvent) => {
-            baseWidth  = Math.max(140, startW + (ev.clientX - startX) / scale)
-            baseHeight = Math.max( 40, startH + (ev.clientY - startY) / scale)
-            overlay.style.width  = baseWidth  + 'px'
-            overlay.style.height = baseHeight + 'px'
-            updateAll()
-          }
-          const onUp = () => {
-            lMap.dragging.enable()
-            document.removeEventListener('mousemove', onMove)
-            document.removeEventListener('mouseup',  onUp)
-            calloutStateRef.current.set(m.id, { offsetX, offsetY, createdAtZoom, baseWidth, baseHeight })
-          }
-          document.addEventListener('mousemove', onMove)
-          document.addEventListener('mouseup',  onUp)
-        })
-
-        // ✕ close button
+      // ✕ close button — only for manual callouts. A Work Object's companion callout
+      // is a view of a real, consequential record, so deleting it goes through the
+      // normal MarkupQuickActions → confirm flow (select it, then use Delete), not a
+      // one-click ✕ on a summary box.
+      if (showInlineDelete) {
         const closeBtn = document.createElement('span')
         closeBtn.textContent = '✕'
         closeBtn.title = 'Remove callout'
@@ -514,73 +537,74 @@ export function KmzMap() {
         closeBtn.addEventListener('mousedown', (e) => e.stopPropagation())
         closeBtn.addEventListener('click', (e) => {
           e.stopPropagation()
-          overlay.remove()
-          arrowLine.remove()
-          rh.remove()
-          deleteMarkup(m.id)
+          onDeleteInline?.()
         })
         overlay.appendChild(closeBtn)
+      }
 
-        // Label
-        const labelEl = document.createElement('span')
-        labelEl.style.cssText = 'white-space:pre-line;word-break:break-word;line-height:1.55;display:block'
-        labelEl.textContent = m.label ?? ''
-        overlay.appendChild(labelEl)
+      // Label
+      const labelEl = document.createElement('span')
+      labelEl.style.cssText = 'white-space:pre-line;word-break:break-word;line-height:1.55;display:block'
+      labelEl.textContent = text
+      overlay.appendChild(labelEl)
 
-        // Photo (above label)
-        const photoBlobKey = m.subtype === 'billing_callout' && m.featureType ? m.featureType : null
-        if (photoBlobKey) {
-          const imgEl = document.createElement('img')
-          imgEl.style.cssText = 'display:none;width:100%;max-height:90px;object-fit:cover;border-radius:3px;margin-bottom:5px'
-          overlay.insertBefore(imgEl, labelEl)
-          loadBlob(photoBlobKey).then((url) => {
-            if (url) { imgEl.src = url; imgEl.style.display = 'block' }
-          })
+      // Drag to reposition — offset stored in constant screen pixels (no zoom
+      // scaling to divide out anymore). A mousedown+mouseup with negligible movement
+      // selects the linked markup instead (same 15px tap-vs-drag threshold used
+      // elsewhere in this file) — this is how clicking a callout highlights its
+      // connected map object, and vice versa (both drive the same selectedMarkup).
+      overlay.addEventListener('mousedown', (e) => {
+        e.stopPropagation()
+        lMap.dragging.disable()
+        const sx = e.clientX, sy = e.clientY
+        const sl = overlay.offsetLeft, st = overlay.offsetTop
+        let moved = false
+        const onMove = (ev: MouseEvent) => {
+          if (Math.abs(ev.clientX - sx) > 15 || Math.abs(ev.clientY - sy) > 15) moved = true
+          const newLeft = sl + ev.clientX - sx
+          const newTop  = st + ev.clientY - sy
+          overlay.style.left = newLeft + 'px'
+          overlay.style.top  = newTop  + 'px'
+          const pt = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
+          offsetX = newLeft - pt.x
+          offsetY = newTop  - pt.y
+          updateAll()
         }
-
-        // Hide photo when rendered height is too small
-        const ro = new ResizeObserver(() => {
-          const renderedH = overlay.offsetHeight * getScale()
-          overlay.querySelectorAll('img').forEach((img) => {
-            (img as HTMLElement).style.display = renderedH >= 110 ? 'block' : 'none'
-          })
-        })
-        ro.observe(overlay)
-
-        // Drag to reposition — offset stored in base (createdAtZoom) pixels
-        overlay.addEventListener('mousedown', (e) => {
-          e.stopPropagation()
-          lMap.dragging.disable()
-          const scale = getScale()
-          const sx = e.clientX, sy = e.clientY
-          const sl = overlay.offsetLeft, st = overlay.offsetTop
-          const onMove = (ev: MouseEvent) => {
-            const newLeft = sl + ev.clientX - sx
-            const newTop  = st + ev.clientY - sy
-            overlay.style.left = newLeft + 'px'
-            overlay.style.top  = newTop  + 'px'
-            const pt = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
-            offsetX = (newLeft - pt.x) / scale
-            offsetY = (newTop  - pt.y) / scale
-            updateAll()
+        const onUp = () => {
+          lMap.dragging.enable()
+          document.removeEventListener('mousemove', onMove)
+          document.removeEventListener('mouseup',  onUp)
+          if (!moved) {
+            const fresh = (data.fieldMarkups ?? []).find((mk) => mk.id === id)
+            if (fresh) { setSelectedMarkup(fresh); setSelectedFeature(null); setPanelCollapsed(false) }
+            return
           }
-          const onUp = () => {
-            lMap.dragging.enable()
-            document.removeEventListener('mousemove', onMove)
-            document.removeEventListener('mouseup',  onUp)
-            const prev = calloutStateRef.current.get(m.id)
-            calloutStateRef.current.set(m.id, { offsetX, offsetY, createdAtZoom, baseWidth: prev?.baseWidth, baseHeight: prev?.baseHeight })
-          }
-          document.addEventListener('mousemove', onMove)
-          document.addEventListener('mouseup',  onUp)
+          const prev = calloutStateRef.current.get(id)
+          calloutStateRef.current.set(id, { offsetX, offsetY, baseWidth: prev?.baseWidth, baseHeight: prev?.baseHeight })
+        }
+        document.addEventListener('mousemove', onMove)
+        document.addEventListener('mouseup',  onUp)
+      })
+      overlay.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false })
+
+      mapContainer.appendChild(overlay)
+      calloutOverlaysRef.current.push(overlay)
+      if (!saved) calloutStateRef.current.set(id, { offsetX, offsetY })
+
+      requestAnimationFrame(updateAll)
+    }
+
+    for (const m of allMarkups) {
+      if (!visibleLayers.has(m.layer)) continue
+
+      // Manual, free-typed callout (drawn via the toolbar's Callout tool) — unaffected
+      // by Work Objects; keeps its own drag/resize/leader-line/inline delete.
+      if (m.tool === 'callout') {
+        if (!m.geometry.center) continue
+        renderCallout({
+          id: m.id, geo: m.geometry.center, color: m.color || '#ef4444', fontSize: m.fontSize ?? 11,
+          text: m.label ?? '', showInlineDelete: true, onDeleteInline: () => requestDeleteMarkup(m),
         })
-        overlay.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false })
-
-        mapContainer.appendChild(overlay)
-        calloutOverlaysRef.current.push(overlay)
-        if (!saved) calloutStateRef.current.set(m.id, { offsetX, offsetY, createdAtZoom })
-
-        requestAnimationFrame(updateAll)
         continue
       }
 
@@ -589,6 +613,18 @@ export function KmzMap() {
       if (!layer) continue
       group.addLayer(layer)
       mkpLayerMapRef.current.set(m.id, layer)
+
+      // Every Work Object (has a workObjectType, i.e. was created via Add Work) gets
+      // an automatic, always-live companion callout right next to its shape.
+      if (m.workObjectType) {
+        const anchor = geometryAnchor(m.geometry)
+        if (anchor) {
+          renderCallout({
+            id: m.id, geo: anchor, color: m.color || '#3b82f6', fontSize: m.fontSize ?? 11,
+            text: buildWorkObjectCalloutLines(m, data).join('\n'), showInlineDelete: false,
+          })
+        }
+      }
 
       layer.on('click', (e: L.LeafletEvent) => {
         L.DomEvent.stopPropagation(e as L.LeafletMouseEvent)
@@ -625,13 +661,29 @@ export function KmzMap() {
         splitHandles.forEach((h) => group.addLayer(h))
       }
 
-      // Merge-mode selection highlight
+      // Merge-mode pick highlight (orange) vs. plain-selection highlight (cyan) — distinct
+      // colors so "picked for merge" never looks the same as "just selected."
       if (activeTool === 'merge' && toolSelectedIds.has(m.id)) {
         const highlight = L.circleMarker(
           m.geometry.center ?? m.geometry.latlngs?.[0] ?? m.geometry.bounds?.[0] ?? [0, 0],
           { radius: 8, color: '#f97316', weight: 2, fill: false, pane: 'markups' },
         )
         group.addLayer(highlight)
+      } else if (selectedMarkup?.id === m.id) {
+        const highlight = L.circleMarker(
+          m.geometry.center ?? m.geometry.latlngs?.[0] ?? m.geometry.bounds?.[0] ?? [0, 0],
+          { radius: 10, color: '#22d3ee', weight: 3, fill: false, pane: 'markups' },
+        )
+        group.addLayer(highlight)
+        // Thin lines/polygons are otherwise easy to lose track of once selected —
+        // boost the real shape's own stroke too, not just a dot at one endpoint.
+        // Lines are wrapped in a FeatureGroup with a near-invisible wide companion
+        // purely for click hit-testing (see markupLayer.ts's withWideHitArea, opacity
+        // 0.01 not 0 — a couple of browsers fail to hit-test a truly zero-opacity
+        // stroke) — skip that one so selecting a line doesn't reveal a fat stroke.
+        const boostPath = (p: L.Path) => { if ((p.options.opacity ?? 1) > 0.05) p.setStyle({ weight: (m.weight || 3) + 3, opacity: 1 }) }
+        if (layer instanceof L.Path) boostPath(layer)
+        else if (layer instanceof L.LayerGroup) layer.eachLayer((child) => { if (child instanceof L.Path) boostPath(child) })
       }
     }
 
@@ -641,6 +693,47 @@ export function KmzMap() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMarkups, markupVisible, visibleLayers, mapReady, editMode, selectedMarkup?.id, activeTool, toolSelectedIds])
+
+  // ── Floating quick-actions toolbar position — tracks the selected markup's
+  // anchor point live against pan/zoom, same technique as the callout overlay above.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady || !selectedMarkup) { setQuickActionsAnchor(null); return }
+    const lMap: L.Map = map
+    const geo = selectedMarkup.geometry
+    const anchorLatLng = geo.center ?? geo.latlngs?.[0] ?? geo.bounds?.[0]
+    if (!anchorLatLng) { setQuickActionsAnchor(null); return }
+    const containerEl = lMap.getContainer()
+    const update = () => {
+      const pt = lMap.latLngToContainerPoint(L.latLng(anchorLatLng[0], anchorLatLng[1]))
+      const rect = containerEl.getBoundingClientRect()
+      setQuickActionsAnchor({ x: rect.left + pt.x, y: rect.top + pt.y })
+    }
+    update()
+    lMap.on('move zoom viewreset', update)
+    return () => { lMap.off('move zoom viewreset', update) }
+  }, [selectedMarkup, mapReady])
+
+  // ── Keyboard shortcuts: Delete removes the selection, Escape clears it ────
+  // (Escape yields first to any in-progress multi-point draw, which already owns
+  // Escape via the accumulation-cancel handler elsewhere in this file.)
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (isTypingTarget(e.target)) return
+      if (e.key === 'Escape') {
+        if (polygonPtsRef.current.length > 0) return
+        setSelectedMarkup(null)
+        return
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedMarkup) {
+        e.preventDefault()
+        requestDeleteMarkup(selectedMarkup)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMarkup])
 
   // ── Render georeferenced PDF overlays ─────────────────────────────────────
   useEffect(() => {
@@ -812,6 +905,10 @@ export function KmzMap() {
     })
     undoStackRef.current.push(id)
     redoStackRef.current = []
+    // Return to Select so the map is immediately clickable again — otherwise the draw
+    // tool stays armed and clicking an existing line/shape is swallowed as "start a new
+    // one" (drag-draw tools) or "add a vertex" (click-based tools) instead of selecting it.
+    setActiveTool('select')
     // Open the Add Work modal or the right panel
     setTimeout(() => {
       if (addWorkModeRef.current) {
@@ -1257,12 +1354,16 @@ export function KmzMap() {
 
     let lastX = 0
     let lastY = 0
+    let downX = 0
+    let downY = 0
 
     function onDown(e: PointerEvent) {
       e.preventDefault()
       overlay.setPointerCapture(e.pointerId)
       lastX = e.clientX
       lastY = e.clientY
+      downX = e.clientX
+      downY = e.clientY
       overlay.style.cursor = 'grabbing'
     }
 
@@ -1280,6 +1381,23 @@ export function KmzMap() {
       overlay.releasePointerCapture(e.pointerId)
       overlay.style.cursor = 'grab'
       syncPanState()
+
+      // This overlay sits on top of the entire map (z-500, above the markups pane at
+      // 450) purely so drag-to-pan has a reliable pointer-capture target — but that
+      // means it also swallows every click meant for a markup layer underneath, since
+      // Leaflet's own layer.on('click', ...) handlers never see events that land on
+      // this div first. On a genuine click (negligible movement, not a pan-drag),
+      // briefly make the overlay pass-through so a real hit-test finds what's actually
+      // underneath, then replay the click there — Leaflet's normal selection/merge/split
+      // click handling then fires exactly as if this overlay didn't exist.
+      if (Math.hypot(e.clientX - downX, e.clientY - downY) < 6) {
+        overlay.style.pointerEvents = 'none'
+        const real = document.elementFromPoint(e.clientX, e.clientY)
+        overlay.style.pointerEvents = ''
+        if (real && real !== overlay) {
+          real.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }))
+        }
+      }
     }
 
     overlay.addEventListener('pointerdown', onDown)
@@ -1890,10 +2008,7 @@ export function KmzMap() {
           onRedo={redoLast}
           onDelete={() => {
             if (!selectedMarkup) return
-            const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === selectedMarkup.id)
-            const result = attemptDeleteMarkup(selectedMarkup, billingLines, softDeleteMarkup, activeEmployeeId)
-            if (!result.ok && result.message) alert(result.message)
-            else if (result.ok) setSelectedMarkup(null)
+            requestDeleteMarkup(selectedMarkup)
           }}
           canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
           onSave={() => { if (aerialRunInProgress) finishAerialRunRef.current?.(); else finishPolygonRef.current?.() }}
@@ -2064,12 +2179,7 @@ export function KmzMap() {
                             {m.featureName || meta?.label || m.tool}
                           </p>
                         </button>
-                        <button onClick={() => {
-                          const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === m.id)
-                          const result = attemptDeleteMarkup(m, billingLines, softDeleteMarkup, activeEmployeeId)
-                          if (!result.ok && result.message) alert(result.message)
-                          else if (result.ok && selectedMarkup?.id === m.id) setSelectedMarkup(null)
-                        }}
+                        <button onClick={() => requestDeleteMarkup(m)}
                           className="shrink-0 rounded p-0.5 text-slate-700 opacity-0 group-hover:opacity-100 hover:text-red-400 hover:bg-red-400/10 transition"
                           title="Delete markup">
                           <Trash2 size={11} />
@@ -2263,8 +2373,12 @@ export function KmzMap() {
           </div>
         )}
 
-        {/* ── Right: Detail panel ───────────────────────────────────── */}
-        {!showGeoreference && !showLayerManager && (selectedFeature || selectedMarkup || selectedAerialRun) && !panelCollapsed && (
+        {/* ── Right: Detail panel ───────────────────────────────────────────
+             Work Objects get the small floating properties panel instead (below)
+             — this sidebar only opens for them on-demand, when a quick-action
+             (Photos/Notes/Billing) explicitly requests a specific tab. ── */}
+        {!showGeoreference && !showLayerManager && !panelCollapsed &&
+          (selectedFeature || selectedAerialRun || (selectedMarkup && (!isSelectedWorkObject || openTabRequest))) && (
           <div className="w-72 shrink-0 border-l border-[#1e1e1e] overflow-hidden">
             {selectedAerialRun ? (
               <AerialLashRunPanel
@@ -2278,10 +2392,8 @@ export function KmzMap() {
                 key={selectedMarkup.id}
                 markup={selectedMarkup}
                 onClose={() => setSelectedMarkup(null)}
-                onDelete={() => setSelectedMarkup(null)}
-                onCalloutCreated={(center) => {
-                  mapRef.current?.panTo(center as L.LatLngExpression)
-                }}
+                onRequestDelete={requestDeleteMarkup}
+                openTab={openTabRequest}
                 editMode={editMode}
                 onSetEditMode={setEditMode}
               />
@@ -2294,6 +2406,38 @@ export function KmzMap() {
             ) : null}
           </div>
         )}
+
+        {selectedMarkup && isSelectedWorkObject && quickActionsAnchor && !showGeoreference && !showLayerManager && (
+          <WorkObjectPropertiesPanel
+            key={selectedMarkup.id}
+            markup={selectedMarkup}
+            anchor={quickActionsAnchor}
+            onClose={() => setSelectedMarkup(null)}
+          />
+        )}
+
+        {selectedMarkup && quickActionsAnchor && !showGeoreference && !showLayerManager && (
+          <MarkupQuickActions
+            anchor={quickActionsAnchor}
+            mode={selectedMarkup.tool === 'callout' ? 'callout' : 'full'}
+            canEdit={!selectedMarkup.lockedAt}
+            onEdit={() => {
+              if (selectedMarkup.tool === 'callout') { setPanelCollapsed(false); return }
+              setEditMode((m) => (m === 'vertices' ? 'none' : 'vertices'))
+            }}
+            onOpenTab={(tab) => { setPanelCollapsed(false); setOpenTabRequest({ tab, nonce: Date.now() }) }}
+            onDelete={() => {
+              if (selectedMarkup.tool === 'callout') { deleteMarkup(selectedMarkup.id); setSelectedMarkup(null); return }
+              requestDeleteMarkup(selectedMarkup)
+            }}
+            onClose={() => setSelectedMarkup(null)}
+          />
+        )}
+        <MarkupDeleteConfirm
+          markup={deleteFlow.pendingDelete}
+          onCancel={deleteFlow.cancelDelete}
+          onConfirm={confirmDeleteMarkup}
+        />
 
         {/* Pole form modal — in-progress aerial run */}
         {editingPole && !selectedAerialRun && (

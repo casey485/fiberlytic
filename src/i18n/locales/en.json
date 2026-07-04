@@ -46,6 +46,9 @@
     "field": {
       "name": "Name",
       "namePlaceholder": "Work item name",
+      "workType": "Work Type",
+      "label": "Label",
+      "labelPlaceholder": "Optional short label",
       "comments": "Comments",
       "commentsRequired": "Notes required for this work type",
       "commentsOptional": "Optional notes",
@@ -56,7 +59,9 @@
       "gps": "GPS",
       "captureGps": "Capture GPS",
       "capturingGps": "Capturing…",
-      "gpsError": "Couldn't get location"
+      "gpsError": "Couldn't get location",
+      "gpsUnavailableConfirm": "GPS unavailable — confirm to continue",
+      "gpsUnavailableBadge": "GPS unavailable (confirmed)"
     },
     "photos": {
       "tagNextPhotoAs": "Tag next photo as",
@@ -64,7 +69,6 @@
       "upload": "Upload"
     },
     "billing": {
-      "notRequired": "Billing codes not required",
       "searchPlaceholder": "Search billing codes by unit code, description, or category…",
       "suggested": "Suggested for {{type}}",
       "recentlyUsed": "Recently Used",
@@ -75,6 +79,23 @@
       "noSuggested": "No suggested codes for this work type yet — try All.",
       "noUnits": "No rate card units found for this project's client.",
       "noRateCardAssigned": "No rate card assigned to this project. Please assign one before billing."
+    },
+    "validation": {
+      "workTypeRequired": "Work Type is required.",
+      "commentsRequired": "Comments are required.",
+      "statusRequired": "Status is required.",
+      "crewRequired": "Crew is required.",
+      "quantityRequired": "Quantity is required.",
+      "gpsRequired": "GPS location is required.",
+      "billingRequired": "Billing code is required before saving.",
+      "billingQuantityRequired": "Billing quantity must be greater than zero."
+    },
+    "discard": {
+      "title": "Save as Draft or Discard Changes?",
+      "body": "This Work Object isn't finished yet.",
+      "keepEditing": "Keep Editing",
+      "discard": "Discard",
+      "saveAsDraft": "Save as Draft"
     }
   },
   "workObjectPanel": {

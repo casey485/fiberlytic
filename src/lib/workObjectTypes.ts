@@ -29,6 +29,9 @@ export type DefaultGeometryKind = 'point' | 'line' | 'polygon'
 export interface WorkObjectTypeDef {
   id: WorkObjectTypeId
   label: string
+  /** 3-letter code used to build a human-readable Work ID (e.g. "WO-TRN-014") — hand-picked
+   *  per type rather than derived from the label, to avoid collisions/ugly abbreviations. */
+  shortCode: string
   icon: LucideIcon
   defaultColor: string
   defaultGeometry: DefaultGeometryKind
@@ -48,116 +51,165 @@ const NON_BILLABLE_STATUSES: MarkupStatus[] = ['pending', 'in_progress', 'comple
 
 export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
   {
-    id: 'aerial_strand', label: 'Aerial Strand', icon: Cable,
+    id: 'aerial_strand', label: 'Aerial Strand', shortCode: 'AST', icon: Cable,
     defaultColor: '#06b6d4', defaultGeometry: 'line', defaultMarkupTool: 'new_strand',
     defaultUnit: 'Feet', billingKeywords: ['strand', 'aerial'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Strand tension correct', 'Attachment height correct', 'Clearance from other utilities'],
   },
   {
-    id: 'directional_drill', label: 'Directional Drill', icon: Drill,
+    id: 'directional_drill', label: 'Directional Drill', shortCode: 'DDR', icon: Drill,
     defaultColor: '#3b82f6', defaultGeometry: 'line', defaultMarkupTool: 'directional_bore',
     defaultUnit: 'Feet', billingKeywords: ['bore', 'directional', 'hdd', 'drill'],
     requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Bore depth correct', 'No utility strikes', 'Conduit continuity verified'],
   },
   {
-    id: 'distribution_fiber', label: 'Distribution Fiber', icon: GitBranch,
+    id: 'distribution_fiber', label: 'Distribution Fiber', shortCode: 'DFB', icon: GitBranch,
     defaultColor: '#22c55e', defaultGeometry: 'line', defaultMarkupTool: 'distribution_fiber_route',
     defaultUnit: 'Feet', billingKeywords: ['fiber', 'distribution', 'duct'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Fiber count correct', 'No visible damage', 'Proper slack maintained'],
   },
   {
-    id: 'feeder_fiber', label: 'Feeder Fiber', icon: Waypoints,
+    id: 'feeder_fiber', label: 'Feeder Fiber', shortCode: 'FFB', icon: Waypoints,
     defaultColor: '#4ade80', defaultGeometry: 'line', defaultMarkupTool: 'feeder_fiber_route',
     defaultUnit: 'Feet', billingKeywords: ['fiber', 'feeder', 'trunk'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Fiber count correct', 'Splice points documented', 'Proper slack maintained'],
   },
   {
-    id: 'drop', label: 'Drop', icon: Home,
+    id: 'drop', label: 'Drop', shortCode: 'DRP', icon: Home,
     defaultColor: '#22d3ee', defaultGeometry: 'line', defaultMarkupTool: 'drop_line',
     defaultUnit: 'Feet', billingKeywords: ['drop', 'service'],
     requiredPhotoPhases: ['after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Drop routed correctly', 'Weatherproofing sealed', 'Customer premise entry secure'],
   },
   {
-    id: 'plowing', label: 'Plowing', icon: Tractor,
+    id: 'plowing', label: 'Plowing', shortCode: 'PLW', icon: Tractor,
     defaultColor: '#a855f7', defaultGeometry: 'line', defaultMarkupTool: 'plow_route',
     defaultUnit: 'Feet', billingKeywords: ['plow'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'No utility strikes', 'Surface restored'],
   },
   {
-    id: 'sub_ducting', label: 'Sub-Ducting', icon: Layers,
+    id: 'sub_ducting', label: 'Sub-Ducting', shortCode: 'SDT', icon: Layers,
     defaultColor: '#a855f7', defaultGeometry: 'line', defaultMarkupTool: 'duct_1way',
     defaultUnit: 'Feet', billingKeywords: ['duct', 'innerduct', 'microduct'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Duct size correct', 'Couplings sealed', 'Tracer wire continuous'],
   },
   {
-    id: 'trenching', label: 'Trenching', icon: Shovel,
+    id: 'trenching', label: 'Trenching', shortCode: 'TRN', icon: Shovel,
     defaultColor: '#3b82f6', defaultGeometry: 'line', defaultMarkupTool: 'open_trench',
     defaultUnit: 'Feet', billingKeywords: ['trench', 'open trench'],
     requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'Bedding/backfill proper', 'No utility strikes'],
   },
   {
-    id: 'handhole_vault', label: 'Handhole / Vault', icon: Box,
+    id: 'handhole_vault', label: 'Handhole / Vault', shortCode: 'HHV', icon: Box,
     defaultColor: '#f59e0b', defaultGeometry: 'point', defaultMarkupTool: 'proposed_handhole',
     defaultUnit: 'Each', billingKeywords: ['vault', 'handhole', 'pedestal', 'cabinet'],
     requiredPhotoPhases: ['handhole_proof'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'Lid seated', 'Grounding present'],
   },
   {
-    id: 'pole', label: 'Pole', icon: Milestone,
+    id: 'pole', label: 'Pole', shortCode: 'POL', icon: Milestone,
     defaultColor: '#92400e', defaultGeometry: 'point', defaultMarkupTool: 'new_pole',
     defaultUnit: 'Each', billingKeywords: ['pole'],
     requiredPhotoPhases: ['pole_anchor_proof'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Pole plumb', 'Attachment hardware secure', 'Grounding present'],
   },
   {
-    id: 'anchor_down_guy', label: 'Anchor / Down Guy', icon: Anchor,
+    id: 'anchor_down_guy', label: 'Anchor / Down Guy', shortCode: 'ADG', icon: Anchor,
     defaultColor: '#60a5fa', defaultGeometry: 'point', defaultMarkupTool: 'new_anchor',
     defaultUnit: 'Each', billingKeywords: ['anchor', 'guy'],
     requiredPhotoPhases: ['pole_anchor_proof'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Guy tension correct', 'Anchor set to spec', 'Guy guard installed'],
   },
   {
-    id: 'splicing', label: 'Splicing', icon: Scissors,
+    id: 'splicing', label: 'Splicing', shortCode: 'SPL', icon: Scissors,
     defaultColor: '#10b981', defaultGeometry: 'point', defaultMarkupTool: 'splice_case',
     defaultUnit: 'Each', billingKeywords: ['splice', 'closure'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Splice loss within spec', 'Enclosure sealed', 'Slack stored properly'],
   },
   {
-    id: 'restoration', label: 'Restoration', icon: Sprout,
+    id: 'restoration', label: 'Restoration', shortCode: 'RST', icon: Sprout,
     defaultColor: '#86efac', defaultGeometry: 'polygon', defaultMarkupTool: 'restoration',
     defaultUnit: 'SqFt', billingKeywords: ['restoration', 'seed', 'sod', 'asphalt', 'concrete'],
     requiredPhotoPhases: ['before', 'restoration_proof', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Surface level with surroundings', 'Vegetation/seed applied', 'Site clear of debris'],
   },
   {
-    id: 'qa_qc', label: 'QA/QC', icon: ShieldCheck,
+    id: 'qa_qc', label: 'QA/QC', shortCode: 'QAQ', icon: ShieldCheck,
     defaultColor: '#a855f7', defaultGeometry: 'point', defaultMarkupTool: 'qc_issue',
     defaultUnit: 'Each', billingKeywords: [],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: true, allowedStatuses: NON_BILLABLE_STATUSES,
     inspectionTemplate: ['Work matches plan', 'Photos documented', 'No open punch items'],
   },
   {
-    id: 'utility_conflict', label: 'Utility Conflict', icon: AlertTriangle,
+    id: 'utility_conflict', label: 'Utility Conflict', shortCode: 'UTC', icon: AlertTriangle,
     defaultColor: '#ef4444', defaultGeometry: 'point', defaultMarkupTool: 'qc_issue',
     defaultUnit: 'Each', billingKeywords: [],
     requiredPhotoPhases: ['before'], requiresNotes: true, allowedStatuses: NON_BILLABLE_STATUSES,
     inspectionTemplate: ['Conflict documented', 'Utility owner notified', 'Resolution plan noted'],
   },
   {
-    id: 'damage_report', label: 'Damage Report', icon: FileWarning,
+    id: 'damage_report', label: 'Damage Report', shortCode: 'DMG', icon: FileWarning,
     defaultColor: '#ef4444', defaultGeometry: 'point', defaultMarkupTool: 'qc_issue',
     defaultUnit: 'Each', billingKeywords: ['damage', 'repair'],
     requiredPhotoPhases: ['before', 'after'], requiresNotes: true, allowedStatuses: NON_BILLABLE_STATUSES,
     inspectionTemplate: ['Damage documented with photos', 'Utility owner notified', 'Repair scheduled'],
+  },
+  {
+    id: 'flower_pot', label: 'Flower Pot', shortCode: 'FPT', icon: Box,
+    defaultColor: '#f97316', defaultGeometry: 'point', defaultMarkupTool: 'point',
+    defaultUnit: 'Each', billingKeywords: ['flower pot', 'pedestal'],
+    requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: ['Set flush with grade', 'Lid seated', 'Location matches plan'],
+  },
+  {
+    id: 'tie_in', label: 'Tie-In', shortCode: 'TIE', icon: GitBranch,
+    defaultColor: '#eab308', defaultGeometry: 'point', defaultMarkupTool: 'point',
+    defaultUnit: 'Each', billingKeywords: ['tie-in', 'tie in', 'splice tie-in'],
+    requiredPhotoPhases: ['before', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: ['Continuity verified', 'Connection documented', 'Enclosure sealed'],
+  },
+  {
+    id: 'riser_guard', label: 'Riser Guard', shortCode: 'RSG', icon: Milestone,
+    defaultColor: '#64748b', defaultGeometry: 'point', defaultMarkupTool: 'riser_guard',
+    defaultUnit: 'Each', billingKeywords: ['riser guard', 'riser'],
+    requiredPhotoPhases: ['before', 'after'], requiresNotes: false, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: ['Guard secured to pole', 'Height meets spec', 'No visible damage'],
+  },
+  {
+    id: 'road_crossing', label: 'Road Crossing', shortCode: 'RDX', icon: Shovel,
+    defaultColor: '#dc2626', defaultGeometry: 'line', defaultMarkupTool: 'line',
+    defaultUnit: 'Feet', billingKeywords: ['road crossing', 'road bore'],
+    requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: ['Depth correct', 'No utility strikes', 'Surface restored'],
+  },
+  {
+    id: 'sidewalk_crossing', label: 'Sidewalk Crossing', shortCode: 'SWX', icon: Shovel,
+    defaultColor: '#f59e0b', defaultGeometry: 'line', defaultMarkupTool: 'line',
+    defaultUnit: 'Feet', billingKeywords: ['sidewalk crossing', 'sidewalk bore'],
+    requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: ['Depth correct', 'Surface restored', 'ADA compliance maintained'],
+  },
+  {
+    id: 'driveway_crossing', label: 'Driveway Crossing', shortCode: 'DWX', icon: Shovel,
+    defaultColor: '#0ea5e9', defaultGeometry: 'line', defaultMarkupTool: 'driveway_crossing',
+    defaultUnit: 'Feet', billingKeywords: ['driveway crossing', 'driveway bore'],
+    requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: ['Depth correct', 'Surface restored', 'No utility strikes'],
+  },
+  {
+    id: 'other', label: 'Other', shortCode: 'OTH', icon: FileWarning,
+    defaultColor: '#94a3b8', defaultGeometry: 'point', defaultMarkupTool: 'point',
+    defaultUnit: 'Each', billingKeywords: [],
+    requiredPhotoPhases: [], requiresNotes: true, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: [],
   },
 ]
 
@@ -226,6 +278,8 @@ const RELEVANT_TOOLS_OVERRIDE: Partial<Record<WorkObjectTypeId, FieldMapDrawTool
   sub_ducting: [
     'duct_1way', 'duct_2way', 'duct_3way', 'duct_4way', 'innerduct', 'direction_arrow', 'callout',
   ],
+  riser_guard: ['riser_guard', 'callout'],
+  driveway_crossing: ['driveway_crossing', 'callout'],
 }
 
 export function relevantToolsForWorkType(typeId: WorkObjectTypeId): FieldMapDrawTool[] {

@@ -10,7 +10,6 @@ import {
   DollarSign, Image, Lock, Unlock, Send, CheckCircle2, Move, Spline,
 } from 'lucide-react'
 import { useData } from '../store/DataContext'
-import { attemptDeleteMarkup } from '../lib/markupDelete'
 import { useRole } from '../store/RoleContext'
 import { saveBlob, loadBlob } from '../lib/fileStore'
 import { MARKUP_STATUS_META } from '../types'
@@ -110,16 +109,24 @@ function VideoThumb({ video, onDelete }: { video: { id: string; caption: string 
 interface Props {
   markup: FieldMarkup
   onClose: () => void
-  onDelete?: () => void
-  onCalloutCreated?: (center: [number, number], label: string, photoBlobKey: string | null, color: string) => void
+  /** Stages this markup for the page's shared delete-confirmation modal
+   *  (see src/lib/markupDelete.ts's useMarkupDeleteFlow) — actual deletion
+   *  only happens if the user confirms there, so this panel stays open and
+   *  unchanged if they cancel. */
+  onRequestDelete: (markup: FieldMarkup, billingLines: MarkupBilling[]) => void
   editMode?: EditMode
   onSetEditMode?: (mode: EditMode) => void
+  /** Jump straight to a tab (e.g. from the floating quick-actions toolbar).
+   *  `nonce` must change on every request (even repeats of the same tab) so
+   *  clicking the same quick-action twice after navigating away still works —
+   *  a plain tab-name prop wouldn't re-fire the effect on an unchanged value. */
+  openTab?: { tab: 'notes' | 'photos' | 'billing'; nonce: number } | null
 }
 
-export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editMode = 'none', onSetEditMode }: Props) {
+export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none', onSetEditMode, openTab }: Props) {
   const { t } = useTranslation()
   const {
-    data, updateMarkup, softDeleteMarkup, addMarkup,
+    data, updateMarkup,
     addMarkupPhoto, deleteMarkupPhoto,
     addMarkupBilling, updateMarkupBilling, deleteMarkupBilling,
     addProduction,
@@ -128,6 +135,8 @@ export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editM
   const { activeEmployeeId } = useRole()
 
   const [tab, setTab] = useState<'notes' | 'photos' | 'billing' | 'inspection' | 'history' | 'attachments'>('notes')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (openTab) setTab(openTab.tab) }, [openTab?.nonce])
   const [submitting, setSubmitting] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -251,31 +260,25 @@ export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editM
 
   // ── Submit billing to production / P&L ───────────────────────────────────
   function handleSubmitToProduction() {
-    const billableCount = billingEntries.filter((b) => b.billable && b.total > 0).length
+    const billableCount = billingEntries.filter((b) => b.billable && b.total > 0 && b.invoiceStatus === 'not_billed').length
     if (billableCount === 0) return
     if (!confirm(`Submit ${billableCount} billing line${billableCount > 1 ? 's' : ''} to production and revenue?`)) return
 
     setSubmitting(true)
     try {
       const result = submitMarkupToProduction({
-        markup, billingEntries, photos, featureName, notes, activeEmployeeId, data,
-        addProduction, updateMarkupBilling, updateMarkup, addMarkup,
+        markup, billingEntries, activeEmployeeId, data,
+        addProduction, updateMarkupBilling, updateMarkup,
       })
       if (!result) return
       setStatus('billed')
-      if (result.calloutCenter && result.calloutLabel) {
-        onCalloutCreated?.(result.calloutCenter, result.calloutLabel, result.calloutPhotoBlobKey, markup.color)
-      }
     } finally {
       setSubmitting(false)
     }
   }
 
   function handleDeleteMarkup() {
-    const result = attemptDeleteMarkup(markup, billingEntries, softDeleteMarkup, activeEmployeeId)
-    if (!result.ok) { if (result.message) alert(result.message); return }
-    onDelete?.()
-    onClose()
+    onRequestDelete(markup, billingEntries)
   }
 
   function toggleLock() {
@@ -787,22 +790,33 @@ export function MarkupPanel({ markup, onClose, onDelete, onCalloutCreated, editM
               </button>
             )}
 
-            {/* Submit / already-submitted state */}
-            {status === 'billed' ? (
-              <div className="flex items-center gap-2 rounded border border-emerald-800/40 bg-emerald-900/20 px-3 py-2 text-[11px] text-emerald-400">
-                <CheckCircle2 size={13} className="shrink-0" />
-                <span>Submitted to production &amp; revenue</span>
-              </div>
-            ) : billingEntries.some((b) => b.billable && b.total > 0) && (
-              <button
-                onClick={handleSubmitToProduction}
-                disabled={submitting || isLocked}
-                className="flex w-full items-center justify-center gap-1.5 rounded bg-emerald-700 py-2 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-40 transition"
-              >
-                <Send size={11} />
-                {submitting ? 'Submitting…' : `Submit to Production — $${billingTotal.toFixed(2)}`}
-              </button>
-            )}
+            {/* Submit / already-submitted state — a billing line added after the first
+                submit stays 'not_billed' until its own Submit, so the button must stay
+                available whenever any unsubmitted billable line exists, even if this
+                Work Object was already billed once. */}
+            {(() => {
+              const unsubmitted = billingEntries.filter((b) => b.billable && b.total > 0 && b.invoiceStatus === 'not_billed')
+              if (unsubmitted.length === 0 && status === 'billed') {
+                return (
+                  <div className="flex items-center gap-2 rounded border border-emerald-800/40 bg-emerald-900/20 px-3 py-2 text-[11px] text-emerald-400">
+                    <CheckCircle2 size={13} className="shrink-0" />
+                    <span>Submitted to production &amp; revenue</span>
+                  </div>
+                )
+              }
+              if (unsubmitted.length === 0) return null
+              const unsubmittedTotal = unsubmitted.reduce((s, b) => s + b.total, 0)
+              return (
+                <button
+                  onClick={handleSubmitToProduction}
+                  disabled={submitting || isLocked}
+                  className="flex w-full items-center justify-center gap-1.5 rounded bg-emerald-700 py-2 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-40 transition"
+                >
+                  <Send size={11} />
+                  {submitting ? 'Submitting…' : `Submit to Production — $${unsubmittedTotal.toFixed(2)}`}
+                </button>
+              )
+            })()}
           </div>
         )}
 

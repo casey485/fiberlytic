@@ -17,6 +17,34 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;')
 }
 
+/** Leaflet's click hit-area for a Polyline is just its rendered stroke — for a
+ *  default 2-3px line that's only a couple of screen pixels wide, making it
+ *  genuinely hard to click precisely. Pairs the real (thin, styled) line with
+ *  an invisible, much wider companion purely for hit-testing, rendered on top
+ *  so its larger area wins ties. Returns a FeatureGroup rather than a plain
+ *  LayerGroup specifically because FeatureGroup forwards child click events
+ *  to the group itself (LayerGroup does not) — callers can keep doing
+ *  `layer.on('click', ...)` exactly as they already do for a bare Polyline. */
+function withWideHitArea(line: L.Polyline, opts: L.PathOptions): L.FeatureGroup {
+  const hitLine = L.polyline(line.getLatLngs() as L.LatLngExpression[], {
+    ...opts,
+    weight: Math.max(20, (opts.weight ?? 3) + 16),
+    // Whether a near/fully-transparent stroke still hit-tests under
+    // `pointer-events: visiblePainted`/`auto` (Leaflet's default for interactive
+    // paths — see leaflet.css's `.leaflet-interactive` rule) is inconsistent
+    // across browser SVG engines. Don't rely on that ambiguity: opacity is kept
+    // low just as a visual safety net, and `pointer-events: stroke` is forced
+    // directly below, which hit-tests by geometry alone regardless of paint state.
+    opacity: 0.01,
+    dashArray: undefined,
+  })
+  hitLine.on('add', () => {
+    const el = hitLine.getElement()
+    if (el instanceof SVGElement) el.style.pointerEvents = 'stroke'
+  })
+  return L.featureGroup([line, hitLine])
+}
+
 /** Dash arrays for line styles. */
 const DASH: Record<string, string | undefined> = {
   dashed_line: '10 6',
@@ -236,8 +264,8 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
   if (lineSymbolDef?.geometryKind === 'line' && m.tool !== 'direction_arrow') {
     if (!geo.latlngs?.length) return null
     const line = L.polyline(geo.latlngs, opts)
-    if (lineSymbolDef.lineStyle !== 'tickMarked') return line
-    const group = L.layerGroup([line])
+    if (lineSymbolDef.lineStyle !== 'tickMarked') return withWideHitArea(line, opts)
+    const group = withWideHitArea(line, opts)
     for (const tick of computeTickMarks(geo.latlngs)) {
       group.addLayer(L.polyline([tick.p1, tick.p2], { ...opts, dashArray: undefined }))
     }
@@ -253,7 +281,7 @@ export function markupToLayer(m: FieldMarkup, map: L.Map): L.Layer | null {
     case 'measure':
     case 'highlight': {
       if (!geo.latlngs?.length) return null
-      return L.polyline(geo.latlngs, opts)
+      return withWideHitArea(L.polyline(geo.latlngs, opts), opts)
     }
 
     case 'direction_arrow':

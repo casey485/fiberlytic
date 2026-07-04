@@ -46,6 +46,9 @@
     "field": {
       "name": "Nome",
       "namePlaceholder": "Nome do item de trabalho",
+      "workType": "Tipo de Trabalho",
+      "label": "Rótulo",
+      "labelPlaceholder": "Rótulo curto opcional",
       "comments": "Comentários",
       "commentsRequired": "Notas obrigatórias para este tipo de trabalho",
       "commentsOptional": "Notas opcionais",
@@ -56,7 +59,9 @@
       "gps": "GPS",
       "captureGps": "Capturar GPS",
       "capturingGps": "Capturando…",
-      "gpsError": "Não foi possível obter a localização"
+      "gpsError": "Não foi possível obter a localização",
+      "gpsUnavailableConfirm": "GPS indisponível — confirmar para continuar",
+      "gpsUnavailableBadge": "GPS indisponível (confirmado)"
     },
     "photos": {
       "tagNextPhotoAs": "Marcar próxima foto como",
@@ -64,7 +69,6 @@
       "upload": "Enviar"
     },
     "billing": {
-      "notRequired": "Códigos de faturamento não obrigatórios",
       "searchPlaceholder": "Buscar códigos de faturamento por código, descrição ou categoria…",
       "suggested": "Sugeridos para {{type}}",
       "recentlyUsed": "Usados Recentemente",
@@ -75,6 +79,23 @@
       "noSuggested": "Nenhum código sugerido para este tipo de trabalho ainda — tente Todos.",
       "noUnits": "Nenhuma unidade de tabela de preços encontrada para o cliente deste projeto.",
       "noRateCardAssigned": "Nenhuma tabela de preços atribuída a este projeto. Atribua uma antes de faturar."
+    },
+    "validation": {
+      "workTypeRequired": "O Tipo de Trabalho é obrigatório.",
+      "commentsRequired": "Os Comentários são obrigatórios.",
+      "statusRequired": "O Status é obrigatório.",
+      "crewRequired": "A Equipe é obrigatória.",
+      "quantityRequired": "A Quantidade é obrigatória.",
+      "gpsRequired": "A localização GPS é obrigatória.",
+      "billingRequired": "Um código de faturamento é obrigatório antes de salvar.",
+      "billingQuantityRequired": "A quantidade de faturamento deve ser maior que zero."
+    },
+    "discard": {
+      "title": "Salvar como Rascunho ou Descartar Alterações?",
+      "body": "Este Objeto de Trabalho ainda não está concluído.",
+      "keepEditing": "Continuar Editando",
+      "discard": "Descartar",
+      "saveAsDraft": "Salvar como Rascunho"
     }
   },
   "workObjectPanel": {

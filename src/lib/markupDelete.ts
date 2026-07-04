@@ -1,42 +1,56 @@
 // ---------------------------------------------------------------------------
-// Shared "delete this Work Object" gate — used identically by MarkupPanel's
-// Delete button and both Field Map pages' toolbar/layer-manager delete
-// buttons, so PDF Print Mode and KMZ/Map Mode can't drift apart on this.
+// Shared "delete this Work Object" flow — one instance per page (Field Map /
+// PDF Print Mode), used identically by every delete entry point on that page
+// (top toolbar, layer manager, MarkupPanel's own Delete button, the floating
+// quick-actions toolbar, the Delete key, and callout close buttons) so none
+// of them can drift apart on the confirmation or the invoice-block rule.
+//
 // Blocks outright if the markup's billing was already pulled into an issued
 // invoice (InvoiceLineItem is a frozen snapshot with no id back to
-// MarkupBilling, so there's no safe way to un-invoice a line here); otherwise
-// confirms, then soft-deletes (preserves audit history, cascades a real
-// removal of whatever production/P&L it had already generated).
+// MarkupBilling, so there's no safe way to un-invoice a line here). A real
+// confirmation Modal can't block synchronously the way window.confirm did,
+// so the flow is: requestDelete() either alerts-and-bails (invoiced) or
+// stages the markup as `pendingDelete`; the caller renders
+// <MarkupDeleteConfirm> once and calls confirmDelete()/cancelDelete().
 // ---------------------------------------------------------------------------
 
+import { useState } from 'react'
 import type { FieldMarkup, MarkupBilling } from '../types'
 
-export interface AttemptDeleteMarkupResult {
-  ok: boolean
-  /** Set when blocked or cancelled — caller should alert() this if present and !ok. */
-  message?: string
+export function isMarkupInvoiced(billingLines: MarkupBilling[]): boolean {
+  return billingLines.some((b) => !!b.invoiceId)
 }
 
-export function attemptDeleteMarkup(
-  markup: FieldMarkup,
-  billingLines: MarkupBilling[],
+export interface MarkupDeleteFlow {
+  pendingDelete: FieldMarkup | null
+  requestDelete: (markup: FieldMarkup, billingLines: MarkupBilling[]) => void
+  confirmDelete: () => void
+  cancelDelete: () => void
+}
+
+export function useMarkupDeleteFlow(
   softDeleteMarkup: (id: string, actor?: string | null) => void,
   actor: string | null,
-): AttemptDeleteMarkupResult {
-  const alreadyInvoiced = billingLines.some((b) => !!b.invoiceId)
-  if (alreadyInvoiced) {
-    return {
-      ok: false,
-      message: "This item's billing has already been added to an issued invoice. Void or credit that invoice before deleting it.",
+): MarkupDeleteFlow {
+  const [pendingDelete, setPendingDelete] = useState<FieldMarkup | null>(null)
+
+  function requestDelete(markup: FieldMarkup, billingLines: MarkupBilling[]) {
+    if (isMarkupInvoiced(billingLines)) {
+      alert("This item's billing has already been added to an issued invoice. Void or credit that invoice before deleting it.")
+      return
     }
+    setPendingDelete(markup)
   }
 
-  const hasBilling = billingLines.some((b) => b.billable && b.total > 0)
-  const confirmMsg = hasBilling
-    ? 'Delete this Work Object? Its linked production and P&L totals will be removed. The item itself stays in audit history.'
-    : 'Delete this Work Object? It will stay in audit history but will no longer appear on the map/page.'
-  if (!window.confirm(confirmMsg)) return { ok: false }
+  function confirmDelete() {
+    if (!pendingDelete) return
+    softDeleteMarkup(pendingDelete.id, actor)
+    setPendingDelete(null)
+  }
 
-  softDeleteMarkup(markup.id, actor)
-  return { ok: true }
+  function cancelDelete() {
+    setPendingDelete(null)
+  }
+
+  return { pendingDelete, requestDelete, confirmDelete, cancelDelete }
 }

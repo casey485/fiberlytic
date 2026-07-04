@@ -24,6 +24,8 @@ import {
   Wallet,
   Map,
   Languages,
+  Scissors,
+  ScanSearch,
 } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
@@ -35,6 +37,8 @@ const adminNav = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/projects', label: 'Projects', icon: FolderKanban },
   { to: '/kmz', label: 'Field Map', icon: Map },
+  { to: '/map-cuts', label: 'Map Cuts', icon: Scissors },
+  { to: '/map-reading', label: 'Map Reading', icon: ScanSearch },
   { to: '/crews', label: 'Crews', icon: Users },
   { to: '/employees', label: 'Employees', icon: HardHat },
   { to: '/production', label: 'Production', icon: Activity },

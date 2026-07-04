@@ -15,15 +15,21 @@ import { useTranslation } from 'react-i18next'
 import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2, ZoomIn, ZoomOut, Maximize2, Search } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
-import { attemptDeleteMarkup } from '../lib/markupDelete'
+import { useMarkupDeleteFlow } from '../lib/markupDelete'
+import { isTypingTarget } from '../lib/domGuards'
 import { renderPdf } from '../features/printkmz/pdf'
 import { loadBlob } from '../lib/fileStore'
 import { markupToPdfElement } from '../lib/markupToPdfSvg'
+import { buildWorkObjectCalloutLines, geometryAnchor } from '../lib/workObjectCallout'
 import { relevantToolsForWorkType } from '../lib/workObjectTypes'
 import type { WorkObjectTypeDef } from '../lib/workObjectTypes'
 import { FieldMapToolbar, type FieldMapDrawTool } from '../components/FieldMapToolbar'
 import { AddWorkModal } from '../components/AddWorkModal'
 import { MarkupPanel } from '../components/MarkupPanel'
+import { WorkObjectPropertiesPanel } from '../components/WorkObjectPropertiesPanel'
+import { MarkupQuickActions } from '../components/MarkupQuickActions'
+import { PdfCalloutOverlay } from '../components/PdfCalloutOverlay'
+import { MarkupDeleteConfirm } from '../components/MarkupDeleteConfirm'
 import { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS } from '../lib/markupMeta'
 import { ENGINEERING_SYMBOL_MAP, ENGINEERING_POINT_TOOLS, ENGINEERING_LINE_TOOLS } from '../lib/engineeringSymbols'
 import { findSnapPointFlat, collectSnapCandidates } from '../lib/snap'
@@ -114,8 +120,22 @@ export function PdfPrintMode() {
   const fillOpacity = 0.15
 
   const [selectedMarkup, setSelectedMarkup] = useState<FieldMarkup | null>(null)
+  // Work Objects get the small floating WorkObjectPropertiesPanel instead of the
+  // big MarkupPanel sidebar — see its render block further down.
+  const isSelectedWorkObject = !!selectedMarkup?.workObjectType
   const [editMode, setEditMode] = useState<EditMode>('none')
   const [panelCollapsed, setPanelCollapsed] = useState(false)
+  const [openTabRequest, setOpenTabRequest] = useState<{ tab: 'notes' | 'photos' | 'billing'; nonce: number } | null>(null)
+  const deleteFlow = useMarkupDeleteFlow(softDeleteMarkup, activeEmployeeId)
+  function requestDeleteMarkup(m: FieldMarkup) {
+    const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === m.id)
+    deleteFlow.requestDelete(m, billingLines)
+  }
+  function confirmDeleteMarkup() {
+    const deletedId = deleteFlow.pendingDelete?.id
+    deleteFlow.confirmDelete()
+    if (deletedId && selectedMarkup?.id === deletedId) setSelectedMarkup(null)
+  }
 
   const [addWorkModalOpen, setAddWorkModalOpen] = useState(false)
   const [addWorkMarkupId, setAddWorkMarkupId] = useState<string | null>(null)
@@ -253,6 +273,62 @@ export function PdfPrintMode() {
     ]
   }
 
+  // ── Floating quick-actions toolbar position — the inverse of toPagePt, re-measured
+  // whenever pan/zoom/selection change (pan/zoom already move the SVG in the DOM; this
+  // just re-reads its resulting bounding rect rather than tracking Leaflet events). ──
+  const [quickActionsAnchor, setQuickActionsAnchor] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || !naturalSize || !selectedMarkup) { setQuickActionsAnchor(null); return }
+    const geo = selectedMarkup.geometry
+    const anchor = geo.center ?? geo.latlngs?.[0] ?? geo.bounds?.[0]
+    if (!anchor) { setQuickActionsAnchor(null); return }
+    const rect = svg.getBoundingClientRect()
+    setQuickActionsAnchor({
+      x: rect.left + (anchor[0] / naturalSize.w) * rect.width,
+      y: rect.top + (anchor[1] / naturalSize.h) * rect.height,
+    })
+  }, [selectedMarkup, naturalSize, pan, zoom])
+
+  // ── Callout screen-fixed overlay anchors — same ratio-mapping trick as
+  // quickActionsAnchor above, one per visible callout OR Work Object on this page.
+  // Unlike every other markup type, these render outside the zoom-scaled SVG
+  // entirely (see PdfCalloutOverlay) so they stay a constant, readable size at any
+  // zoom. Manual callouts (tool==='callout') show their own free-typed label; every
+  // Work Object (has a workObjectType) gets an automatic, always-live companion
+  // callout computed fresh from its current fields (see workObjectCallout.ts). ──
+  const calloutOffsetsRef = useRef<Map<string, { offsetX: number; offsetY: number }>>(new Map())
+  const [calloutAnchors, setCalloutAnchors] = useState<
+    { markup: FieldMarkup; boxX: number; boxY: number; targetX: number; targetY: number; text: string; showInlineDelete: boolean }[]
+  >([])
+  useEffect(() => {
+    const svg = svgRef.current
+    if (!svg || !naturalSize) { setCalloutAnchors([]); return }
+    const rect = svg.getBoundingClientRect()
+    const candidates = pageMarkups
+      .map((m) => ({ m, anchor: m.tool === 'callout' ? geometryAnchor(m.geometry) : (m.workObjectType ? geometryAnchor(m.geometry) : null) }))
+      .filter((c): c is { m: FieldMarkup; anchor: [number, number] } => !!c.anchor)
+    setCalloutAnchors(candidates.map(({ m, anchor }) => {
+      const [cx, cy] = anchor
+      const targetX = rect.left + (cx / naturalSize.w) * rect.width
+      const targetY = rect.top + (cy / naturalSize.h) * rect.height
+      const saved = calloutOffsetsRef.current.get(m.id) ?? { offsetX: 40, offsetY: -60 }
+      if (!calloutOffsetsRef.current.has(m.id)) calloutOffsetsRef.current.set(m.id, saved)
+      const text = m.tool === 'callout' ? (m.label ?? '') : buildWorkObjectCalloutLines(m, data).join('\n')
+      return {
+        markup: m, boxX: targetX + saved.offsetX, boxY: targetY + saved.offsetY, targetX, targetY,
+        text, showInlineDelete: m.tool === 'callout',
+      }
+    }))
+  }, [pageMarkups, naturalSize, pan, zoom, data])
+  function moveCalloutOffset(id: string, offsetX: number, offsetY: number) {
+    calloutOffsetsRef.current.set(id, { offsetX, offsetY })
+    setCalloutAnchors((prev) => prev.map((a) => {
+      if (a.markup.id !== id) return a
+      return { ...a, boxX: a.targetX + offsetX, boxY: a.targetY + offsetY }
+    }))
+  }
+
   const snapCandidates = collectSnapCandidates(pageMarkups.map((m) => m.geometry))
 
   function toPagePtSnapped(clientX: number, clientY: number): [number, number] {
@@ -274,6 +350,10 @@ export function PdfPrintMode() {
     })
     undoStackRef.current.push(id)
     redoStackRef.current = []
+    // Return to Select so the map is immediately clickable again — otherwise the draw
+    // tool stays armed and clicking an existing line/shape is swallowed as "start a new
+    // one" (drag-draw tools) or "add a vertex" (click-based tools) instead of selecting it.
+    setActiveTool('select')
     setTimeout(() => {
       if (addWorkModeRef.current) {
         addWorkModeRef.current = false
@@ -397,10 +477,25 @@ export function PdfPrintMode() {
     if (panStartRef.current) {
       const dx = e.clientX - panStartRef.current.x
       const dy = e.clientY - panStartRef.current.y
-      wasPanDragRef.current = Math.hypot(dx, dy) >= PAN_DRAG_THRESHOLD_PX
+      const wasReallyDrag = Math.hypot(dx, dy) >= PAN_DRAG_THRESHOLD_PX
+      wasPanDragRef.current = wasReallyDrag
       panStartRef.current = null
       setIsPanning(false)
       if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId)
+      // A genuine click (not a drag-to-pan) while Select is active — hit-test directly
+      // at the release point via elementFromPoint rather than trusting the browser's
+      // derived `click` event target. `setPointerCapture` above (in onSvgPointerDown)
+      // can cause some browsers to retarget the subsequent `click` event to the
+      // capturing <svg> itself instead of the actual shape under the cursor, which
+      // would make `closest('[data-markup-id]')` always fail — silently breaking
+      // click-to-select for every object, every time, regardless of what's clicked
+      // (confirmed: Search Work Objects — a separate code path — worked fine, only
+      // direct on-canvas clicking never selected anything).
+      if (!wasReallyDrag) {
+        const real = document.elementFromPoint(e.clientX, e.clientY)
+        const hitId = real?.closest('[data-markup-id]')?.getAttribute('data-markup-id') ?? null
+        setSelectedMarkup(hitId ? (pageMarkups.find((m) => m.id === hitId) ?? null) : null)
+      }
       return
     }
     const pt = toPagePtSnapped(e.clientX, e.clientY)
@@ -613,6 +708,27 @@ export function PdfPrintMode() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accumPts])
 
+  // ── Keyboard shortcuts: Delete removes the selection, Escape clears it ────
+  // (Escape yields first to the in-progress-draw handler above, which owns Escape
+  // whenever a multi-point accumulation is active.)
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (isTypingTarget(e.target)) return
+      if (e.key === 'Escape') {
+        if (accumPts.length > 0) return
+        setSelectedMarkup(null)
+        return
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedMarkup) {
+        e.preventDefault()
+        requestDeleteMarkup(selectedMarkup)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMarkup, accumPts.length])
+
   function commitText() {
     if (!textInput || !textVal.trim()) { setTextInput(null); return }
     const pt = toPagePt(textInput.x, textInput.y)
@@ -729,10 +845,7 @@ export function PdfPrintMode() {
         onRedo={redoLast}
         onDelete={() => {
           if (!selectedMarkup) return
-          const billingLines = (data.markupBilling ?? []).filter((b) => b.markupId === selectedMarkup.id)
-          const result = attemptDeleteMarkup(selectedMarkup, billingLines, softDeleteMarkup, activeEmployeeId)
-          if (!result.ok && result.message) alert(result.message)
-          else if (result.ok) setSelectedMarkup(null)
+          requestDeleteMarkup(selectedMarkup)
         }}
         canDelete={!!selectedMarkup && !selectedMarkup.lockedAt}
         onSave={() => finishAccumulation()}
@@ -824,40 +937,49 @@ export function PdfPrintMode() {
               onPointerMove={onSvgPointerMove}
               onPointerUp={onSvgPointerUp}
               onClick={(e) => {
+                // Plain Select-mode clicking is now handled directly in onSvgPointerUp
+                // (see its comment) — a mistargeted `click` event here must NOT also run
+                // and clobber that already-correct result with a bad hit-test.
+                if (activeTool !== 'merge') return
                 if (wasPanDragRef.current) { wasPanDragRef.current = false; return }
-                if (activeTool !== 'select' && activeTool !== 'merge') return
                 // The click target is the leaf shape (e.g. <polyline>), not the <g data-markup-id>
                 // wrapper around it — walk up to find it, same as the old RedlineEditor's hit-test.
                 const hit = (e.target as Element).closest('[data-markup-id]')
                 const id = hit?.getAttribute('data-markup-id') ?? null
-                if (activeTool === 'merge') {
-                  if (!id) return
-                  setToolSelectedIds((prev) => {
-                    const next = new Set(prev)
-                    if (next.has(id)) next.delete(id); else next.add(id)
-                    return next
-                  })
-                  return
-                }
-                setSelectedMarkup(id ? (pageMarkups.find((m) => m.id === id) ?? null) : null)
+                if (!id) return
+                setToolSelectedIds((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(id)) next.delete(id); else next.add(id)
+                  return next
+                })
               }}
             >
-              {pageMarkups.map((m) => {
+              {pageMarkups.filter((m) => m.tool !== 'callout').map((m) => {
                 const displayMarkup = vertexDrag?.markupId === m.id ? applyVertexDragPreview(m, vertexDrag) : m
                 const showVertexHandles = editMode === 'vertices' && selectedMarkup?.id === m.id && !m.lockedAt
                 const showSplitHandles = activeTool === 'split' && selectedMarkup?.id === m.id && !!m.geometry.latlngs?.length
                 const geo = displayMarkup.geometry
+                const isSelected = selectedMarkup?.id === m.id
                 return (
                   <g key={m.id}>
-                    <g data-markup-id={m.id} style={{ cursor: activeTool === 'select' || activeTool === 'merge' ? 'pointer' : undefined }}
-                      opacity={selectedMarkup?.id === m.id ? 1 : 0.92}>
+                    <g data-markup-id={m.id} style={{
+                      cursor: activeTool === 'select' || activeTool === 'merge' ? 'pointer' : undefined,
+                      filter: isSelected ? 'drop-shadow(0 0 3px #22d3ee) drop-shadow(0 0 3px #22d3ee)' : undefined,
+                    }}
+                      opacity={isSelected ? 1 : 0.92}>
                       {markupToPdfElement(displayMarkup)}
                     </g>
-                    {activeTool === 'merge' && toolSelectedIds.has(m.id) && (
+                    {activeTool === 'merge' && toolSelectedIds.has(m.id) ? (
                       <circle
                         cx={geo.center?.[0] ?? geo.latlngs?.[0]?.[0] ?? geo.bounds?.[0]?.[0] ?? 0}
                         cy={geo.center?.[1] ?? geo.latlngs?.[0]?.[1] ?? geo.bounds?.[0]?.[1] ?? 0}
                         r={10} fill="none" stroke="#f97316" strokeWidth={2} pointerEvents="none"
+                      />
+                    ) : isSelected && (
+                      <circle
+                        cx={geo.center?.[0] ?? geo.latlngs?.[0]?.[0] ?? geo.bounds?.[0]?.[0] ?? 0}
+                        cy={geo.center?.[1] ?? geo.latlngs?.[0]?.[1] ?? geo.bounds?.[0]?.[1] ?? 0}
+                        r={12} fill="none" stroke="#22d3ee" strokeWidth={2.5} pointerEvents="none"
                       />
                     )}
                     {showVertexHandles && renderEditHandles(m, geo)}
@@ -921,6 +1043,15 @@ export function PdfPrintMode() {
             )}
           </div>
         )}
+        <PdfCalloutOverlay
+          anchors={calloutAnchors}
+          selectedId={selectedMarkup?.id ?? null}
+          onSelect={(m) => { setSelectedMarkup(m); setPanelCollapsed(false) }}
+          onMove={moveCalloutOffset}
+          onEdit={() => setPanelCollapsed(false)}
+          onDelete={(m) => { deleteMarkup(m.id); if (selectedMarkup?.id === m.id) setSelectedMarkup(null) }}
+          onClose={() => setSelectedMarkup(null)}
+        />
       </div>
 
       <AddWorkModal
@@ -931,17 +1062,53 @@ export function PdfPrintMode() {
         onClose={() => { setAddWorkModalOpen(false); setAddWorkMarkupId(null); setActiveTool('select'); setSessionTools(null) }}
       />
 
-      {selectedMarkup && !panelCollapsed && (
+      {/* Work Objects get the small floating WorkObjectPropertiesPanel instead (below)
+          — this sidebar only opens for them on-demand, when a quick-action
+          (Photos/Notes/Billing) explicitly requests a specific tab. */}
+      {selectedMarkup && !panelCollapsed && (!isSelectedWorkObject || openTabRequest) && (
         <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-sm lg:static lg:w-80 lg:shrink-0 lg:max-w-none border-l border-[#1e1e1e]">
           <MarkupPanel
             markup={selectedMarkup}
             onClose={() => setSelectedMarkup(null)}
-            onDelete={() => setSelectedMarkup(null)}
+            onRequestDelete={requestDeleteMarkup}
+            openTab={openTabRequest}
             editMode={editMode}
             onSetEditMode={setEditMode}
           />
         </div>
       )}
+
+      {selectedMarkup && isSelectedWorkObject && quickActionsAnchor && (
+        <WorkObjectPropertiesPanel
+          key={selectedMarkup.id}
+          markup={selectedMarkup}
+          anchor={quickActionsAnchor}
+          onClose={() => setSelectedMarkup(null)}
+        />
+      )}
+
+      {selectedMarkup && quickActionsAnchor && (
+        <MarkupQuickActions
+          anchor={quickActionsAnchor}
+          mode={selectedMarkup.tool === 'callout' ? 'callout' : 'full'}
+          canEdit={!selectedMarkup.lockedAt}
+          onEdit={() => {
+            if (selectedMarkup.tool === 'callout') { setPanelCollapsed(false); return }
+            setEditMode((m) => (m === 'vertices' ? 'none' : 'vertices'))
+          }}
+          onOpenTab={(tab) => { setPanelCollapsed(false); setOpenTabRequest({ tab, nonce: Date.now() }) }}
+          onDelete={() => {
+            if (selectedMarkup.tool === 'callout') { deleteMarkup(selectedMarkup.id); setSelectedMarkup(null); return }
+            requestDeleteMarkup(selectedMarkup)
+          }}
+          onClose={() => setSelectedMarkup(null)}
+        />
+      )}
+      <MarkupDeleteConfirm
+        markup={deleteFlow.pendingDelete}
+        onCancel={deleteFlow.cancelDelete}
+        onConfirm={confirmDeleteMarkup}
+      />
     </div>
   )
 }

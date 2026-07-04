@@ -46,6 +46,9 @@
     "field": {
       "name": "Nombre",
       "namePlaceholder": "Nombre del ítem de trabajo",
+      "workType": "Tipo de Trabajo",
+      "label": "Etiqueta",
+      "labelPlaceholder": "Etiqueta corta opcional",
       "comments": "Comentarios",
       "commentsRequired": "Notas requeridas para este tipo de trabajo",
       "commentsOptional": "Notas opcionales",
@@ -56,7 +59,9 @@
       "gps": "GPS",
       "captureGps": "Capturar GPS",
       "capturingGps": "Capturando…",
-      "gpsError": "No se pudo obtener la ubicación"
+      "gpsError": "No se pudo obtener la ubicación",
+      "gpsUnavailableConfirm": "GPS no disponible — confirmar para continuar",
+      "gpsUnavailableBadge": "GPS no disponible (confirmado)"
     },
     "photos": {
       "tagNextPhotoAs": "Etiquetar la próxima foto como",
@@ -64,7 +69,6 @@
       "upload": "Subir"
     },
     "billing": {
-      "notRequired": "Códigos de facturación no requeridos",
       "searchPlaceholder": "Buscar códigos de facturación por código, descripción o categoría…",
       "suggested": "Sugeridos para {{type}}",
       "recentlyUsed": "Usados Recientemente",
@@ -75,6 +79,23 @@
       "noSuggested": "Aún no hay códigos sugeridos para este tipo de trabajo — prueba Todas.",
       "noUnits": "No se encontraron unidades de tarifa para el cliente de este proyecto.",
       "noRateCardAssigned": "No hay tarifa asignada a este proyecto. Asigne una antes de facturar."
+    },
+    "validation": {
+      "workTypeRequired": "El Tipo de Trabajo es obligatorio.",
+      "commentsRequired": "Los Comentarios son obligatorios.",
+      "statusRequired": "El Estado es obligatorio.",
+      "crewRequired": "La Cuadrilla es obligatoria.",
+      "quantityRequired": "La Cantidad es obligatoria.",
+      "gpsRequired": "La ubicación GPS es obligatoria.",
+      "billingRequired": "Se requiere un código de facturación antes de guardar.",
+      "billingQuantityRequired": "La cantidad de facturación debe ser mayor que cero."
+    },
+    "discard": {
+      "title": "¿Guardar como Borrador o Descartar Cambios?",
+      "body": "Este Objeto de Trabajo aún no está terminado.",
+      "keepEditing": "Seguir Editando",
+      "discard": "Descartar",
+      "saveAsDraft": "Guardar como Borrador"
     }
   },
   "workObjectPanel": {

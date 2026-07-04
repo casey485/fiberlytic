@@ -21,6 +21,8 @@ import type {
   MarkupInspection,
   MarkupPhoto,
   MarkupVideo,
+  MapCutPackage,
+  MapReadingSession,
   Material,
   Photo,
   ProductionEntry,
@@ -31,6 +33,8 @@ import type {
   RateCard,
   RateCardUnit,
   Timecard,
+  EmployeeProductionRate,
+  ProductionPayAllocation,
 } from '../types'
 import { generateSeedData } from '../data/seed'
 import { crewLaborCost } from '../lib/laborCost'
@@ -241,6 +245,10 @@ function migrateData(raw: AppData): AppData {
     markupInspections: raw.markupInspections ?? [],
     markupAttachments: raw.markupAttachments ?? [],
     markupHistory: raw.markupHistory ?? [],
+    mapCutPackages: raw.mapCutPackages ?? [],
+    mapReadingSessions: raw.mapReadingSessions ?? [],
+    employeeProductionRates: raw.employeeProductionRates ?? [],
+    productionPayAllocations: raw.productionPayAllocations ?? [],
   }
 }
 
@@ -337,6 +345,14 @@ interface DataContextValue {
   addRateCardUnit: (u: Omit<RateCardUnit, 'id'>) => RateCardUnit
   updateRateCardUnit: (id: string, patch: Partial<RateCardUnit>) => void
   deleteRateCardUnit: (id: string) => void
+  // Employee Production Pay Rates — separate from RateCard/RateCardUnit above
+  addEmployeeProductionRate: (r: Omit<EmployeeProductionRate, 'id'>) => EmployeeProductionRate
+  updateEmployeeProductionRate: (id: string, patch: Partial<EmployeeProductionRate>) => void
+  deleteEmployeeProductionRate: (id: string) => void
+  // Production Pay Allocations — the manual admin "who gets credit for how much" step
+  addProductionPayAllocation: (a: Omit<ProductionPayAllocation, 'id' | 'createdAt'>) => ProductionPayAllocation
+  updateProductionPayAllocation: (id: string, patch: Partial<ProductionPayAllocation>) => void
+  deleteProductionPayAllocation: (id: string) => void
   // Employees
   addEmployee: (e: Omit<Employee, 'id'>) => Employee
   updateEmployee: (id: string, patch: Partial<Employee>) => void
@@ -364,6 +380,14 @@ interface DataContextValue {
   addEquipment: (e: Omit<Equipment, 'id'>) => Equipment
   updateEquipment: (id: string, patch: Partial<Equipment>) => void
   deleteEquipment: (id: string) => void
+  // Map Cuts
+  addMapCutPackage: (p: Omit<MapCutPackage, 'id' | 'createdAt' | 'updatedAt'>) => MapCutPackage
+  updateMapCutPackage: (id: string, patch: Partial<MapCutPackage>) => void
+  deleteMapCutPackage: (id: string) => void
+  // Map Reading — entirely separate from Map Cuts above, own CRUD, own data
+  addMapReadingSession: (s: Omit<MapReadingSession, 'id' | 'createdAt' | 'updatedAt'>) => MapReadingSession
+  updateMapReadingSession: (id: string, patch: Partial<MapReadingSession>) => void
+  deleteMapReadingSession: (id: string) => void
   // Project files (blob stored in IndexedDB; only metadata goes to localStorage)
   addProjectFile: (f: Omit<ProjectFile, 'id'> & { dataUrl: string }) => string
   deleteProjectFile: (id: string) => void
@@ -491,6 +515,24 @@ export function DataProvider({ children }: { children: ReactNode }) {
           .reduce((sum, e) => sum + e.footage, 0)
         return { ...p, footageComplete: total }
       })
+
+    // Shared by updateMarkupBilling and updateMarkup (Quantity field): given a
+    // productionLineItems array that already has one line item's
+    // quantity/rateSnapshot/extendedTotal updated, recomputes that line's
+    // parent ProductionEntry.footage and the linked PnLEntry.revenue so a
+    // billing-line edit never leaves Production/P&L holding a stale snapshot.
+    const applyLineItemToProduction = (
+      d: AppData,
+      productionLineItems: ProductionLineItem[],
+      entryId: string,
+    ): Pick<AppData, 'productionLineItems' | 'production' | 'pnl' | 'projects'> => {
+      const siblingItems = productionLineItems.filter((li) => li.productionEntryId === entryId)
+      const newFootage = Math.round(siblingItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0))
+      const newRevenue = Math.round(siblingItems.reduce((s, li) => s + li.extendedTotal, 0))
+      const production = d.production.map((e) => (e.id === entryId ? { ...e, footage: newFootage } : e))
+      const pnl = d.pnl.map((e) => (e.productionEntryId === entryId ? { ...e, revenue: newRevenue } : e))
+      return { productionLineItems, production, pnl, projects: recomputeFootage(d.projects, production) }
+    }
 
     return {
       data,
@@ -680,6 +722,38 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
       deleteRateCardUnit(id) {
         setData((d) => ({ ...d, rateCardUnits: d.rateCardUnits.filter((u) => u.id !== id) }))
+      },
+
+      // --- Employee Production Pay Rates (separate from RateCard/RateCardUnit above) ---
+      addEmployeeProductionRate(r) {
+        const rate: EmployeeProductionRate = { ...r, id: newId('epr') }
+        setData((d) => ({ ...d, employeeProductionRates: [...d.employeeProductionRates, rate] }))
+        return rate
+      },
+      updateEmployeeProductionRate(id, patch) {
+        setData((d) => ({
+          ...d,
+          employeeProductionRates: d.employeeProductionRates.map((r) => (r.id === id ? { ...r, ...patch } : r)),
+        }))
+      },
+      deleteEmployeeProductionRate(id) {
+        setData((d) => ({ ...d, employeeProductionRates: d.employeeProductionRates.filter((r) => r.id !== id) }))
+      },
+
+      // --- Production Pay Allocations ---
+      addProductionPayAllocation(a) {
+        const allocation: ProductionPayAllocation = { ...a, id: newId('ppa'), createdAt: new Date().toISOString() }
+        setData((d) => ({ ...d, productionPayAllocations: [...d.productionPayAllocations, allocation] }))
+        return allocation
+      },
+      updateProductionPayAllocation(id, patch) {
+        setData((d) => ({
+          ...d,
+          productionPayAllocations: d.productionPayAllocations.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+        }))
+      },
+      deleteProductionPayAllocation(id) {
+        setData((d) => ({ ...d, productionPayAllocations: d.productionPayAllocations.filter((a) => a.id !== id) }))
       },
 
       // --- Employees ---
@@ -882,6 +956,44 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setData((d) => ({ ...d, equipment: d.equipment.filter((e) => e.id !== id) }))
       },
 
+      // --- Map Cuts ---
+      addMapCutPackage(p) {
+        const now = new Date().toISOString()
+        const pkg: MapCutPackage = { ...p, id: newId('mcp'), createdAt: now, updatedAt: now }
+        setData((d) => ({ ...d, mapCutPackages: [...d.mapCutPackages, pkg] }))
+        return pkg
+      },
+      updateMapCutPackage(id, patch) {
+        setData((d) => ({
+          ...d,
+          mapCutPackages: d.mapCutPackages.map((p) =>
+            p.id === id ? { ...p, ...patch, updatedAt: new Date().toISOString() } : p,
+          ),
+        }))
+      },
+      deleteMapCutPackage(id) {
+        setData((d) => ({ ...d, mapCutPackages: d.mapCutPackages.filter((p) => p.id !== id) }))
+      },
+
+      // --- Map Reading ---
+      addMapReadingSession(s) {
+        const now = new Date().toISOString()
+        const session: MapReadingSession = { ...s, id: newId('mrs'), createdAt: now, updatedAt: now }
+        setData((d) => ({ ...d, mapReadingSessions: [...d.mapReadingSessions, session] }))
+        return session
+      },
+      updateMapReadingSession(id, patch) {
+        setData((d) => ({
+          ...d,
+          mapReadingSessions: d.mapReadingSessions.map((s) =>
+            s.id === id ? { ...s, ...patch, updatedAt: new Date().toISOString() } : s,
+          ),
+        }))
+      },
+      deleteMapReadingSession(id) {
+        setData((d) => ({ ...d, mapReadingSessions: d.mapReadingSessions.filter((s) => s.id !== id) }))
+      },
+
       addProjectFile(f) {
         const id = newId('pf')
         const { dataUrl, ...meta } = f
@@ -1013,13 +1125,48 @@ export function DataProvider({ children }: { children: ReactNode }) {
         setData((d) => {
           const before = (d.fieldMarkups ?? []).find((m) => m.id === id)
           const newEntries = before ? diffMarkupUpdate(id, before, patch, actor) : []
-          return {
+          const fieldMarkups = (d.fieldMarkups ?? []).map((m) =>
+            m.id === id ? { ...m, ...patch, updatedAt: new Date().toISOString(), syncStatus: 'pending' as const } : m,
+          )
+          const base = {
             ...d,
-            fieldMarkups: (d.fieldMarkups ?? []).map((m) =>
-              m.id === id ? { ...m, ...patch, updatedAt: new Date().toISOString(), syncStatus: 'pending' } : m,
-            ),
+            fieldMarkups,
             markupHistory: newEntries.length ? [...(d.markupHistory ?? []), ...newEntries] : (d.markupHistory ?? []),
           }
+
+          // The markup's own Quantity field only seeds a billing line's quantity
+          // once, when that line is first added (see AddWorkModal's addBillingLine)
+          // — after that they're independent records. When Quantity changes here,
+          // carry it forward into any billing line that's still tracking the old
+          // value 1:1 (hasn't been manually overridden to something else), and —
+          // if that line already generated a production entry — update Production/
+          // P&L too, exactly like an edit made directly on the billing line would.
+          if (patch.quantity == null || !before || before.quantity == null || patch.quantity === before.quantity) {
+            return base
+          }
+          const oldQuantity = before.quantity
+          const newQuantity = patch.quantity
+          const affected = (d.markupBilling ?? []).filter((b) => b.markupId === id && b.quantity === oldQuantity)
+          if (affected.length === 0) return base
+
+          const affectedIds = new Set(affected.map((b) => b.id))
+          const markupBilling = (d.markupBilling ?? []).map((b) =>
+            affectedIds.has(b.id) ? { ...b, quantity: newQuantity, total: newQuantity * b.rate } : b,
+          )
+
+          let productionLineItems = d.productionLineItems
+          let result = { ...base, markupBilling }
+          for (const b of affected) {
+            const linkedLineItem = productionLineItems.find((li) => li.sourceMarkupBillingId === b.id)
+            if (!linkedLineItem) continue
+            productionLineItems = productionLineItems.map((li) =>
+              li.id === linkedLineItem.id
+                ? { ...li, quantity: newQuantity, extendedTotal: newQuantity * li.rateSnapshot }
+                : li,
+            )
+            result = { ...result, ...applyLineItemToProduction(result, productionLineItems, linkedLineItem.productionEntryId) }
+          }
+          return result
         })
         enqueueSyncEntry('markup', id, id, 'update')
       },
@@ -1104,11 +1251,40 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
       updateMarkupBilling(id, patch) {
         const billing = data.markupBilling.find((b) => b.id === id)
-        setData((d) => ({
-          ...d,
-          markupBilling: (d.markupBilling ?? []).map((b) => b.id === id ? { ...b, ...patch } : b),
-          fieldMarkups: billing ? (d.fieldMarkups ?? []).map((m) => m.id === billing.markupId ? { ...m, syncStatus: 'pending' } : m) : (d.fieldMarkups ?? []),
-        }))
+        setData((d) => {
+          const markupBilling = (d.markupBilling ?? []).map((b) => (b.id === id ? { ...b, ...patch } : b))
+          const fieldMarkups = billing
+            ? (d.fieldMarkups ?? []).map((m) => (m.id === billing.markupId ? { ...m, syncStatus: 'pending' as const } : m))
+            : (d.fieldMarkups ?? [])
+
+          // If quantity/rate/total changed on a billing line that was already
+          // submitted to production, update the linked ProductionLineItem (and
+          // its entry's footage + the linked PnLEntry's revenue) in place —
+          // otherwise Production/P&L would silently keep the stale snapshot
+          // from the original submission while the billed amount moves on.
+          const billingChanged = 'quantity' in patch || 'rate' in patch || 'total' in patch
+          const updatedBilling = billingChanged ? markupBilling.find((b) => b.id === id) : undefined
+          const linkedLineItem = updatedBilling
+            ? (d.productionLineItems ?? []).find((li) => li.sourceMarkupBillingId === id)
+            : undefined
+
+          if (!linkedLineItem || !updatedBilling) {
+            return { ...d, markupBilling, fieldMarkups }
+          }
+
+          const productionLineItems = d.productionLineItems.map((li) =>
+            li.id === linkedLineItem.id
+              ? { ...li, quantity: updatedBilling.quantity, rateSnapshot: updatedBilling.rate, extendedTotal: updatedBilling.total }
+              : li,
+          )
+
+          return {
+            ...d,
+            markupBilling,
+            fieldMarkups,
+            ...applyLineItemToProduction(d, productionLineItems, linkedLineItem.productionEntryId),
+          }
+        })
         enqueueSyncEntry('markupBilling', id, billing?.markupId ?? null, 'update')
       },
       deleteMarkupBilling(id, actor = null) {

@@ -11,15 +11,32 @@ import { Camera, ImagePlus, Trash2, Search, X, MapPin, Star, Clock, Check, Spark
 import { Modal } from './ui/Modal'
 import { Button, Field, Input, Select, Textarea } from './ui/Form'
 import { AddWorkTypeGrid } from './AddWorkTypeGrid'
+import { AddWorkDiscardConfirm } from './AddWorkDiscardConfirm'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { saveBlob, loadBlob } from '../lib/fileStore'
 import { recentUnitCodes } from '../lib/analytics'
 import { submitMarkupToProduction } from '../lib/productionFromMarkup'
 import { MARKUP_STATUS_META, PHOTO_PROOF_META } from '../types'
-import type { MarkupStatus, PhotoProofType, FieldMarkup } from '../types'
-import { WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
+import type { MarkupStatus, PhotoProofType, FieldMarkup, WorkObjectTypeId } from '../types'
+import { WORK_OBJECT_TYPES, WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
 import type { WorkObjectTypeDef } from '../lib/workObjectTypes'
+
+/** Human-readable Work ID, e.g. "WO-TRN-014" — generated once, at final Save. Scoped
+ *  per-project-per-type so numbers stay small; defensively re-incremented on collision
+ *  (there's no server-side sequence in this frontend-only app). */
+function generateWorkId(typeDef: WorkObjectTypeDef, projectId: string, allMarkups: FieldMarkup[]): string {
+  const existing = new Set(
+    allMarkups.filter((m) => m.projectId === projectId && m.workId).map((m) => m.workId as string),
+  )
+  let n = allMarkups.filter((m) => m.projectId === projectId && m.workObjectType === typeDef.id && m.workId).length + 1
+  let candidate = `WO-${typeDef.shortCode}-${String(n).padStart(3, '0')}`
+  while (existing.has(candidate)) {
+    n += 1
+    candidate = `WO-${typeDef.shortCode}-${String(n).padStart(3, '0')}`
+  }
+  return candidate
+}
 
 type Step = 'details' | 'photos' | 'billing'
 
@@ -42,18 +59,18 @@ function PhotoThumb({ photoId }: { photoId: string }) {
 export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }: Props) {
   const { t } = useTranslation()
   const {
-    data, updateMarkup, addMarkupPhoto, deleteMarkupPhoto, addMarkupVideo,
+    data, updateMarkup, deleteMarkup, addMarkupPhoto, deleteMarkupPhoto, addMarkupVideo,
     addMarkupBilling, deleteMarkupBilling, updateMarkupBilling,
-    addProduction, addMarkup, toggleFavoriteUnitCode,
+    addProduction, toggleFavoriteUnitCode,
   } = useData()
-  const { activeEmployeeId, isAdmin } = useRole()
+  const { activeEmployeeId } = useRole()
   const [step, setStep] = useState<Step>('details')
-  const [billingSkipped, setBillingSkipped] = useState(false)
   const [billingSearch, setBillingSearch] = useState('')
   const [billingView, setBillingView] = useState<'suggested' | 'favorites' | 'recent' | 'all'>('recent')
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'capturing' | 'error'>('idle')
   const [savingBilling, setSavingBilling] = useState(false)
   const [photoPhaseOverride, setPhotoPhaseOverride] = useState<PhotoProofType | null>(null)
+  const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const markup = markupId ? data.fieldMarkups.find((m) => m.id === markupId) ?? null : null
@@ -80,9 +97,10 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
 
   useEffect(() => {
     if (markupId) {
-      setStep('details'); setBillingSkipped(false); setBillingSearch('')
+      setStep('details'); setBillingSearch('')
       setBillingView(suggestedUnits.length > 0 ? 'suggested' : 'recent')
       setPhotoPhaseOverride(null)
+      setShowDiscardConfirm(false)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markupId])
@@ -99,12 +117,18 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
     setGpsStatus('capturing')
     navigator.geolocation.getCurrentPosition(
       (pos) => {
-        patchMarkup({ capturedLat: pos.coords.latitude, capturedLng: pos.coords.longitude })
+        patchMarkup({ capturedLat: pos.coords.latitude, capturedLng: pos.coords.longitude, gpsUnavailableConfirmed: false })
         setGpsStatus('idle')
       },
       () => setGpsStatus('error'),
       { enableHighAccuracy: true, timeout: 10000 },
     )
+  }
+
+  function onWorkTypeChange(newType: WorkObjectTypeDef) {
+    const patch: Partial<FieldMarkup> = { workObjectType: newType.id, color: newType.defaultColor, unit: newType.defaultUnit }
+    if (markup && !newType.allowedStatuses.includes(markup.status)) patch.status = newType.allowedStatuses[0]
+    patchMarkup(patch)
   }
 
   // ── Step 1: Type (no markup yet — map isn't clickable behind a blocking modal, which is fine here) ──
@@ -169,15 +193,55 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
     }, activeEmployeeId)
   }
 
+  interface DetailsErrors {
+    workObjectType?: string; comments?: string; status?: string; crew?: string; quantity?: string; gps?: string
+  }
+  function detailsErrors(): DetailsErrors {
+    if (!markup) return {}
+    const errs: DetailsErrors = {}
+    if (!markup.workObjectType) errs.workObjectType = t('addWork.validation.workTypeRequired')
+    if (!markup.notes?.trim()) errs.comments = t('addWork.validation.commentsRequired')
+    if (!markup.status) errs.status = t('addWork.validation.statusRequired')
+    if (!markup.crewId) errs.crew = t('addWork.validation.crewRequired')
+    if (markup.quantity == null) errs.quantity = t('addWork.validation.quantityRequired')
+    const hasGps = markup.capturedLat != null && markup.capturedLng != null
+    if (!hasGps && !markup.gpsUnavailableConfirmed) errs.gps = t('addWork.validation.gpsRequired')
+    return errs
+  }
+  function photosErrors(): PhotoProofType[] {
+    if (!typeDef) return []
+    return typeDef.requiredPhotoPhases.filter((phase) => !photos.some((p) => p.phase === phase))
+  }
+  function billingErrors(): string | null {
+    if (billingLines.length === 0) return t('addWork.validation.billingRequired')
+    if (!billingLines.some((b) => b.quantity > 0)) return t('addWork.validation.billingQuantityRequired')
+    return null
+  }
+  const isWizardComplete = Object.keys(detailsErrors()).length === 0 && photosErrors().length === 0 && !billingErrors()
+
+  function requestClose() {
+    if (isWizardComplete) { onClose(); return }
+    setShowDiscardConfirm(true)
+  }
+  function discardDraft() {
+    if (markup) deleteMarkup(markup.id)
+    setShowDiscardConfirm(false)
+    onClose()
+  }
+  function saveDraft() {
+    setShowDiscardConfirm(false)
+    onClose()
+  }
+
   function handleSave() {
-    if (!markup) { onClose(); return }
-    if (billingSkipped || billingLines.length === 0) { onClose(); return }
+    if (!markup || billingErrors() || Object.keys(detailsErrors()).length > 0 || photosErrors().length > 0) return
+    const workId = typeDef ? generateWorkId(typeDef, markup.projectId, data.fieldMarkups) : markup.workId ?? null
+    patchMarkup({ workId })
     setSavingBilling(true)
     try {
       submitMarkupToProduction({
-        markup, billingEntries: billingLines, photos,
-        featureName: markup.featureName ?? markup.label ?? '', notes: markup.notes ?? '',
-        activeEmployeeId, data, addProduction, updateMarkupBilling, updateMarkup, addMarkup,
+        markup: { ...markup, workId }, billingEntries: billingLines,
+        activeEmployeeId, data, addProduction, updateMarkupBilling, updateMarkup,
       })
     } finally {
       setSavingBilling(false)
@@ -188,21 +252,36 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   const steps: Step[] = ['details', 'photos', 'billing']
   const stepIdx = steps.indexOf(step)
   const nextRequiredPhase = typeDef?.requiredPhotoPhases.find((phase) => !photos.some((p) => p.phase === phase)) ?? null
+  const stepDisabled =
+    step === 'details' ? Object.keys(detailsErrors()).length > 0 :
+    step === 'photos' ? photosErrors().length > 0 :
+    !!billingErrors()
+  const checklist: { label: string; done: boolean; step: Step }[] = [
+    { label: t('addWork.field.workType'), done: !detailsErrors().workObjectType, step: 'details' },
+    { label: t('addWork.field.comments'), done: !detailsErrors().comments, step: 'details' },
+    { label: t('addWork.field.status'), done: !detailsErrors().status, step: 'details' },
+    { label: t('addWork.field.crew'), done: !detailsErrors().crew, step: 'details' },
+    { label: t('addWork.field.quantity'), done: !detailsErrors().quantity, step: 'details' },
+    { label: t('addWork.field.gps'), done: !detailsErrors().gps, step: 'details' },
+    { label: t('addWork.steps.photos'), done: photosErrors().length === 0, step: 'photos' },
+    { label: t('addWork.steps.billing'), done: !billingErrors(), step: 'billing' },
+  ]
 
   return (
+    <>
     <Modal
       open={open}
-      onClose={onClose}
+      onClose={requestClose}
       title={t('addWork.title', { type: typeDef?.label ?? 'Work Object' })}
       size="lg"
       footer={
         <div className="flex w-full items-center justify-between">
-          <Button variant="ghost" onClick={() => (stepIdx === 0 ? onClose() : setStep(steps[stepIdx - 1]))}>
+          <Button variant="ghost" onClick={() => (stepIdx === 0 ? requestClose() : setStep(steps[stepIdx - 1]))}>
             {stepIdx === 0 ? t('addWork.cancel') : t('addWork.back')}
           </Button>
           <Button
             onClick={() => (stepIdx === steps.length - 1 ? handleSave() : setStep(steps[stepIdx + 1]))}
-            disabled={savingBilling}
+            disabled={savingBilling || stepDisabled}
           >
             {stepIdx === steps.length - 1 ? (savingBilling ? t('addWork.saving') : t('addWork.save')) : t('addWork.next')}
           </Button>
@@ -210,7 +289,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
       }
     >
       {/* Step indicator */}
-      <div className="mb-4 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider">
+      <div className="mb-2 flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider">
         {steps.map((s, i) => (
           <span key={s} className={i <= stepIdx ? 'text-brand-400' : 'text-slate-600'}>
             {i > 0 && <span className="mx-1.5 text-slate-700">/</span>}
@@ -219,52 +298,86 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
         ))}
       </div>
 
+      {/* Live completion checklist — always visible, jumps to the relevant step */}
+      <div className="mb-4 flex flex-wrap gap-1.5">
+        {checklist.map((item) => (
+          <button
+            key={item.label}
+            type="button"
+            onClick={() => setStep(item.step)}
+            className={`flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium transition ${
+              item.done ? 'border-emerald-700/60 text-emerald-400' : 'border-amber-700/60 text-amber-400 hover:bg-amber-950/30'
+            }`}
+          >
+            {item.done ? <Check size={10} /> : <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+            {item.label}
+          </button>
+        ))}
+      </div>
+
       {step === 'details' && (
         <div className="space-y-3">
-          <Field label={t('addWork.field.name')}>
+          <Field label={t('addWork.field.workType')} required error={detailsErrors().workObjectType}>
+            <Select
+              value={markup.workObjectType ?? ''}
+              onChange={(e) => {
+                const newType = WORK_OBJECT_TYPE_MAP[e.target.value as WorkObjectTypeId]
+                if (newType) onWorkTypeChange(newType)
+              }}
+              className={detailsErrors().workObjectType ? 'border-red-500/70' : undefined}
+            >
+              <option value="" disabled>{t('addWork.field.workType')}</option>
+              {WORK_OBJECT_TYPES.map((wt) => <option key={wt.id} value={wt.id}>{wt.label}</option>)}
+            </Select>
+          </Field>
+          <Field label={t('addWork.field.label')}>
             <Input
               value={markup.featureName ?? markup.label ?? ''}
               onChange={(e) => patchMarkup({ featureName: e.target.value, label: e.target.value })}
-              placeholder={typeDef?.label ?? t('addWork.field.namePlaceholder')}
+              placeholder={t('addWork.field.labelPlaceholder')}
             />
           </Field>
-          <Field label={t('addWork.field.comments')}>
+          <Field label={t('addWork.field.comments')} required error={detailsErrors().comments}>
             <Textarea
               value={markup.notes ?? ''}
               onChange={(e) => patchMarkup({ notes: e.target.value })}
               placeholder={typeDef?.requiresNotes ? t('addWork.field.commentsRequired') : t('addWork.field.commentsOptional')}
+              className={detailsErrors().comments ? 'border-red-500/70' : undefined}
             />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label={t('addWork.field.status')}>
+            <Field label={t('addWork.field.status')} required error={detailsErrors().status}>
               <Select
                 value={markup.status}
                 onChange={(e) => patchMarkup({ status: e.target.value as MarkupStatus })}
+                className={detailsErrors().status ? 'border-red-500/70' : undefined}
               >
                 {(typeDef?.allowedStatuses ?? Object.keys(MARKUP_STATUS_META) as MarkupStatus[]).map((s) => (
                   <option key={s} value={s}>{MARKUP_STATUS_META[s].label}</option>
                 ))}
               </Select>
             </Field>
-            <Field label={t('addWork.field.crew')}>
+            <Field label={t('addWork.field.crew')} required error={detailsErrors().crew}>
               <Select
                 value={markup.crewId ?? ''}
                 onChange={(e) => patchMarkup({ crewId: e.target.value || null })}
+                className={detailsErrors().crew ? 'border-red-500/70' : undefined}
               >
                 <option value="">{t('addWork.field.unassigned')}</option>
                 {data.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
               </Select>
             </Field>
           </div>
-          <Field label={`${t('addWork.field.quantity')}${typeDef ? ` (${typeDef.defaultUnit})` : ''}`}>
+          <Field label={`${t('addWork.field.quantity')}${typeDef ? ` (${typeDef.defaultUnit})` : ''}`} required error={detailsErrors().quantity}>
             <Input
               type="number"
               value={markup.quantity ?? ''}
               onChange={(e) => patchMarkup({ quantity: e.target.value === '' ? null : Number(e.target.value) })}
+              className={detailsErrors().quantity ? 'border-red-500/70' : undefined}
             />
           </Field>
-          <Field label={t('addWork.field.gps')}>
-            <div className="flex items-center gap-2">
+          <Field label={t('addWork.field.gps')} required error={detailsErrors().gps}>
+            <div className="flex items-center gap-2 flex-wrap">
               <Button type="button" variant="secondary" onClick={captureGps} disabled={gpsStatus === 'capturing'}>
                 <MapPin size={13} className="mr-1.5" />
                 {gpsStatus === 'capturing' ? t('addWork.field.capturingGps') : t('addWork.field.captureGps')}
@@ -272,7 +385,17 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
               {markup.capturedLat != null && markup.capturedLng != null && (
                 <span className="text-[11px] text-slate-500">{markup.capturedLat.toFixed(5)}, {markup.capturedLng.toFixed(5)}</span>
               )}
-              {gpsStatus === 'error' && <span className="text-[11px] text-red-400">{t('addWork.field.gpsError')}</span>}
+              {gpsStatus === 'error' && !markup.gpsUnavailableConfirmed && (
+                <>
+                  <span className="text-[11px] text-red-400">{t('addWork.field.gpsError')}</span>
+                  <Button type="button" variant="ghost" onClick={() => patchMarkup({ gpsUnavailableConfirmed: true })}>
+                    {t('addWork.field.gpsUnavailableConfirm')}
+                  </Button>
+                </>
+              )}
+              {markup.gpsUnavailableConfirmed && (markup.capturedLat == null || markup.capturedLng == null) && (
+                <span className="text-[11px] text-slate-500">{t('addWork.field.gpsUnavailableBadge')}</span>
+              )}
             </div>
           </Field>
         </div>
@@ -349,20 +472,12 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
 
       {step === 'billing' && (
         <div className="space-y-3">
-          {isAdmin && (
-            <label className="flex items-center gap-2 text-[11px] text-slate-400">
-              <input
-                type="checkbox"
-                checked={billingSkipped}
-                onChange={(e) => setBillingSkipped(e.target.checked)}
-              />
-              {t('addWork.billing.notRequired')}
-            </label>
+          {billingErrors() && (
+            <p className="rounded-md border border-red-800/50 bg-red-950/20 px-2.5 py-2 text-[11px] text-red-400">
+              {billingErrors()}
+            </p>
           )}
-
-          {!billingSkipped && (
-            <>
-              {billingLines.length > 0 && (
+          {billingLines.length > 0 && (
                 <ul className="space-y-1">
                   {billingLines.map((b) => (
                     <li key={b.id} className="flex items-center justify-between gap-2 rounded bg-white/5 px-2 py-1 text-[11px]">
@@ -458,10 +573,15 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
                   </ul>
                 </>
               )}
-            </>
-          )}
         </div>
       )}
     </Modal>
+    <AddWorkDiscardConfirm
+      open={showDiscardConfirm}
+      onSaveDraft={saveDraft}
+      onDiscard={discardDraft}
+      onCancel={() => setShowDiscardConfirm(false)}
+    />
+    </>
   )
 }
