@@ -47,6 +47,9 @@ interface Props {
   markupId: string | null
   onClose: () => void
   onPickType: (type: WorkObjectTypeDef) => void
+  /** "Non-Billable Item" — draws a reference line immediately with no wizard at all;
+   *  see startNonBillableLine in KmzMap.tsx / PdfPrintMode.tsx. */
+  onPickNonBillable: () => void
 }
 
 function PhotoThumb({ photoId }: { photoId: string }) {
@@ -56,7 +59,7 @@ function PhotoThumb({ photoId }: { photoId: string }) {
   return <img src={src} className="h-14 w-14 shrink-0 rounded object-cover border border-[#2a3347]" />
 }
 
-export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }: Props) {
+export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, onPickNonBillable }: Props) {
   const { t } = useTranslation()
   const {
     data, updateMarkup, deleteMarkup, addMarkupPhoto, deleteMarkupPhoto, addMarkupVideo,
@@ -135,7 +138,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   if (!markupId) {
     return (
       <Modal open={open} onClose={onClose} title={t('addWork.chooseType')} size="lg">
-        <AddWorkTypeGrid onSelect={onPickType} />
+        <AddWorkTypeGrid onSelect={onPickType} onSelectNonBillable={onPickNonBillable} />
       </Modal>
     )
   }
@@ -208,6 +211,10 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
     if (!hasGps && !markup.gpsUnavailableConfirmed) errs.gps = t('addWork.validation.gpsRequired')
     return errs
   }
+  // Informational only — which of a work type's suggested photo phases are still
+  // missing. No longer blocks Next/Save (photos are optional): the checklist chip
+  // still reflects this so a crew can see what's recommended, it just can't stop
+  // them from finishing the wizard without a signal, connectivity, or a photo.
   function photosErrors(): PhotoProofType[] {
     if (!typeDef) return []
     return typeDef.requiredPhotoPhases.filter((phase) => !photos.some((p) => p.phase === phase))
@@ -217,7 +224,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
     if (!billingLines.some((b) => b.quantity > 0)) return t('addWork.validation.billingQuantityRequired')
     return null
   }
-  const isWizardComplete = Object.keys(detailsErrors()).length === 0 && photosErrors().length === 0 && !billingErrors()
+  const isWizardComplete = Object.keys(detailsErrors()).length === 0 && !billingErrors()
 
   function requestClose() {
     if (isWizardComplete) { onClose(); return }
@@ -234,7 +241,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   }
 
   function handleSave() {
-    if (!markup || billingErrors() || Object.keys(detailsErrors()).length > 0 || photosErrors().length > 0) return
+    if (!markup || billingErrors() || Object.keys(detailsErrors()).length > 0) return
     const workId = typeDef ? generateWorkId(typeDef, markup.projectId, data.fieldMarkups) : markup.workId ?? null
     patchMarkup({ workId })
     setSavingBilling(true)
@@ -254,7 +261,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType }:
   const nextRequiredPhase = typeDef?.requiredPhotoPhases.find((phase) => !photos.some((p) => p.phase === phase)) ?? null
   const stepDisabled =
     step === 'details' ? Object.keys(detailsErrors()).length > 0 :
-    step === 'photos' ? photosErrors().length > 0 :
+    step === 'photos' ? false :
     !!billingErrors()
   const checklist: { label: string; done: boolean; step: Step }[] = [
     { label: t('addWork.field.workType'), done: !detailsErrors().workObjectType, step: 'details' },

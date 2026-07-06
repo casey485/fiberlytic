@@ -13,6 +13,7 @@ export const FEATURE_DROP_TOOLS = [
 ] as const
 
 export const FEATURE_TOOL_LABELS: Record<string, { label: string; abbr: string; color: string }> = {
+  non_billable_line:    { label: 'Non-Billable Item',     abbr: 'NB', color: '#64748b' },
   point:                { label: 'Point',                 abbr: '•',  color: '#94a3b8' },
   handhole:             { label: 'Handhole',             abbr: 'HH', color: '#f59e0b' },
   bore:                 { label: 'Bore',                  abbr: 'BR', color: '#3b82f6' },

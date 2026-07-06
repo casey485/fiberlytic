@@ -702,6 +702,10 @@ export type MarkupTool =
   // Drawing
   | 'pen' | 'line' | 'dashed_line' | 'dotted_line'
   | 'multi_line' | 'measure' | 'point'
+  /** A plain reference line with no workObjectType, ever — deliberately excluded from
+   *  the Add Work wizard, billing, production, payroll, and reports. See Add Work's
+   *  "Non-Billable Item" option (AddWorkTypeGrid.tsx / startNonBillableLine). */
+  | 'non_billable_line'
   | 'arrow' | 'double_arrow'
   | 'rect' | 'circle' | 'ellipse' | 'polygon' | 'cloud' | 'highlight'
   | 'text' | 'callout'
@@ -948,6 +952,13 @@ export interface FieldMarkup {
   lineStyle?: 'solid' | 'dashed' | 'dotted'
   /** Offline sync state — inert placeholder until the sync queue (Phase 10) is wired; every record is 'local' today. */
   syncStatus?: 'local' | 'pending' | 'synced' | 'error'
+
+  /** User-editable "date this work was performed," ISO YYYY-MM-DD — distinct from
+   *  createdAt (audit trail of when the redline was entered into Fiberlytic, which
+   *  may be days after the work itself). Falls back to createdAt's date when unset
+   *  (older records). Editing this cascades into any already-submitted Production/
+   *  P&L entries — see updateMarkup in DataContext.tsx. */
+  workDate?: string
 
   // Audit
   createdBy: string | null

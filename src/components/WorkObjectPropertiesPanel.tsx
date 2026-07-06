@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { X, GripHorizontal } from 'lucide-react'
-import { Field, Select, Input } from './ui/Form'
+import { Field, Select, Input, Textarea } from './ui/Form'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { MARKUP_STATUS_META } from '../types'
@@ -17,6 +17,9 @@ interface Props {
    *  window, not something that tracks the object as the map pans). */
   anchor: { x: number; y: number }
   onClose: () => void
+  /** Opens the full MarkupPanel's Billing tab — used by the "+N more" link when a
+   *  markup has more than one billing line (this panel only edits the primary one). */
+  onOpenBillingTab?: () => void
 }
 
 const PANEL_W = 260
@@ -34,8 +37,8 @@ function clamp(pos: { x: number; y: number }, height: number): { x: number; y: n
  *  (see workObjectPanelPosition.ts). Shared as-is by both KmzMap.tsx (Leaflet)
  *  and PdfPrintMode.tsx — this component has no map-library dependency of its
  *  own, just useData() like MarkupPanel already does. */
-export function WorkObjectPropertiesPanel({ markup, anchor, onClose }: Props) {
-  const { data, updateMarkup } = useData()
+export function WorkObjectPropertiesPanel({ markup, anchor, onClose, onOpenBillingTab }: Props) {
+  const { data, updateMarkup, updateMarkupBilling } = useData()
   const { activeEmployeeId } = useRole()
   const [pos, setPos] = useState(() => clamp(getSavedPanelPosition(markup.id) ?? { x: anchor.x + 40, y: anchor.y - 40 }, 260))
 
@@ -135,22 +138,50 @@ export function WorkObjectPropertiesPanel({ markup, anchor, onClose }: Props) {
             ))}
           </Select>
         </Field>
+        <Field label="Work Date">
+          <Input
+            type="date"
+            value={markup.workDate ?? markup.createdAt.slice(0, 10)}
+            onChange={(e) => patch({ workDate: e.target.value })}
+          />
+        </Field>
+        <Field label="Notes">
+          <Textarea
+            rows={2}
+            value={markup.notes ?? ''}
+            onChange={(e) => patch({ notes: e.target.value || null })}
+          />
+        </Field>
 
-        <div className="space-y-1 border-t border-[#2a2a2a] pt-2 text-[11px] text-slate-400">
+        <div className="space-y-1.5 border-t border-[#2a2a2a] pt-2 text-[11px] text-slate-400">
           <div className="flex justify-between gap-2">
             <span className="text-slate-600">Work ID</span>
             <span className="text-slate-300">{markup.workId ?? '—'}</span>
           </div>
-          <div className="flex justify-between gap-2">
-            <span className="text-slate-600">Billing Code</span>
-            <span className="text-slate-300 text-right">
-              {billingLines.length > 0 ? billingLines.map((b) => `${b.rateCode} x ${b.quantity}`).join(', ') : '—'}
-            </span>
-          </div>
-          <div className="flex justify-between gap-2">
-            <span className="text-slate-600">Date</span>
-            <span className="text-slate-300">{new Date(markup.createdAt).toLocaleDateString()}</span>
-          </div>
+
+          {billingLines.length === 0 ? (
+            <div className="flex justify-between gap-2">
+              <span className="text-slate-600">Billing Code</span>
+              <span className="text-slate-300">—</span>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between gap-2">
+              <span className="shrink-0 text-slate-600">Billing Code</span>
+              <Input
+                className="!h-6 !py-0 text-right text-[11px]"
+                value={billingLines[0].rateCode}
+                onChange={(e) => updateMarkupBilling(billingLines[0].id, { rateCode: e.target.value })}
+              />
+            </div>
+          )}
+          {billingLines.length > 1 && (
+            <button
+              onClick={onOpenBillingTab}
+              className="block w-full text-right text-[10px] text-brand-400 hover:text-brand-300"
+            >
+              +{billingLines.length - 1} more — edit in Billing tab
+            </button>
+          )}
         </div>
       </div>
     </div>

@@ -5,8 +5,10 @@ interface Props {
    *  the toolbar renders just above this point, clamped to stay on screen. */
   anchor: { x: number; y: number }
   /** 'callout' shows a trimmed Edit/Delete/Close set for the auto-generated billing-summary
-   *  callout, which has no independently editable Photos/Notes/Billing of its own. */
-  mode?: 'full' | 'callout'
+   *  callout, which has no independently editable Photos/Notes/Billing of its own.
+   *  'minimal' shows just Edit/Delete — for a Non-Billable Item, which has no Photos/
+   *  Notes/Billing tabs at all (only cosmetic line properties, edited elsewhere). */
+  mode?: 'full' | 'callout' | 'minimal'
   canEdit: boolean
   onEdit: () => void
   onOpenTab?: (tab: 'photos' | 'notes' | 'billing') => void
@@ -20,9 +22,10 @@ const TOOLBAR_H = 40
 /** A small floating action pill next to the selected map object. Full mode: Edit,
  *  Photos, Notes, Billing (Submit to Production lives on that tab), Delete — so common
  *  actions don't require opening the full side panel first. Callout mode: Edit (reopens
- *  the Add Work wizard on the callout's source Work Object), Delete, Close. */
+ *  the Add Work wizard on the callout's source Work Object), Delete, Close. Minimal
+ *  mode: Edit, Delete only. */
 export function MarkupQuickActions({ anchor, mode = 'full', canEdit, onEdit, onOpenTab, onDelete, onClose }: Props) {
-  const buttonCount = mode === 'callout' ? 3 : 5
+  const buttonCount = mode === 'callout' ? 3 : mode === 'minimal' ? 2 : 5
   const toolbarW = buttonCount * BTN_W
   const left = Math.min(Math.max(8, anchor.x - toolbarW / 2), window.innerWidth - toolbarW - 8)
   const top = Math.max(8, anchor.y - TOOLBAR_H - 16)

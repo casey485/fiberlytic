@@ -19,6 +19,7 @@ import { isTypingTarget } from '../lib/domGuards'
 import { FeaturePanel } from '../components/FeaturePanel'
 import { MarkupPanel } from '../components/MarkupPanel'
 import { WorkObjectPropertiesPanel } from '../components/WorkObjectPropertiesPanel'
+import { NonBillableLinePropertiesPanel } from '../components/NonBillableLinePropertiesPanel'
 import { MarkupQuickActions } from '../components/MarkupQuickActions'
 import { MarkupDeleteConfirm } from '../components/MarkupDeleteConfirm'
 import { AerialLashRunPanel } from '../components/AerialLashRunPanel'
@@ -27,7 +28,11 @@ import { FEATURE_TOOL_LABELS, FEATURE_DROP_TOOLS } from '../lib/markupMeta'
 import { ENGINEERING_SYMBOL_MAP, ENGINEERING_POINT_TOOLS, ENGINEERING_LINE_TOOLS } from '../lib/engineeringSymbols'
 import { exportFeaturesToKmz, exportFieldMarkupsToKmz, triggerDownload } from '../lib/kmzExport'
 import { markupToLayer, buildEditHandles, buildSplitVertexMarkers } from '../lib/markupLayer'
-import { buildWorkObjectCalloutLines, geometryAnchor } from '../lib/workObjectCallout'
+import { buildWorkObjectCalloutContent, geometryAnchor } from '../lib/workObjectCallout'
+import type { CalloutContent } from '../lib/workObjectCallout'
+import { getCalloutDisplaySettings } from '../lib/calloutDisplaySettings'
+import { CalloutSettingsPopover } from '../components/CalloutSettingsPopover'
+import { getSavedCalloutOffset, saveCalloutOffset } from '../lib/calloutPosition'
 import { computeTransform, computeScreenMatrix, type GeoTransform } from '../lib/georeference'
 import { GeoreferencePanel } from '../components/GeoreferencePanel'
 import { AddWorkModal } from '../components/AddWorkModal'
@@ -35,6 +40,10 @@ import { LayerManagerPanel } from '../components/LayerManagerPanel'
 import { FieldMapToolbar } from '../components/FieldMapToolbar'
 import type { FieldMapDrawTool } from '../components/FieldMapToolbar'
 import { exportFieldMapReport, buildReportRows } from '../lib/fieldMapExport'
+import { FieldMapExportDialog } from '../components/FieldMapExportDialog'
+import type { FieldMapExportOptions } from '../lib/fieldMapExportOptions'
+import { filterMarkupsForExport } from '../lib/fieldMapExportFilters'
+import type { ExportFilterCriteria } from '../lib/fieldMapExportFilters'
 import { findSnapPoint, collectSnapCandidates } from '../lib/snap'
 import { splitLine, mergeLines, splitPolygon, unionPolygons } from '../lib/geometryOps'
 import { relevantToolsForWorkType } from '../lib/workObjectTypes'
@@ -136,7 +145,7 @@ export function KmzMap() {
   const seenLayersRef       = useRef<Set<string>>(new Set())
   const calloutOverlaysRef  = useRef<HTMLDivElement[]>([])
   // Persists callout layout state across re-renders (session-only; not in DataContext)
-  const calloutStateRef     = useRef<Map<string, { offsetX: number; offsetY: number; baseWidth?: number; baseHeight?: number }>>(new Map())
+  const calloutStateRef     = useRef<Map<string, { offsetX: number; offsetY: number }>>(new Map())
   const polygonPtsRef     = useRef<[number, number][]>([])
   const splitPickedIndicesRef = useRef<number[]>([])
   const polygonPreviewRef = useRef<L.Polygon | L.Polyline | null>(null)
@@ -196,6 +205,8 @@ export function KmzMap() {
   const [showLayerManager, setShowLayerManager] = useState(false)
   const [snapEnabled, setSnapEnabled] = useState(false)
   const [exportingReport, setExportingReport] = useState(false)
+  const [showCalloutSettings, setShowCalloutSettings] = useState(false)
+  const [showExportDialog, setShowExportDialog] = useState(false)
 
   // Pending production entry (from Production.tsx's "Save + Field Map" gate) — not saved until
   // the crew documents the work with at least one Work Object and completes.
@@ -222,9 +233,22 @@ export function KmzMap() {
 
   // Selected markup (for the right panel)
   const [selectedMarkup, setSelectedMarkup] = useState<FieldMarkup | null>(null)
+  // Keep the selected markup in sync with the store — without this, editing a
+  // field in WorkObjectPropertiesPanel updates data.fieldMarkups correctly (the
+  // callout re-renders live, since it reads `data` fresh) but every input in the
+  // panel itself, being bound to this stale snapshot, would keep showing its
+  // pre-edit value until the panel is closed and reopened.
+  useEffect(() => {
+    if (!selectedMarkup) return
+    const fresh = (data.fieldMarkups ?? []).find((m) => m.id === selectedMarkup.id)
+    if (fresh && fresh !== selectedMarkup) setSelectedMarkup(fresh)
+  }, [data.fieldMarkups, selectedMarkup])
   // Work Objects get the small floating WorkObjectPropertiesPanel instead of the
   // big MarkupPanel sidebar — see its render block further down.
   const isSelectedWorkObject = !!selectedMarkup?.workObjectType
+  // Non-Billable Items get their own small floating panel (cosmetic fields only) —
+  // mutually exclusive with isSelectedWorkObject (a markup is never both).
+  const isSelectedNonBillable = selectedMarkup?.tool === 'non_billable_line'
   // Screen-space anchor for the floating quick-actions toolbar, tracked live
   // against Leaflet pan/zoom (see the callout overlay's identical technique).
   const [quickActionsAnchor, setQuickActionsAnchor] = useState<{ x: number; y: number } | null>(null)
@@ -253,24 +277,38 @@ export function KmzMap() {
   const [addWorkMarkupId,  setAddWorkMarkupId]  = useState<string | null>(null)
   const addWorkModeRef = useRef(false)  // when true, next commitMarkup → reopen Add Work modal at Details
   const pendingWorkTypeRef = useRef<WorkObjectTypeDef | null>(null)
+  // Armed by startNonBillableLine, consumed once by the next commitMarkup — unlike
+  // pendingWorkTypeRef/addWorkModeRef, this deliberately does NOT reopen the wizard
+  // afterward (see commitMarkup below), so finishing the line is the entire flow.
+  const nonBillableModeRef = useRef(false)
 
   // Mobile bottom nav
   const [mobileNav, setMobileNav] = useState<'map' | 'markers' | 'forms' | 'billing' | 'settings'>('map')
 
   const project     = data.projects.find((p) => p.id === projectId)
   const uploads     = (data.kmzUploads ?? []).filter((u) => u.projectId === projectId)
-  const allFeatures = (data.mapFeatures ?? []).filter((f) => f.projectId === projectId)
-  const allMarkups  = (data.fieldMarkups ?? []).filter((m) => m.projectId === projectId && !m.deletedAt)
+  // Memoized (not a plain .filter()) — these feed snapCandidates' useMemo deps and
+  // the click-accumulation drawing effect's deps below; a fresh array reference on
+  // every render (even with identical contents) would make both see a "changed"
+  // dependency after the very first point of a line/polygon and reset mid-draw.
+  const allFeatures = useMemo(
+    () => (data.mapFeatures ?? []).filter((f) => f.projectId === projectId),
+    [data.mapFeatures, projectId],
+  )
+  const allMarkups = useMemo(
+    () => (data.fieldMarkups ?? []).filter((m) => m.projectId === projectId && !m.deletedAt),
+    [data.fieldMarkups, projectId],
+  )
   const pdfs        = (data.projectFiles ?? []).filter((f) => f.projectId === projectId && f.fileType === 'pdf')
   const pendingActive = !!pending && !productionCompleted
   const canCompletePending = pendingActive && pendingBaselineMarkupCountRef.current != null && allMarkups.length > pendingBaselineMarkupCountRef.current
 
-  const visibleFeatures = allFeatures.filter((f) => {
+  const visibleFeatures = useMemo(() => allFeatures.filter((f) => {
     const inUpload = activeUploadId === 'all' || f.kmzUploadId === activeUploadId
     const inSearch = !search || (f.name ?? '').toLowerCase().includes(search.toLowerCase()) ||
                      f.layerName.toLowerCase().includes(search.toLowerCase())
     return inUpload && inSearch && !hiddenKmzLayerNames.has(f.layerName) && !hiddenFeatureIds.has(f.id)
-  })
+  }), [allFeatures, activeUploadId, search, hiddenKmzLayerNames, hiddenFeatureIds])
   const allKmzLayerNames = [...new Set(allFeatures.map((f) => f.layerName))].sort()
 
   // Snap-to-vertex candidates: every vertex from this project's own markups + KMZ features
@@ -399,13 +437,12 @@ export function KmzMap() {
     // Remove overlays and SVG from the previous render (cleanup runs before this via return fn)
     calloutOverlaysRef.current.forEach((el) => el.remove())
     calloutOverlaysRef.current = []
-    mapContainer.querySelector('svg.callout-arrows')?.remove()
+    document.body.querySelector('svg.callout-arrows')?.remove()
 
     if (!markupVisible) return
 
     // Per-callout cleanup collections
     const geoListeners:   (() => void)[]    = []
-    const resizeHandles:  HTMLDivElement[]  = []
 
     // Shared SVG for arrow lines; created lazily on first callout
     let arrowSVG: SVGSVGElement | null = null
@@ -413,7 +450,11 @@ export function KmzMap() {
       if (arrowSVG) return arrowSVG
       arrowSVG = document.createElementNS(ns, 'svg') as SVGSVGElement
       arrowSVG.classList.add('callout-arrows')
-      arrowSVG.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:999;overflow:visible'
+      // Fixed to the viewport (not mapContainer) and appended to <body> — a plain
+      // absolute child of mapContainer would be trapped inside its z-0 stacking
+      // context and paint UNDER the pan/select-tool overlay (a sibling of
+      // mapContainer at z-500), no matter how high a z-index it's given locally.
+      arrowSVG.style.cssText = 'position:fixed;top:0;left:0;width:100vw;height:100vh;pointer-events:none;z-index:1000;overflow:visible'
       const defs = document.createElementNS(ns, 'defs')
       const mkr  = document.createElementNS(ns, 'marker')
       mkr.id = 'callout-arrowhead'
@@ -429,7 +470,7 @@ export function KmzMap() {
       mkr.appendChild(p)
       defs.appendChild(mkr)
       arrowSVG.appendChild(defs)
-      mapContainer.appendChild(arrowSVG)
+      document.body.appendChild(arrowSVG)
       return arrowSVG
     }
 
@@ -438,31 +479,42 @@ export function KmzMap() {
     // a callout's whole purpose is to stay readable, so its box keeps a constant
     // on-screen size and constant pixel offset from its anchor at any zoom level
     // (standard map info-window behavior). Only its anchor position is re-derived
-    // per frame via latLngToContainerPoint. A custom resize handle (position:fixed
-    // on body) stays at the rendered corner. Used both for manual free-typed
+    // per frame via latLngToContainerPoint. The box auto-sizes to its content
+    // (width:max-content) — no manual resize handle. Position persists per-markup
+    // across reloads via calloutPosition.ts. Used both for manual free-typed
     // callouts (tool==='callout') and for the auto-generated companion callout
     // every Work Object gets — `id` is whichever markup's own id should be selected
     // when the box is clicked, so the two cases share one selection/highlight path.
     function renderCallout(opts: {
-      id: string; geo: [number, number]; color: string; fontSize: number; text: string
-      showInlineDelete: boolean; onDeleteInline?: () => void
+      id: string; geo: [number, number]; color: string; fontSize: number
+      text?: string; content?: CalloutContent
+      showInlineDelete: boolean; onDeleteInline?: () => void; onEditClick?: () => void
     }) {
-      const { id, geo, color, fontSize, text, showInlineDelete, onDeleteInline } = opts
-      const saved = calloutStateRef.current.get(id)
+      const { id, geo, color, fontSize, text, content, showInlineDelete, onDeleteInline, onEditClick } = opts
+      const saved = calloutStateRef.current.get(id) ?? getSavedCalloutOffset(id) ?? undefined
 
       let offsetX    = saved?.offsetX   ?? 40
       let offsetY    = saved?.offsetY   ?? -60
-      let baseWidth  = saved?.baseWidth
-      let baseHeight = saved?.baseHeight
 
+      // latLngToContainerPoint gives coordinates relative to the map container, not
+      // the viewport — since the overlay is position:fixed (see below), every use
+      // of it here is converted to viewport space via mapContainer's own rect.
+      const containerRect0 = mapContainer.getBoundingClientRect()
       const anchor0  = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
 
-      // Overlay div — no CSS resize (custom handle below drives width/height directly)
+      // Overlay div — position:fixed, appended to <body> (not mapContainer): a plain
+      // absolute child of mapContainer would be trapped inside its z-0 stacking
+      // context and paint UNDER the pan/select-tool overlay (a sibling of
+      // mapContainer at z-500) regardless of its own z-index, making the box
+      // undraggable (and unclickable) whenever the Pan/Select tool is active —
+      // which is the default idle state right after finishing any drawing action.
+      // Auto-sizes to its content (width:max-content below); no manual resize
+      // handle, so the box naturally shrinks/grows with the amount of information
+      // shown (see Callout Display Settings).
       const overlay = document.createElement('div')
+      overlay.setAttribute('data-callout-overlay', 'true')
       const isSelected = selectedMarkup?.id === id
-      overlay.style.cssText = `position:absolute;left:${anchor0.x + offsetX}px;top:${anchor0.y + offsetY}px;z-index:1000;background:rgba(0,0,0,0.88);border:2px solid ${color};border-radius:5px;padding:8px 10px;color:${color};font-size:${fontSize}px;font-weight:600;box-shadow:0 3px 14px rgba(0,0,0,0.75);overflow:hidden;min-width:180px;max-width:none;width:max-content;cursor:pointer${isSelected ? ';outline:3px solid #22d3ee;outline-offset:2px' : ''}`
-      if (baseWidth)  overlay.style.width  = baseWidth  + 'px'
-      if (baseHeight) overlay.style.height = baseHeight + 'px'
+      overlay.style.cssText = `position:fixed;left:${containerRect0.left + anchor0.x + offsetX}px;top:${containerRect0.top + anchor0.y + offsetY}px;z-index:1000;background:rgba(0,0,0,0.9);border:1.5px solid ${color};border-radius:8px;padding:9px 11px;color:#f1f5f9;font-size:${fontSize}px;font-weight:400;box-shadow:0 4px 18px rgba(0,0,0,0.65);overflow:hidden;min-width:150px;max-width:280px;width:max-content;cursor:pointer${isSelected ? ';outline:3px solid #22d3ee;outline-offset:2px' : ''}`
 
       // SVG dashed arrow: from overlay center → markup geo point
       const svg       = ensureArrowSVG()
@@ -474,56 +526,24 @@ export function KmzMap() {
       arrowLine.setAttribute('marker-end', 'url(#callout-arrowhead)')
       svg.appendChild(arrowLine)
 
-      // Custom resize handle — fixed on body so it's always at the visual corner
-      const rh = document.createElement('div')
-      rh.style.cssText = 'position:fixed;width:14px;height:14px;background:rgba(255,255,255,0.85);border:1.5px solid rgba(0,0,0,0.35);border-radius:2px;cursor:se-resize;z-index:2000;display:none'
-      document.body.appendChild(rh)
-      resizeHandles.push(rh)
-
-      // Recomputes and applies position, arrow, and resize-handle location
+      // Recomputes and applies position + arrow location (both in viewport space —
+      // the overlay is position:fixed and the arrow SVG covers the full viewport).
       const updateAll = () => {
+        const cr    = mapContainer.getBoundingClientRect()
         const pt    = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
-        const left  = pt.x + offsetX
-        const top   = pt.y + offsetY
+        const anchorX = cr.left + pt.x, anchorY = cr.top + pt.y
+        const left  = anchorX + offsetX
+        const top   = anchorY + offsetY
         overlay.style.left = left + 'px'
         overlay.style.top  = top  + 'px'
         // Arrow: center of rendered box → geo anchor
         arrowLine.setAttribute('x1', String(left + overlay.offsetWidth  / 2))
         arrowLine.setAttribute('y1', String(top  + overlay.offsetHeight / 2))
-        arrowLine.setAttribute('x2', String(pt.x))
-        arrowLine.setAttribute('y2', String(pt.y))
-        // Resize handle: bottom-right of rendered box in viewport coordinates
-        const cr = mapContainer.getBoundingClientRect()
-        rh.style.left    = (cr.left + left + overlay.offsetWidth  - 7) + 'px'
-        rh.style.top     = (cr.top  + top  + overlay.offsetHeight - 7) + 'px'
-        rh.style.display = 'block'
+        arrowLine.setAttribute('x2', String(anchorX))
+        arrowLine.setAttribute('y2', String(anchorY))
       }
       lMap.on('move zoom viewreset', updateAll)
       geoListeners.push(updateAll)
-
-      // Resize handle drag
-      rh.addEventListener('mousedown', (e) => {
-        e.stopPropagation()
-        e.preventDefault()
-        lMap.dragging.disable()
-        const startX = e.clientX, startY = e.clientY
-        const startW = overlay.offsetWidth, startH = overlay.offsetHeight
-        const onMove = (ev: MouseEvent) => {
-          baseWidth  = Math.max(140, startW + (ev.clientX - startX))
-          baseHeight = Math.max( 40, startH + (ev.clientY - startY))
-          overlay.style.width  = baseWidth  + 'px'
-          overlay.style.height = baseHeight + 'px'
-          updateAll()
-        }
-        const onUp = () => {
-          lMap.dragging.enable()
-          document.removeEventListener('mousemove', onMove)
-          document.removeEventListener('mouseup',  onUp)
-          calloutStateRef.current.set(id, { offsetX, offsetY, baseWidth, baseHeight })
-        }
-        document.addEventListener('mousemove', onMove)
-        document.addEventListener('mouseup',  onUp)
-      })
 
       // ✕ close button — only for manual callouts. A Work Object's companion callout
       // is a view of a real, consequential record, so deleting it goes through the
@@ -542,11 +562,52 @@ export function KmzMap() {
         overlay.appendChild(closeBtn)
       }
 
-      // Label
-      const labelEl = document.createElement('span')
-      labelEl.style.cssText = 'white-space:pre-line;word-break:break-word;line-height:1.55;display:block'
-      labelEl.textContent = text
-      overlay.appendChild(labelEl)
+      // Pencil (edit) button — Work Object auto-callouts only. Purely a discoverable
+      // affordance: clicking the box itself already selects the markup and surfaces
+      // WorkObjectPropertiesPanel, this just makes "you can edit this" obvious.
+      if (onEditClick) {
+        const editBtn = document.createElement('span')
+        editBtn.title = 'Edit'
+        editBtn.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></svg>'
+        editBtn.style.cssText = 'float:right;margin-left:8px;padding:3px;cursor:pointer;opacity:0.7;line-height:1;display:inline-flex'
+        editBtn.addEventListener('mousedown', (e) => e.stopPropagation())
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation()
+          onEditClick()
+        })
+        overlay.appendChild(editBtn)
+      }
+
+      // Content — structured title + label/value rows for Work Objects (clean,
+      // compact card), or a plain pre-formatted text blob for manual free-typed
+      // callouts (which have no fields, just a label the user typed themselves).
+      if (content) {
+        if (content.title) {
+          const titleEl = document.createElement('div')
+          titleEl.style.cssText = `font-weight:700;font-size:${fontSize + 1}px;color:${color}`
+          titleEl.style.marginBottom = content.rows.length ? '4px' : '0'
+          titleEl.textContent = content.title
+          overlay.appendChild(titleEl)
+        }
+        for (const row of content.rows) {
+          const rowEl = document.createElement('div')
+          rowEl.style.cssText = 'display:flex;gap:5px;line-height:1.5;flex-wrap:wrap'
+          const labelSpan = document.createElement('span')
+          labelSpan.style.cssText = 'color:#94a3b8;flex-shrink:0'
+          labelSpan.textContent = `${row.label}:`
+          const valueSpan = document.createElement('span')
+          valueSpan.style.cssText = 'color:#f1f5f9;font-weight:600;word-break:break-word'
+          valueSpan.textContent = row.value
+          rowEl.appendChild(labelSpan)
+          rowEl.appendChild(valueSpan)
+          overlay.appendChild(rowEl)
+        }
+      } else {
+        const labelEl = document.createElement('span')
+        labelEl.style.cssText = 'white-space:pre-line;word-break:break-word;line-height:1.55;display:block'
+        labelEl.textContent = text ?? ''
+        overlay.appendChild(labelEl)
+      }
 
       // Drag to reposition — offset stored in constant screen pixels (no zoom
       // scaling to divide out anymore). A mousedown+mouseup with negligible movement
@@ -565,9 +626,10 @@ export function KmzMap() {
           const newTop  = st + ev.clientY - sy
           overlay.style.left = newLeft + 'px'
           overlay.style.top  = newTop  + 'px'
+          const cr = mapContainer.getBoundingClientRect()
           const pt = lMap.latLngToContainerPoint(L.latLng(geo[0], geo[1]))
-          offsetX = newLeft - pt.x
-          offsetY = newTop  - pt.y
+          offsetX = newLeft - (cr.left + pt.x)
+          offsetY = newTop  - (cr.top  + pt.y)
           updateAll()
         }
         const onUp = () => {
@@ -579,20 +641,22 @@ export function KmzMap() {
             if (fresh) { setSelectedMarkup(fresh); setSelectedFeature(null); setPanelCollapsed(false) }
             return
           }
-          const prev = calloutStateRef.current.get(id)
-          calloutStateRef.current.set(id, { offsetX, offsetY, baseWidth: prev?.baseWidth, baseHeight: prev?.baseHeight })
+          calloutStateRef.current.set(id, { offsetX, offsetY })
+          saveCalloutOffset(id, { offsetX, offsetY })
         }
         document.addEventListener('mousemove', onMove)
         document.addEventListener('mouseup',  onUp)
       })
       overlay.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: false })
 
-      mapContainer.appendChild(overlay)
+      document.body.appendChild(overlay)
       calloutOverlaysRef.current.push(overlay)
       if (!saved) calloutStateRef.current.set(id, { offsetX, offsetY })
 
       requestAnimationFrame(updateAll)
     }
+
+    const calloutSettings = getCalloutDisplaySettings()
 
     for (const m of allMarkups) {
       if (!visibleLayers.has(m.layer)) continue
@@ -621,7 +685,8 @@ export function KmzMap() {
         if (anchor) {
           renderCallout({
             id: m.id, geo: anchor, color: m.color || '#3b82f6', fontSize: m.fontSize ?? 11,
-            text: buildWorkObjectCalloutLines(m, data).join('\n'), showInlineDelete: false,
+            content: buildWorkObjectCalloutContent(m, data, calloutSettings), showInlineDelete: false,
+            onEditClick: () => setSelectedMarkup(m),
           })
         }
       }
@@ -689,7 +754,6 @@ export function KmzMap() {
 
     return () => {
       for (const fn of geoListeners) lMap.off('move zoom viewreset', fn)
-      for (const h of resizeHandles) h.remove()
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allMarkups, markupVisible, visibleLayers, mapReady, editMode, selectedMarkup?.id, activeTool, toolSelectedIds])
@@ -890,21 +954,28 @@ export function KmzMap() {
     const workObjectTypeOverride = pendingWorkTypeRef.current
       ? { workObjectType: pendingWorkTypeRef.current.id, color: pendingWorkTypeRef.current.defaultColor, unit: pendingWorkTypeRef.current.defaultUnit }
       : {}
+    // Non-Billable Item: relabel the tool so it's never mistaken for a plain manual
+    // line, but otherwise draw exactly like the standard 'line' tool (see
+    // startNonBillableLine) — no workObjectType is ever set, which is what already
+    // keeps it out of billing/production/payroll/reports everywhere else in the app.
+    const nonBillableOverride = nonBillableModeRef.current ? { tool: 'non_billable_line' as MarkupTool } : {}
 
     const id = addMarkup({
       ...partial,
       ...colorCodeOverride,
       ...workObjectTypeOverride,
+      ...nonBillableOverride,
       projectId,
       status: 'pending' as MarkupStatus,
       layer: rlLayer,
       crewId: null,
-      createdBy: null,
+      createdBy: activeEmployeeId,
       updatedAt: null,
       lockedAt: null,
     })
     undoStackRef.current.push(id)
     redoStackRef.current = []
+    nonBillableModeRef.current = false
     // Return to Select so the map is immediately clickable again — otherwise the draw
     // tool stays armed and clicking an existing line/shape is swallowed as "start a new
     // one" (drag-draw tools) or "add a vertex" (click-based tools) instead of selecting it.
@@ -918,14 +989,18 @@ export function KmzMap() {
         setAddWorkModalOpen(true)
         setSelectedMarkup(null)
       } else {
+        // Also covers Non-Billable Item finishing — sessionTools was only set to
+        // arm the click-drawing effect (see startNonBillableLine) and there's no
+        // AddWorkModal reopening here to clear it, so clear it directly.
+        setSessionTools(null)
         const mk = (data.fieldMarkups ?? []).find((m) => m.id === id)
-          ?? { id, projectId, ...partial, ...workObjectTypeOverride, status: 'pending' as MarkupStatus, layer: rlLayer, crewId: null, createdBy: null, createdAt: new Date().toISOString(), updatedAt: null, lockedAt: null }
+          ?? { id, projectId, ...partial, ...workObjectTypeOverride, ...nonBillableOverride, status: 'pending' as MarkupStatus, layer: rlLayer, crewId: null, createdBy: activeEmployeeId, createdAt: new Date().toISOString(), workDate: new Date().toISOString().slice(0, 10), updatedAt: null, lockedAt: null }
         setSelectedMarkup(mk as FieldMarkup)
         setSelectedFeature(null)
         setPanelCollapsed(false)
       }
     }, 50)
-  }, [projectId, addMarkup, rlLayer, data.fieldMarkups])
+  }, [projectId, addMarkup, rlLayer, data.fieldMarkups, activeEmployeeId])
 
   // ── Markup drawing events (click-based tools only; drag-draw handled by overlay div) ──
   useEffect(() => {
@@ -1303,7 +1378,6 @@ export function KmzMap() {
         })
       })
     })
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data.aerialLashFiberRuns, projectId, mapReady])
 
   // Show crosshair cursor on Leaflet map when in click-to-draw mode (polygon, feature-drop, text)
@@ -1546,6 +1620,24 @@ export function KmzMap() {
     setMobileNav('map')
   }
 
+  /** Add Work → "Non-Billable Item": arms the plain 'line' tool (identical drawing
+   *  gesture to a normal line — no new interaction code) and marks the next commit as
+   *  non-billable. Deliberately does NOT set pendingWorkTypeRef/addWorkModeRef, so
+   *  finishing the line just selects it — no Details/Photos/Billing wizard at all. */
+  function startNonBillableLine() {
+    nonBillableModeRef.current = true
+    setActiveColorCode(null); activeColorCodeRef.current = null
+    setRlColor('#94a3b8')
+    setRlActive(true)
+    // The click-drawing effect below no-ops unless sessionTools is non-null (it's
+    // otherwise only ever set by startAddWork) — without this the map never attaches
+    // a click listener and the line can never be drawn.
+    setSessionTools(['line'])
+    setActiveTool('line')
+    setAddWorkModalOpen(false)
+    setMobileNav('map')
+  }
+
   function toggleWorkObjectLayer(layer: MarkupLayer) {
     setVisibleLayers((prev) => {
       const next = new Set(prev)
@@ -1573,12 +1665,14 @@ export function KmzMap() {
     })
   }
 
-  async function handleExportReport() {
+  async function handleExportReport(criteria: ExportFilterCriteria, options: FieldMapExportOptions) {
     if (!mapContainerRef.current || exportingReport) return
     setExportingReport(true)
     try {
-      const rows = buildReportRows(allMarkups, (data.markupBilling ?? []).filter((b) => allMarkups.some((m) => m.id === b.markupId)))
-      await exportFieldMapReport(mapContainerRef.current, project?.name ?? 'Project', rows)
+      const filtered = filterMarkupsForExport(allMarkups, data.markupBilling ?? [], criteria)
+      const rows = buildReportRows(filtered, (data.markupBilling ?? []).filter((b) => filtered.some((m) => m.id === b.markupId)))
+      await exportFieldMapReport(mapContainerRef.current, { name: project?.name ?? 'Project', id: project?.id ?? '' }, rows, options)
+      setShowExportDialog(false)
     } catch (err) {
       console.error('Field Map report export error', err)
       alert('Export failed — please try again.')
@@ -1955,6 +2049,10 @@ export function KmzMap() {
             <Download size={11} /> Export Markups
           </button>
         )}
+        <button onClick={() => setShowExportDialog(true)} disabled={exportingReport}
+          className="hidden sm:flex items-center gap-1.5 rounded-md border border-[#2a3347] px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5 disabled:opacity-40 transition shrink-0">
+          <Download size={11} /> {exportingReport ? t('toolbar.exporting') : 'Download PDF'}
+        </button>
 
         <div className="mx-1 h-4 w-px bg-[#2a2a2a] shrink-0" />
 
@@ -2018,11 +2116,10 @@ export function KmzMap() {
           activeTools={sessionTools}
           advancedToolsChildren={
             <button
-              onClick={handleExportReport}
-              disabled={exportingReport}
-              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5 disabled:opacity-40 transition"
+              onClick={() => setShowCalloutSettings(true)}
+              className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5 transition"
             >
-              <Download size={12} /> {exportingReport ? t('toolbar.exporting') : t('toolbar.exportReport')}
+              <Settings size={12} /> Callout Display Settings
             </button>
           }
         />
@@ -2378,7 +2475,7 @@ export function KmzMap() {
              — this sidebar only opens for them on-demand, when a quick-action
              (Photos/Notes/Billing) explicitly requests a specific tab. ── */}
         {!showGeoreference && !showLayerManager && !panelCollapsed &&
-          (selectedFeature || selectedAerialRun || (selectedMarkup && (!isSelectedWorkObject || openTabRequest))) && (
+          (selectedFeature || selectedAerialRun || (selectedMarkup && ((!isSelectedWorkObject && !isSelectedNonBillable) || openTabRequest))) && (
           <div className="w-72 shrink-0 border-l border-[#1e1e1e] overflow-hidden">
             {selectedAerialRun ? (
               <AerialLashRunPanel
@@ -2413,13 +2510,23 @@ export function KmzMap() {
             markup={selectedMarkup}
             anchor={quickActionsAnchor}
             onClose={() => setSelectedMarkup(null)}
+            onOpenBillingTab={() => { setPanelCollapsed(false); setOpenTabRequest({ tab: 'billing', nonce: Date.now() }) }}
+          />
+        )}
+
+        {selectedMarkup && isSelectedNonBillable && quickActionsAnchor && !showGeoreference && !showLayerManager && (
+          <NonBillableLinePropertiesPanel
+            key={selectedMarkup.id}
+            markup={selectedMarkup}
+            anchor={quickActionsAnchor}
+            onClose={() => setSelectedMarkup(null)}
           />
         )}
 
         {selectedMarkup && quickActionsAnchor && !showGeoreference && !showLayerManager && (
           <MarkupQuickActions
             anchor={quickActionsAnchor}
-            mode={selectedMarkup.tool === 'callout' ? 'callout' : 'full'}
+            mode={selectedMarkup.tool === 'callout' ? 'callout' : isSelectedNonBillable ? 'minimal' : 'full'}
             canEdit={!selectedMarkup.lockedAt}
             onEdit={() => {
               if (selectedMarkup.tool === 'callout') { setPanelCollapsed(false); return }
@@ -2438,6 +2545,16 @@ export function KmzMap() {
           onCancel={deleteFlow.cancelDelete}
           onConfirm={confirmDeleteMarkup}
         />
+        {showCalloutSettings && <CalloutSettingsPopover onClose={() => setShowCalloutSettings(false)} />}
+        {showExportDialog && (
+          <FieldMapExportDialog
+            markups={allMarkups}
+            crews={data.crews}
+            exporting={exportingReport}
+            onExport={handleExportReport}
+            onClose={() => setShowExportDialog(false)}
+          />
+        )}
 
         {/* Pole form modal — in-progress aerial run */}
         {editingPole && !selectedAerialRun && (
@@ -2612,6 +2729,7 @@ export function KmzMap() {
         projectId={projectId ?? ''}
         markupId={addWorkMarkupId}
         onPickType={startAddWork}
+        onPickNonBillable={startNonBillableLine}
         onClose={() => {
           setAddWorkModalOpen(false)
           setAddWorkMarkupId(null)

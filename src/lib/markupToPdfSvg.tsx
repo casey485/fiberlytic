@@ -144,7 +144,8 @@ export function markupToPdfElement(m: FieldMarkup): JSX.Element | null {
     case 'dotted_line':
     case 'multi_line':
     case 'measure':
-    case 'highlight': {
+    case 'highlight':
+    case 'non_billable_line': {
       if (!geo.latlngs?.length) return null
       return (
         <polyline

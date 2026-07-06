@@ -5,8 +5,9 @@
 // billing total.
 // ---------------------------------------------------------------------------
 
-import type { FieldMarkup, MarkupBilling } from '../types'
+import type { FieldMarkup, MarkupBilling, WorkObjectTypeId } from '../types'
 import { WORK_OBJECT_TYPE_MAP } from './workObjectTypes'
+import type { FieldMapExportOptions } from './fieldMapExportOptions'
 
 export interface FieldMapReportRow {
   markup: FieldMarkup
@@ -20,31 +21,97 @@ export function buildReportRows(markups: FieldMarkup[], billing: MarkupBilling[]
   }))
 }
 
+/** Fetches a static asset and returns it as a data URI, or null if unavailable —
+ *  used for the company logo, which is optional (some deployments may not have
+ *  replaced the placeholder). Never throws; a missing/broken logo just omits it. */
+async function loadImageDataUrl(url: string): Promise<string | null> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    const blob = await res.blob()
+    return await new Promise((resolve) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
+      reader.onerror = () => resolve(null)
+      reader.readAsDataURL(blob)
+    })
+  } catch {
+    return null
+  }
+}
+
 export async function exportFieldMapReport(
   mapEl: HTMLElement,
-  projectName: string,
+  project: { name: string; id: string },
   rows: FieldMapReportRow[],
+  options: FieldMapExportOptions,
 ): Promise<void> {
-  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([import('html2canvas'), import('jspdf')])
-  const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: false, logging: false, backgroundColor: '#0a0a0a', scale: window.devicePixelRatio ?? 1 })
-  const mapImgData = canvas.toDataURL('image/png')
-  const mapW = canvas.width, mapH = canvas.height
+  const [{ default: html2canvas }, { jsPDF }, logoDataUrl] = await Promise.all([
+    import('html2canvas'), import('jspdf'), loadImageDataUrl('/logo.jpg'),
+  ])
+
+  // "Include Callout Boxes" — the map DOM already contains the callout overlays
+  // as plain children, so the cheapest way to honor this toggle is to hide them
+  // just for the snapshot and restore them immediately after.
+  const calloutEls = options.includeCallouts
+    ? []
+    : Array.from(mapEl.querySelectorAll<HTMLElement>('[data-callout-overlay], .callout-arrows'))
+  for (const el of calloutEls) el.style.visibility = 'hidden'
+
+  let mapImgData: string, mapW: number, mapH: number
+  try {
+    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: false, logging: false, backgroundColor: '#0a0a0a', scale: Math.max(2, window.devicePixelRatio ?? 1) })
+    mapImgData = canvas.toDataURL('image/png')
+    mapW = canvas.width; mapH = canvas.height
+  } finally {
+    for (const el of calloutEls) el.style.visibility = ''
+  }
   const landscape = mapW >= mapH
 
   const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'pt', format: 'letter' })
   const pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight(), margin = 36
 
+  const exportedAt = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' })
+
+  let headerRight = margin
+  if (logoDataUrl) {
+    try { pdf.addImage(logoDataUrl, margin + 0, margin - 4, 32, 32); headerRight = margin + 40 } catch { /* corrupt/unsupported image data — skip */ }
+  }
+
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(13)
-  pdf.text(`${projectName} — Field Map Report`, margin, margin + 13)
+  pdf.text(`${project.name} — Field Map Report`, headerRight, margin + 10)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8); pdf.setTextColor(120, 120, 120)
-  pdf.text(new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }), margin, margin + 26)
+  pdf.text(`Project ID: ${project.id}`, headerRight, margin + 22)
+  pdf.text(`Exported ${exportedAt}`, headerRight, margin + 33)
   pdf.setTextColor(0, 0, 0)
 
-  const headerBottom = margin + 40, availW = pageW - margin * 2, availH = pageH - headerBottom - margin
+  const headerBottom = margin + 46, availW = pageW - margin * 2, availH = pageH - headerBottom - margin
   const imgRatio = mapW / mapH, boxRatio = availW / availH
   let imgW: number, imgH: number
   if (imgRatio > boxRatio) { imgW = availW; imgH = availW / imgRatio } else { imgH = availH; imgW = availH * imgRatio }
   pdf.addImage(mapImgData, 'PNG', margin + (availW - imgW) / 2, headerBottom, imgW, imgH)
+
+  if (options.includeLegend) {
+    const legendTypes = [...new Map(rows.map((r) => [r.markup.workObjectType, r.markup.color] as const)).entries()]
+      .filter((e): e is [WorkObjectTypeId, string] => !!e[0])
+    if (legendTypes.length > 0) {
+      let ly = headerBottom + 8
+      pdf.setFontSize(7)
+      for (const [typeId, color] of legendTypes.slice(0, 12)) {
+        const label = WORK_OBJECT_TYPE_MAP[typeId]?.label ?? typeId
+        const rgb = /^#([0-9a-f]{6})$/i.exec(color)
+        if (rgb) {
+          const n = parseInt(rgb[1], 16)
+          pdf.setFillColor((n >> 16) & 255, (n >> 8) & 255, n & 255)
+          pdf.rect(pageW - margin - 90, ly - 5, 6, 6, 'F')
+        }
+        pdf.setTextColor(200, 200, 200)
+        pdf.text(label, pageW - margin - 80, ly)
+        ly += 9
+      }
+      pdf.setTextColor(0, 0, 0)
+    }
+  }
 
   if (rows.length > 0) {
     pdf.addPage()
@@ -57,18 +124,34 @@ export async function exportFieldMapReport(
     rows.forEach(({ markup, billingTotal }, i) => {
       const typeDef = markup.workObjectType ? WORK_OBJECT_TYPE_MAP[markup.workObjectType] : null
       const name = markup.featureName ?? markup.label ?? typeDef?.label ?? markup.tool
-      const qty = markup.quantity != null ? `${markup.quantity.toLocaleString()} ${markup.unit ?? typeDef?.defaultUnit ?? ''}` : '—'
+      const qty = options.includeQuantities && markup.quantity != null
+        ? `${markup.quantity.toLocaleString()} ${markup.unit ?? typeDef?.defaultUnit ?? ''}`
+        : null
+      const detailParts = [
+        typeDef?.label ?? markup.tool,
+        qty,
+        options.includeBillingCodes ? `$${billingTotal.toFixed(2)}` : null,
+      ].filter(Boolean)
       pdf.setFont('helvetica', 'bold')
       pdf.text(`${i + 1}. ${name}`, margin, y)
       pdf.setFont('helvetica', 'normal')
-      pdf.text(`${typeDef?.label ?? markup.tool} · ${markup.status} · ${qty} · $${billingTotal.toFixed(2)}`, margin + 12, y + 11)
-      y += 26
+      pdf.text(detailParts.join(' · '), margin + 12, y + 11)
+      y += 22
+      if (options.includeNotes && markup.notes) {
+        pdf.setFont('helvetica', 'italic'); pdf.setFontSize(7)
+        pdf.text(markup.notes, margin + 12, y)
+        pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
+        y += 11
+      }
+      y += 4
       if (y > pageH - margin) { pdf.addPage(); y = margin + 14 }
     })
 
-    pdf.setFont('helvetica', 'bold')
-    pdf.text(`Total billed: $${total.toFixed(2)}`, margin, Math.min(y + 10, pageH - margin))
+    if (options.includeBillingCodes) {
+      pdf.setFont('helvetica', 'bold')
+      pdf.text(`Total billed: $${total.toFixed(2)}`, margin, Math.min(y + 10, pageH - margin))
+    }
   }
 
-  pdf.save(`${projectName.replace(/[^a-z0-9]+/gi, '_')}_field_map_report.pdf`)
+  pdf.save(`${project.name.replace(/[^a-z0-9]+/gi, '_')}_field_map_report.pdf`)
 }

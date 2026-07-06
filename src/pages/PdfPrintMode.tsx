@@ -12,7 +12,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
-import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2, ZoomIn, ZoomOut, Maximize2, Search } from 'lucide-react'
+import { ArrowLeft, ChevronLeft, ChevronRight, AlertCircle, Loader2, ZoomIn, ZoomOut, Maximize2, Search, Settings, Download } from 'lucide-react'
+import { CalloutSettingsPopover } from '../components/CalloutSettingsPopover'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { useMarkupDeleteFlow } from '../lib/markupDelete'
@@ -20,13 +21,22 @@ import { isTypingTarget } from '../lib/domGuards'
 import { renderPdf } from '../features/printkmz/pdf'
 import { loadBlob } from '../lib/fileStore'
 import { markupToPdfElement } from '../lib/markupToPdfSvg'
-import { buildWorkObjectCalloutLines, geometryAnchor } from '../lib/workObjectCallout'
+import { buildWorkObjectCalloutContent, geometryAnchor } from '../lib/workObjectCallout'
+import type { CalloutContent } from '../lib/workObjectCallout'
+import { getCalloutDisplaySettings } from '../lib/calloutDisplaySettings'
+import { getSavedCalloutOffset, saveCalloutOffset } from '../lib/calloutPosition'
+import { FieldMapExportDialog } from '../components/FieldMapExportDialog'
+import type { FieldMapExportOptions } from '../lib/fieldMapExportOptions'
+import { filterMarkupsForExport } from '../lib/fieldMapExportFilters'
+import type { ExportFilterCriteria } from '../lib/fieldMapExportFilters'
+import { exportPdfPrintModeReport } from '../lib/pdfPrintModeExport'
 import { relevantToolsForWorkType } from '../lib/workObjectTypes'
 import type { WorkObjectTypeDef } from '../lib/workObjectTypes'
 import { FieldMapToolbar, type FieldMapDrawTool } from '../components/FieldMapToolbar'
 import { AddWorkModal } from '../components/AddWorkModal'
 import { MarkupPanel } from '../components/MarkupPanel'
 import { WorkObjectPropertiesPanel } from '../components/WorkObjectPropertiesPanel'
+import { NonBillableLinePropertiesPanel } from '../components/NonBillableLinePropertiesPanel'
 import { MarkupQuickActions } from '../components/MarkupQuickActions'
 import { PdfCalloutOverlay } from '../components/PdfCalloutOverlay'
 import { MarkupDeleteConfirm } from '../components/MarkupDeleteConfirm'
@@ -120,11 +130,26 @@ export function PdfPrintMode() {
   const fillOpacity = 0.15
 
   const [selectedMarkup, setSelectedMarkup] = useState<FieldMarkup | null>(null)
+  // Keep the selected markup in sync with the store — without this, editing a
+  // field in WorkObjectPropertiesPanel updates data.fieldMarkups correctly (the
+  // callout re-renders live, since it reads `data` fresh) but every input in the
+  // panel itself, being bound to this stale snapshot, would keep showing its
+  // pre-edit value until the panel is closed and reopened.
+  useEffect(() => {
+    if (!selectedMarkup) return
+    const fresh = (data.fieldMarkups ?? []).find((m) => m.id === selectedMarkup.id)
+    if (fresh && fresh !== selectedMarkup) setSelectedMarkup(fresh)
+  }, [data.fieldMarkups, selectedMarkup])
   // Work Objects get the small floating WorkObjectPropertiesPanel instead of the
   // big MarkupPanel sidebar — see its render block further down.
   const isSelectedWorkObject = !!selectedMarkup?.workObjectType
+  // Non-Billable Items get their own small floating panel (cosmetic fields only) —
+  // mutually exclusive with isSelectedWorkObject (a markup is never both).
+  const isSelectedNonBillable = selectedMarkup?.tool === 'non_billable_line'
   const [editMode, setEditMode] = useState<EditMode>('none')
   const [panelCollapsed, setPanelCollapsed] = useState(false)
+  const [showCalloutSettings, setShowCalloutSettings] = useState(false)
+  const [showExportDialog, setShowExportDialog] = useState(false)
   const [openTabRequest, setOpenTabRequest] = useState<{ tab: 'notes' | 'photos' | 'billing'; nonce: number } | null>(null)
   const deleteFlow = useMarkupDeleteFlow(softDeleteMarkup, activeEmployeeId)
   function requestDeleteMarkup(m: FieldMarkup) {
@@ -141,6 +166,10 @@ export function PdfPrintMode() {
   const [addWorkMarkupId, setAddWorkMarkupId] = useState<string | null>(null)
   const addWorkModeRef = useRef(false)
   const pendingWorkTypeRef = useRef<WorkObjectTypeDef | null>(null)
+  // Armed by startNonBillableLine, consumed once by the next commitMarkup — unlike
+  // pendingWorkTypeRef/addWorkModeRef, this deliberately does NOT reopen the wizard
+  // afterward (see commitMarkup below), so finishing the line is the entire flow.
+  const nonBillableModeRef = useRef(false)
 
   const undoStackRef = useRef<string[]>([])
   const redoStackRef = useRef<FieldMarkup[]>([])
@@ -229,6 +258,12 @@ export function PdfPrintMode() {
   const pageMarkups = (data.fieldMarkups ?? []).filter(
     (m) => m.projectId === projectId && !m.deletedAt && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId && m.pageIndex === pageNum,
   )
+  // Every page's markups for this file, not just the one currently on screen —
+  // used by the paginated "Download PDF" export, which needs no page navigation
+  // since pageImages already holds every page's rendered image up front.
+  const allFileMarkups = (data.fieldMarkups ?? []).filter(
+    (m) => m.projectId === projectId && !m.deletedAt && m.coordSpace === 'pdfPage' && m.sourceProjectFileId === fileId,
+  )
 
   // All of this file's Work Objects across every page — search reaches beyond just the
   // current page, since the whole point is finding something you don't already have open.
@@ -299,7 +334,7 @@ export function PdfPrintMode() {
   // callout computed fresh from its current fields (see workObjectCallout.ts). ──
   const calloutOffsetsRef = useRef<Map<string, { offsetX: number; offsetY: number }>>(new Map())
   const [calloutAnchors, setCalloutAnchors] = useState<
-    { markup: FieldMarkup; boxX: number; boxY: number; targetX: number; targetY: number; text: string; showInlineDelete: boolean }[]
+    { markup: FieldMarkup; boxX: number; boxY: number; targetX: number; targetY: number; text: string; content: CalloutContent | null; showInlineDelete: boolean }[]
   >([])
   useEffect(() => {
     const svg = svgRef.current
@@ -308,16 +343,19 @@ export function PdfPrintMode() {
     const candidates = pageMarkups
       .map((m) => ({ m, anchor: m.tool === 'callout' ? geometryAnchor(m.geometry) : (m.workObjectType ? geometryAnchor(m.geometry) : null) }))
       .filter((c): c is { m: FieldMarkup; anchor: [number, number] } => !!c.anchor)
+    const calloutSettings = getCalloutDisplaySettings()
     setCalloutAnchors(candidates.map(({ m, anchor }) => {
       const [cx, cy] = anchor
       const targetX = rect.left + (cx / naturalSize.w) * rect.width
       const targetY = rect.top + (cy / naturalSize.h) * rect.height
-      const saved = calloutOffsetsRef.current.get(m.id) ?? { offsetX: 40, offsetY: -60 }
+      const saved = calloutOffsetsRef.current.get(m.id) ?? getSavedCalloutOffset(m.id) ?? { offsetX: 40, offsetY: -60 }
       if (!calloutOffsetsRef.current.has(m.id)) calloutOffsetsRef.current.set(m.id, saved)
-      const text = m.tool === 'callout' ? (m.label ?? '') : buildWorkObjectCalloutLines(m, data).join('\n')
+      const isManual = m.tool === 'callout'
       return {
         markup: m, boxX: targetX + saved.offsetX, boxY: targetY + saved.offsetY, targetX, targetY,
-        text, showInlineDelete: m.tool === 'callout',
+        text: isManual ? (m.label ?? '') : '',
+        content: isManual ? null : buildWorkObjectCalloutContent(m, data, calloutSettings),
+        showInlineDelete: isManual,
       }
     }))
   }, [pageMarkups, naturalSize, pan, zoom, data])
@@ -327,6 +365,9 @@ export function PdfPrintMode() {
       if (a.markup.id !== id) return a
       return { ...a, boxX: a.targetX + offsetX, boxY: a.targetY + offsetY }
     }))
+  }
+  function moveCalloutOffsetEnd(id: string, offsetX: number, offsetY: number) {
+    saveCalloutOffset(id, { offsetX, offsetY })
   }
 
   const snapCandidates = collectSnapCandidates(pageMarkups.map((m) => m.geometry))
@@ -343,13 +384,19 @@ export function PdfPrintMode() {
     const workObjectTypeOverride = pendingWorkTypeRef.current
       ? { workObjectType: pendingWorkTypeRef.current.id, color: pendingWorkTypeRef.current.defaultColor, unit: pendingWorkTypeRef.current.defaultUnit }
       : {}
+    // Non-Billable Item: relabel the tool so it's never mistaken for a plain manual
+    // line, but otherwise draw exactly like the standard 'line' tool (see
+    // startNonBillableLine) — no workObjectType is ever set, which is what already
+    // keeps it out of billing/production/payroll/reports everywhere else in the app.
+    const nonBillableOverride = nonBillableModeRef.current ? { tool: 'non_billable_line' as MarkupTool } : {}
     const id = addMarkup({
-      ...partial, ...workObjectTypeOverride,
+      ...partial, ...workObjectTypeOverride, ...nonBillableOverride,
       projectId, coordSpace: 'pdfPage', sourceProjectFileId: fileId, pageIndex: pageNum,
-      status: 'pending', layer: 'crew', crewId: null, createdBy: null, updatedAt: null, lockedAt: null,
+      status: 'pending', layer: 'crew', crewId: null, createdBy: activeEmployeeId, updatedAt: null, lockedAt: null,
     })
     undoStackRef.current.push(id)
     redoStackRef.current = []
+    nonBillableModeRef.current = false
     // Return to Select so the map is immediately clickable again — otherwise the draw
     // tool stays armed and clicking an existing line/shape is swallowed as "start a new
     // one" (drag-draw tools) or "add a vertex" (click-based tools) instead of selecting it.
@@ -362,6 +409,10 @@ export function PdfPrintMode() {
         setAddWorkModalOpen(true)
         setSelectedMarkup(null)
       } else {
+        // Also covers Non-Billable Item finishing — sessionTools was only set to
+        // arm the click-drawing effect (see startNonBillableLine) and there's no
+        // AddWorkModal reopening here to clear it, so clear it directly.
+        setSessionTools(null)
         const mk = (data.fieldMarkups ?? []).find((m) => m.id === id)
         if (mk) { setSelectedMarkup(mk); setPanelCollapsed(false) }
       }
@@ -386,10 +437,55 @@ export function PdfPrintMode() {
     setAddWorkModalOpen(false)
   }
 
+  /** Add Work → "Non-Billable Item": arms the plain 'line' tool (identical drawing
+   *  gesture to a normal line — no new interaction code) and marks the next commit as
+   *  non-billable. Deliberately does NOT set pendingWorkTypeRef/addWorkModeRef, so
+   *  finishing the line just selects it — no Details/Photos/Billing wizard at all. */
+  function startNonBillableLine() {
+    nonBillableModeRef.current = true
+    setColor('#94a3b8')
+    // The click-drawing effect below no-ops unless sessionTools is non-null (it's
+    // otherwise only ever set by startAddWork) — without this the map never attaches
+    // a click listener and the line can never be drawn.
+    setSessionTools(['line'])
+    setActiveTool('line')
+    setAddWorkModalOpen(false)
+  }
+
   function handleSetScale() {
     if (!fileId) return
     const n = Number(scaleInput)
     updateProjectFile(fileId, { pdfScaleFeetPerInch: n > 0 ? n : undefined })
+  }
+
+  const [exportingPdf, setExportingPdf] = useState(false)
+
+  async function handleExportPdf(criteria: ExportFilterCriteria, options: FieldMapExportOptions) {
+    if (exportingPdf) return
+    setExportingPdf(true)
+    try {
+      const filtered = filterMarkupsForExport(allFileMarkups, data.markupBilling ?? [], criteria)
+      // Explicit page scope (current/selected pages) wins as-is; otherwise (entire
+      // project / selected redlines) derive the page list from wherever the
+      // filtered redlines actually live — no point exporting a blank print sheet.
+      const pagesWithContent = [...new Set(filtered.map((m) => m.pageIndex ?? 0))].sort((a, b) => a - b)
+      const pageIndexes = criteria.pageIndexes ? [...criteria.pageIndexes].sort((a, b) => a - b) : pagesWithContent
+      await exportPdfPrintModeReport({
+        project: { name: project?.name ?? 'Project', id: project?.id ?? '' },
+        pageImages,
+        pageIndexes,
+        markups: filtered,
+        data,
+        calloutSettings: getCalloutDisplaySettings(),
+        options,
+      })
+      setShowExportDialog(false)
+    } catch (err) {
+      console.error('PDF Print Mode export error', err)
+      alert('Export failed — please try again.')
+    } finally {
+      setExportingPdf(false)
+    }
   }
 
   function undoLast() {
@@ -782,7 +878,7 @@ export function PdfPrintMode() {
                   onClick={() => goToSearchResult(m)}
                   className="flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5"
                 >
-                  <span className="truncate">{m.featureName || m.label || m.tool}</span>
+                  <span className="truncate">{m.featureName || m.label || FEATURE_TOOL_LABELS[m.tool]?.label || m.tool}</span>
                   <span className="shrink-0 text-slate-600">{t('pdfPrintMode.page', { n: (m.pageIndex ?? 0) + 1, total: pageCount })}</span>
                 </button>
               ))}
@@ -796,6 +892,11 @@ export function PdfPrintMode() {
         </div>
 
         <div className="ml-auto flex items-center gap-2 shrink-0">
+          <button onClick={() => setShowExportDialog(true)} disabled={exportingPdf}
+            className="hidden sm:flex items-center gap-1.5 rounded-md border border-[#2a3347] px-2.5 py-1 text-[11px] font-medium text-slate-300 hover:bg-white/5 disabled:opacity-40 transition shrink-0">
+            <Download size={11} /> {exportingPdf ? 'Generating…' : 'Download PDF'}
+          </button>
+
           {pageCount > 1 && (
             <div className="flex items-center gap-1">
               <button onClick={() => setPageNum((p) => Math.max(0, p - 1))} disabled={pageNum === 0} className="rounded p-1 text-slate-500 hover:text-slate-300 disabled:opacity-30">
@@ -875,9 +976,26 @@ export function PdfPrintMode() {
             >
               Georeference to Map…
             </button>
+            <button
+              onClick={() => setShowCalloutSettings(true)}
+              className="mt-1.5 flex w-full items-center gap-2 rounded border border-[#2a3347] px-2 py-1.5 text-left text-[11px] text-slate-300 hover:bg-white/5"
+            >
+              <Settings size={12} /> Callout Display Settings
+            </button>
           </div>
         }
       />
+      {showCalloutSettings && <CalloutSettingsPopover onClose={() => setShowCalloutSettings(false)} />}
+      {showExportDialog && (
+        <FieldMapExportDialog
+          markups={allFileMarkups}
+          crews={data.crews}
+          pageContext={{ currentPage: pageNum, pageCount }}
+          exporting={exportingPdf}
+          onExport={handleExportPdf}
+          onClose={() => setShowExportDialog(false)}
+        />
+      )}
 
       {/* Style presets — only while a Work Type is being drawn */}
       {sessionTools && (
@@ -1048,7 +1166,14 @@ export function PdfPrintMode() {
           selectedId={selectedMarkup?.id ?? null}
           onSelect={(m) => { setSelectedMarkup(m); setPanelCollapsed(false) }}
           onMove={moveCalloutOffset}
-          onEdit={() => setPanelCollapsed(false)}
+          onMoveEnd={moveCalloutOffsetEnd}
+          onEdit={(m) => {
+            // Work Object callouts: selecting is enough — it surfaces the small
+            // WorkObjectPropertiesPanel automatically. Manual free-typed callouts
+            // have no such panel, so fall back to opening the full MarkupPanel.
+            setSelectedMarkup(m)
+            if (!m.workObjectType) setPanelCollapsed(false)
+          }}
           onDelete={(m) => { deleteMarkup(m.id); if (selectedMarkup?.id === m.id) setSelectedMarkup(null) }}
           onClose={() => setSelectedMarkup(null)}
         />
@@ -1059,13 +1184,14 @@ export function PdfPrintMode() {
         projectId={projectId ?? ''}
         markupId={addWorkMarkupId}
         onPickType={startAddWork}
+        onPickNonBillable={startNonBillableLine}
         onClose={() => { setAddWorkModalOpen(false); setAddWorkMarkupId(null); setActiveTool('select'); setSessionTools(null) }}
       />
 
       {/* Work Objects get the small floating WorkObjectPropertiesPanel instead (below)
           — this sidebar only opens for them on-demand, when a quick-action
           (Photos/Notes/Billing) explicitly requests a specific tab. */}
-      {selectedMarkup && !panelCollapsed && (!isSelectedWorkObject || openTabRequest) && (
+      {selectedMarkup && !panelCollapsed && ((!isSelectedWorkObject && !isSelectedNonBillable) || openTabRequest) && (
         <div className="fixed inset-y-0 right-0 z-40 flex w-full max-w-sm lg:static lg:w-80 lg:shrink-0 lg:max-w-none border-l border-[#1e1e1e]">
           <MarkupPanel
             markup={selectedMarkup}
@@ -1084,13 +1210,23 @@ export function PdfPrintMode() {
           markup={selectedMarkup}
           anchor={quickActionsAnchor}
           onClose={() => setSelectedMarkup(null)}
+          onOpenBillingTab={() => { setPanelCollapsed(false); setOpenTabRequest({ tab: 'billing', nonce: Date.now() }) }}
+        />
+      )}
+
+      {selectedMarkup && isSelectedNonBillable && quickActionsAnchor && (
+        <NonBillableLinePropertiesPanel
+          key={selectedMarkup.id}
+          markup={selectedMarkup}
+          anchor={quickActionsAnchor}
+          onClose={() => setSelectedMarkup(null)}
         />
       )}
 
       {selectedMarkup && quickActionsAnchor && (
         <MarkupQuickActions
           anchor={quickActionsAnchor}
-          mode={selectedMarkup.tool === 'callout' ? 'callout' : 'full'}
+          mode={selectedMarkup.tool === 'callout' ? 'callout' : isSelectedNonBillable ? 'minimal' : 'full'}
           canEdit={!selectedMarkup.lockedAt}
           onEdit={() => {
             if (selectedMarkup.tool === 'callout') { setPanelCollapsed(false); return }

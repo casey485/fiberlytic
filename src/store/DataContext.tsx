@@ -1113,9 +1113,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       // ── Field markup ─────────────────────────────────────────────────────────
       addMarkup(m) {
         const id = newId('mkp')
+        const now = new Date().toISOString()
         setData((d) => ({
           ...d,
-          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: new Date().toISOString(), syncStatus: 'pending' }],
+          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: now, workDate: m.workDate ?? now.slice(0, 10), syncStatus: 'pending' }],
           markupHistory: [...(d.markupHistory ?? []), historyEntry(id, 'created', m.createdBy ?? null)],
         }))
         enqueueSyncEntry('markup', id, id, 'create')
@@ -1128,7 +1129,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           const fieldMarkups = (d.fieldMarkups ?? []).map((m) =>
             m.id === id ? { ...m, ...patch, updatedAt: new Date().toISOString(), syncStatus: 'pending' as const } : m,
           )
-          const base = {
+          let result = {
             ...d,
             fieldMarkups,
             markupHistory: newEntries.length ? [...(d.markupHistory ?? []), ...newEntries] : (d.markupHistory ?? []),
@@ -1141,31 +1142,51 @@ export function DataProvider({ children }: { children: ReactNode }) {
           // value 1:1 (hasn't been manually overridden to something else), and —
           // if that line already generated a production entry — update Production/
           // P&L too, exactly like an edit made directly on the billing line would.
-          if (patch.quantity == null || !before || before.quantity == null || patch.quantity === before.quantity) {
-            return base
+          if (before && before.quantity != null && patch.quantity != null && patch.quantity !== before.quantity) {
+            const oldQuantity = before.quantity
+            const newQuantity = patch.quantity
+            const affected = (d.markupBilling ?? []).filter((b) => b.markupId === id && b.quantity === oldQuantity)
+            if (affected.length > 0) {
+              const affectedIds = new Set(affected.map((b) => b.id))
+              const markupBilling = (d.markupBilling ?? []).map((b) =>
+                affectedIds.has(b.id) ? { ...b, quantity: newQuantity, total: newQuantity * b.rate } : b,
+              )
+              let productionLineItems = result.productionLineItems
+              result = { ...result, markupBilling }
+              for (const b of affected) {
+                const linkedLineItem = productionLineItems.find((li) => li.sourceMarkupBillingId === b.id)
+                if (!linkedLineItem) continue
+                productionLineItems = productionLineItems.map((li) =>
+                  li.id === linkedLineItem.id
+                    ? { ...li, quantity: newQuantity, extendedTotal: newQuantity * li.rateSnapshot }
+                    : li,
+                )
+                result = { ...result, ...applyLineItemToProduction(result, productionLineItems, linkedLineItem.productionEntryId) }
+              }
+            }
           }
-          const oldQuantity = before.quantity
-          const newQuantity = patch.quantity
-          const affected = (d.markupBilling ?? []).filter((b) => b.markupId === id && b.quantity === oldQuantity)
-          if (affected.length === 0) return base
 
-          const affectedIds = new Set(affected.map((b) => b.id))
-          const markupBilling = (d.markupBilling ?? []).map((b) =>
-            affectedIds.has(b.id) ? { ...b, quantity: newQuantity, total: newQuantity * b.rate } : b,
-          )
-
-          let productionLineItems = d.productionLineItems
-          let result = { ...base, markupBilling }
-          for (const b of affected) {
-            const linkedLineItem = productionLineItems.find((li) => li.sourceMarkupBillingId === b.id)
-            if (!linkedLineItem) continue
-            productionLineItems = productionLineItems.map((li) =>
-              li.id === linkedLineItem.id
-                ? { ...li, quantity: newQuantity, extendedTotal: newQuantity * li.rateSnapshot }
-                : li,
+          // The markup's Work Date is user-editable independently of createdAt (see
+          // FieldMarkup.workDate) — e.g. work done 7/3 but the redline entered 7/6.
+          // Backdating/postdating it must carry through to every Production/P&L
+          // entry already generated from this markup (submitMarkupToProduction can
+          // create more than one ProductionEntry per markup, one per crew), so
+          // Production/Daily Production/Project History/Dashboard — which all read
+          // these canonical arrays directly — reflect the corrected date everywhere.
+          if (before && patch.workDate != null && patch.workDate !== before.workDate) {
+            const affectedEntryIds = new Set(
+              result.production.filter((e) => e.sourceMarkupId === id).map((e) => e.id),
             )
-            result = { ...result, ...applyLineItemToProduction(result, productionLineItems, linkedLineItem.productionEntryId) }
+            if (affectedEntryIds.size > 0) {
+              const workDate = patch.workDate
+              result = {
+                ...result,
+                production: result.production.map((e) => (affectedEntryIds.has(e.id) ? { ...e, date: workDate } : e)),
+                pnl: result.pnl.map((p) => (p.productionEntryId && affectedEntryIds.has(p.productionEntryId) ? { ...p, date: workDate } : p)),
+              }
+            }
           }
+
           return result
         })
         enqueueSyncEntry('markup', id, id, 'update')
@@ -1257,12 +1278,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
             ? (d.fieldMarkups ?? []).map((m) => (m.id === billing.markupId ? { ...m, syncStatus: 'pending' as const } : m))
             : (d.fieldMarkups ?? [])
 
-          // If quantity/rate/total changed on a billing line that was already
-          // submitted to production, update the linked ProductionLineItem (and
-          // its entry's footage + the linked PnLEntry's revenue) in place —
-          // otherwise Production/P&L would silently keep the stale snapshot
-          // from the original submission while the billed amount moves on.
+          // If quantity/rate/total/rateCode/description/unitType changed on a billing
+          // line that was already submitted to production, update the linked
+          // ProductionLineItem (and its entry's footage + the linked PnLEntry's
+          // revenue) in place — otherwise Production/P&L would silently keep the
+          // stale snapshot from the original submission while the billed amount or
+          // billing code moves on.
           const billingChanged = 'quantity' in patch || 'rate' in patch || 'total' in patch
+            || 'rateCode' in patch || 'description' in patch || 'unitType' in patch
           const updatedBilling = billingChanged ? markupBilling.find((b) => b.id === id) : undefined
           const linkedLineItem = updatedBilling
             ? (d.productionLineItems ?? []).find((li) => li.sourceMarkupBillingId === id)
@@ -1274,7 +1297,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
 
           const productionLineItems = d.productionLineItems.map((li) =>
             li.id === linkedLineItem.id
-              ? { ...li, quantity: updatedBilling.quantity, rateSnapshot: updatedBilling.rate, extendedTotal: updatedBilling.total }
+              ? {
+                  ...li,
+                  quantity: updatedBilling.quantity,
+                  rateSnapshot: updatedBilling.rate,
+                  extendedTotal: updatedBilling.total,
+                  unitCode: updatedBilling.rateCode,
+                  description: updatedBilling.description,
+                  uom: updatedBilling.unitType,
+                }
               : li,
           )
 
