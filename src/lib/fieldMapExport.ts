@@ -50,25 +50,41 @@ export async function exportFieldMapReport(
     import('html2canvas'), import('jspdf'), loadImageDataUrl('/logo.jpg'),
   ])
 
-  // "Include Callout Boxes" — the map DOM already contains the callout overlays
-  // as plain children, so the cheapest way to honor this toggle is to hide them
-  // just for the snapshot and restore them immediately after.
+  // Callout boxes and their dashed leader lines are deliberately rendered as
+  // position:fixed elements appended to <body> (see KmzMap.tsx's renderCallout/
+  // ensureArrowSVG) rather than nested inside mapEl, so they escape mapEl's own
+  // z-index stacking context. That means they live OUTSIDE mapEl's subtree —
+  // querying/snapshotting mapEl alone can never see them. Query document.body
+  // for the toggle, and snapshot document.body itself (cropped to mapEl's
+  // on-screen rect via html2canvas's x/y/width/height) so the callouts are
+  // actually captured in the export, not silently dropped.
   const calloutEls = options.includeCallouts
     ? []
-    : Array.from(mapEl.querySelectorAll<HTMLElement>('[data-callout-overlay], .callout-arrows'))
+    : Array.from(document.body.querySelectorAll<HTMLElement>('[data-callout-overlay], .callout-arrows'))
   for (const el of calloutEls) el.style.visibility = 'hidden'
 
+  const mapRect = mapEl.getBoundingClientRect()
   let mapImgData: string, mapW: number, mapH: number
   try {
-    const canvas = await html2canvas(mapEl, { useCORS: true, allowTaint: false, logging: false, backgroundColor: '#0a0a0a', scale: Math.max(2, window.devicePixelRatio ?? 1) })
-    mapImgData = canvas.toDataURL('image/png')
+    const canvas = await html2canvas(document.body, {
+      useCORS: true, allowTaint: false, logging: false, backgroundColor: '#0a0a0a',
+      scale: Math.max(2, window.devicePixelRatio ?? 1),
+      x: mapRect.left, y: mapRect.top, width: mapRect.width, height: mapRect.height,
+    })
+    // JPEG instead of PNG — PNG's lossless compression is enormous for map/photo
+    // content (this was the main driver of file sizes too large to email); JPEG
+    // at 0.9 quality looks effectively identical for this purpose at a fraction
+    // of the size. Callouts/redlines are vector-ish flat colors on a photo
+    // background, which JPEG handles fine at this quality without visible
+    // artifacting around text.
+    mapImgData = canvas.toDataURL('image/jpeg', 0.9)
     mapW = canvas.width; mapH = canvas.height
   } finally {
     for (const el of calloutEls) el.style.visibility = ''
   }
   const landscape = mapW >= mapH
 
-  const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'pt', format: 'letter' })
+  const pdf = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'pt', format: 'letter', compress: true })
   const pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight(), margin = 36
 
   const exportedAt = new Date().toLocaleString('en-US', { dateStyle: 'long', timeStyle: 'short' })
@@ -89,7 +105,7 @@ export async function exportFieldMapReport(
   const imgRatio = mapW / mapH, boxRatio = availW / availH
   let imgW: number, imgH: number
   if (imgRatio > boxRatio) { imgW = availW; imgH = availW / imgRatio } else { imgH = availH; imgW = availH * imgRatio }
-  pdf.addImage(mapImgData, 'PNG', margin + (availW - imgW) / 2, headerBottom, imgW, imgH)
+  pdf.addImage(mapImgData, 'JPEG', margin + (availW - imgW) / 2, headerBottom, imgW, imgH)
 
   if (options.includeLegend) {
     const legendTypes = [...new Map(rows.map((r) => [r.markup.workObjectType, r.markup.color] as const)).entries()]

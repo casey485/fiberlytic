@@ -188,6 +188,12 @@ export function PdfPrintMode() {
   const [accumPts, setAccumPts] = useState<[number, number][]>([])
   const [ghostPt, setGhostPt] = useState<[number, number] | null>(null)
   const downPtRef = useRef<[number, number] | null>(null)
+  // Manual double-click-to-finish detection — this page has no native dblclick handler
+  // at all (only Enter/Save previously finished a shape), and KmzMap.tsx's equivalent
+  // Leaflet-based drawing showed the native 'dblclick' DOM event is unreliable in a
+  // custom-pointer-handling context like this one, so track click timing/position
+  // ourselves instead of adding a dblclick listener that might not fire.
+  const lastAccumClickRef = useRef<{ time: number; pt: [number, number] } | null>(null)
 
   const [textInput, setTextInput] = useState<{ x: number; y: number; isCallout: boolean } | null>(null)
   const [textVal, setTextVal] = useState('')
@@ -220,7 +226,10 @@ export function PdfPrintMode() {
       try {
         const blob = await (await fetch(dataUrl)).blob()
         const pdfFile = new File([blob], file?.name ?? 'print.pdf', { type: 'application/pdf' })
-        const rendered = await renderPdf(pdfFile)
+        // No OCR cost here, just rendering plan sheets for viewing/markup — a
+        // multi-sheet construction print set can easily run past the OCR
+        // flow's conservative default, so use a much higher ceiling.
+        const rendered = await renderPdf(pdfFile, undefined, 200)
         if (cancelled) return
         setPageImages(rendered.images)
         setPageCount(rendered.pageCount)
@@ -611,8 +620,22 @@ export function PdfPrintMode() {
       if (moved) {
         addAccumPoint(start)
         addAccumPoint(pt)
+        lastAccumClickRef.current = null
       } else {
-        addAccumPoint(pt)
+        // Double-click-to-finish, detected off click timing/position (screen pixels, so
+        // the threshold stays consistent across zoom levels) rather than a native
+        // dblclick listener — see lastAccumClickRef declaration for why.
+        const now = Date.now()
+        const last = lastAccumClickRef.current
+        const isDoubleClick =
+          last !== null && now - last.time < 400 && Math.hypot(e.clientX - last.pt[0], e.clientY - last.pt[1]) < 10
+        lastAccumClickRef.current = { time: now, pt: [e.clientX, e.clientY] }
+        if (isDoubleClick && accumPts.length > 0) {
+          lastAccumClickRef.current = null
+          finishAccumulation()
+        } else {
+          addAccumPoint(pt)
+        }
       }
     }
   }
@@ -655,6 +678,7 @@ export function PdfPrintMode() {
     const pts = ptsOverride ?? accumPts
     setAccumPts([])
     setGhostPt(null)
+    lastAccumClickRef.current = null
     const isMultiLine = activeTool === 'multi_line' || activeTool === 'measure' || activeTool === 'line' || LINE_ACCUM_SYMBOL_TOOLS.has(activeTool as MarkupTool)
     const minPts = isMultiLine ? 2 : 3
     if (pts.length < minPts) return
@@ -673,6 +697,7 @@ export function PdfPrintMode() {
     setAccumPts([])
     setGhostPt(null)
     downPtRef.current = null
+    lastAccumClickRef.current = null
   }
 
   // ── Split ────────────────────────────────────────────────────────────

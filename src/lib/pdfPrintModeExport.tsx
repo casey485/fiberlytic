@@ -58,6 +58,17 @@ async function mountPageOffscreen(
   const root = createRoot(container)
 
   const calloutMarkups = includeCallouts ? markups.filter((m) => m.workObjectType) : []
+  // Precompute box position alongside the anchor for each callout so the leader
+  // line (drawn in the svg below) and the box itself (drawn as a div) agree on
+  // exactly where the box sits — same boxX+90/boxY+20 connection point the
+  // on-screen PdfCalloutOverlay uses, so the exported PDF matches what's on screen.
+  const calloutLayout = calloutMarkups.map((m) => {
+    const anchor = geometryAnchor(m.geometry)
+    if (!anchor) return null
+    const [ax, ay] = anchor
+    const off = getSavedCalloutOffset(m.id) ?? { offsetX: 40, offsetY: -60 }
+    return { markup: m, ax, ay, boxX: ax + off.offsetX, boxY: ay + off.offsetY }
+  }).filter((v): v is NonNullable<typeof v> => v !== null)
 
   await new Promise<void>((resolve) => {
     root.render(
@@ -65,19 +76,22 @@ async function mountPageOffscreen(
         <img src={image} alt="" width={naturalW} height={naturalH} style={{ display: 'block', width: naturalW, height: naturalH }} />
         <svg viewBox={`0 0 ${naturalW} ${naturalH}`} style={{ position: 'absolute', inset: 0, width: naturalW, height: naturalH }}>
           {markups.map((m) => <g key={m.id}>{markupToPdfElement(m)}</g>)}
+          {calloutLayout.map(({ markup: m, ax, ay, boxX, boxY }) => (
+            <line
+              key={m.id}
+              x1={boxX + 90} y1={boxY + 20} x2={ax} y2={ay}
+              stroke={m.color || '#ef4444'} strokeWidth={1.5} strokeDasharray="6 3" opacity={0.75}
+            />
+          ))}
         </svg>
-        {calloutMarkups.map((m) => {
-          const anchor = geometryAnchor(m.geometry)
-          if (!anchor) return null
-          const [ax, ay] = anchor
-          const off = getSavedCalloutOffset(m.id) ?? { offsetX: 40, offsetY: -60 }
+        {calloutLayout.map(({ markup: m, boxX, boxY }) => {
           const content = buildWorkObjectCalloutContent(m, data, calloutSettings)
           const color = m.color || '#3b82f6'
           return (
             <div
               key={m.id}
               style={{
-                position: 'absolute', left: ax + off.offsetX, top: ay + off.offsetY,
+                position: 'absolute', left: boxX, top: boxY,
                 background: 'rgba(0,0,0,0.9)', border: `1.5px solid ${color}`, borderRadius: 8,
                 padding: '9px 11px', color: '#f1f5f9', fontSize: 11, minWidth: 150, maxWidth: 280,
                 width: 'max-content', fontFamily: 'sans-serif',
@@ -128,7 +142,7 @@ export async function exportPdfPrintModeReport(args: PdfPrintModeExportArgs): Pr
     import('html2canvas'), import('jspdf'), loadImageDataUrl('/logo.jpg'),
   ])
 
-  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter' })
+  const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter', compress: true })
   const pageW = pdf.internal.pageSize.getWidth(), pageH = pdf.internal.pageSize.getHeight(), margin = 36
 
   // ── Cover page: project name/id, export timestamp, logo — kept off the print
@@ -182,13 +196,17 @@ export async function exportPdfPrintModeReport(args: PdfPrintModeExportArgs): Pr
         useCORS: true, allowTaint: false, logging: false, backgroundColor: '#0a0a0a',
         scale: Math.max(2, window.devicePixelRatio ?? 1),
       })
-      const imgData = canvas.toDataURL('image/png')
+      // JPEG instead of PNG — the main driver of file sizes too large to email,
+      // especially now that a print set can run up to 200 pages (see MAX_PAGES);
+      // PNG's lossless compression multiplied across that many pages adds up fast.
+      // 0.9 quality is visually indistinguishable for redlines/callouts/notes.
+      const imgData = canvas.toDataURL('image/jpeg', 0.9)
       pdf.addPage('letter', 'landscape')
       const imgRatio = canvas.width / canvas.height, boxRatio = (pageW - margin * 2) / (pageH - margin * 2)
       let imgW: number, imgH: number
       const availW = pageW - margin * 2, availH = pageH - margin * 2
       if (imgRatio > boxRatio) { imgW = availW; imgH = availW / imgRatio } else { imgH = availH; imgW = availH * imgRatio }
-      pdf.addImage(imgData, 'PNG', margin + (availW - imgW) / 2, margin + (availH - imgH) / 2, imgW, imgH)
+      pdf.addImage(imgData, 'JPEG', margin + (availW - imgW) / 2, margin + (availH - imgH) / 2, imgW, imgH)
       pdf.setFont('helvetica', 'normal'); pdf.setFontSize(7); pdf.setTextColor(140, 140, 140)
       pdf.text(`Page ${pageIndex + 1}`, pageW - margin - 40, pageH - 14)
       pdf.setTextColor(0, 0, 0)

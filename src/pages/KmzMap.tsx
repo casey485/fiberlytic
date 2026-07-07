@@ -1098,13 +1098,45 @@ export function KmzMap() {
       const DRAG_PLACE_THRESHOLD_PX = 6
       let downLatLng: L.LatLng | null = null
       let downContainerPt: L.Point | null = null
+
+      // Manual double-click-to-finish detection, tracked off our own reliable 'mouseup'
+      // stream rather than the browser's native 'dblclick' event. In this drawing context
+      // (custom mousedown/mouseup handlers + dragging.disable()) the native 'dblclick'
+      // does not reliably fire for a real rapid double-click — verified two clicks in a
+      // row at the same spot land as two separate 'mouseup's with no follow-on 'dblclick',
+      // so the in-progress line just kept growing instead of finishing. This mirrors
+      // exactly what the native handler below does, just triggered off click timing/
+      // position we control ourselves. The native handler stays as a harmless backup for
+      // environments where 'dblclick' does fire.
+      const DOUBLE_CLICK_MS = 400
+      const DOUBLE_CLICK_PX = 10
+      let lastClickTime = 0
+      let lastClickContainerPt: L.Point | null = null
+      const addPointOrFinishOnDoubleClick = (latlng: L.LatLng) => {
+        const now = Date.now()
+        const containerPt = pmap.latLngToContainerPoint(latlng)
+        const isDoubleClick =
+          lastClickContainerPt !== null &&
+          now - lastClickTime < DOUBLE_CLICK_MS &&
+          containerPt.distanceTo(lastClickContainerPt) < DOUBLE_CLICK_PX
+        lastClickTime = now
+        lastClickContainerPt = containerPt
+        if (isDoubleClick && polygonPtsRef.current.length > 0) {
+          lastClickTime = 0
+          lastClickContainerPt = null
+          finishPolygon()
+          return
+        }
+        addPoint(latlng)
+      }
+
       const onMouseDown = (e: L.LeafletMouseEvent) => {
         downLatLng = e.latlng
         downContainerPt = pmap.latLngToContainerPoint(e.latlng)
       }
       const onMouseUp = (e: L.LeafletMouseEvent) => {
         if (Date.now() - lastTouchMs < 500) { downLatLng = null; downContainerPt = null; return }
-        if (!downLatLng || !downContainerPt) { addPoint(e.latlng); return }
+        if (!downLatLng || !downContainerPt) { addPointOrFinishOnDoubleClick(e.latlng); return }
         const upContainerPt = pmap.latLngToContainerPoint(e.latlng)
         const moved = downContainerPt.distanceTo(upContainerPt) >= DRAG_PLACE_THRESHOLD_PX
         const start = downLatLng
@@ -1114,13 +1146,12 @@ export function KmzMap() {
           addPoint(start)
           addPoint(e.latlng)
         } else {
-          addPoint(e.latlng)
+          addPointOrFinishOnDoubleClick(e.latlng)
         }
       }
 
-      // Always add the dblclick endpoint before finishing — Leaflet's dblClickZoom may
-      // cancel the click events that fire during a double-click. (No-op for 'line',
-      // which already auto-finishes on its 2nd click.)
+      // Native 'dblclick' backup — fires in some environments even though it isn't
+      // reliable in this drawing context (see addPointOrFinishOnDoubleClick above).
       dblClickHandler = (e) => {
         L.DomEvent.stopPropagation(e)
         if (Date.now() - lastTouchMs < 500) return
@@ -1167,7 +1198,7 @@ export function KmzMap() {
         lastTouchMs = Date.now()
         const rect = container.getBoundingClientRect()
         const latlng = pmap.containerPointToLatLng(L.point(t.clientX - rect.left, t.clientY - rect.top))
-        addPoint(latlng)
+        addPointOrFinishOnDoubleClick(latlng)
       }
 
       pmap.on('mousedown', onMouseDown)

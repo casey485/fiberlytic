@@ -4,7 +4,7 @@ import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
-const MAX_PAGES = 15
+const DEFAULT_MAX_PAGES = 15
 
 export interface RenderedPdf {
   pageCount: number
@@ -30,16 +30,21 @@ export function downscale(source: HTMLCanvasElement, maxWidth: number): string {
 }
 
 /**
- * Render up to MAX_PAGES of a PDF to images.
+ * Render up to maxPages of a PDF to images.
  * @param onProgress called with (pageRendered, totalPages)
+ * @param maxPages defaults to DEFAULT_MAX_PAGES — kept conservative for the OCR/
+ *   auto-detect flow (GeoreferencePanel), which only ever uses page 1 anyway.
+ *   Callers that render a whole plan set for viewing (e.g. PdfPrintMode) should
+ *   pass a much higher limit since there's no OCR cost driving the cap there.
  */
 export async function renderPdf(
   file: File,
   onProgress?: (page: number, total: number) => void,
+  maxPages = DEFAULT_MAX_PAGES,
 ): Promise<RenderedPdf> {
   const buffer = await file.arrayBuffer()
   const doc = await pdfjsLib.getDocument({ data: buffer }).promise
-  const pageCount = Math.min(doc.numPages, MAX_PAGES)
+  const pageCount = Math.min(doc.numPages, maxPages)
 
   const images: string[] = []
   const thumbnails: string[] = []
