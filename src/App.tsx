@@ -4,7 +4,8 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { Dashboard } from './pages/Dashboard'
 import { Projects } from './pages/Projects'
 import { ProjectDetail } from './pages/ProjectDetail'
-import { Crews } from './pages/Crews'
+import { ProjectDocumentation } from './pages/ProjectDocumentation'
+import { CrewsAndSubcontractors } from './pages/Crews'
 import { Production } from './pages/Production'
 import { DailyPnL } from './pages/DailyPnL'
 import { Materials } from './pages/Materials'
@@ -13,6 +14,7 @@ import { Invoicing } from './pages/Invoicing'
 import { ProjectPrints } from './pages/ProjectPrints'
 import { RateCards } from './pages/RateCards'
 import { Employees } from './pages/Employees'
+import { QaReview } from './pages/QaReview'
 import { EquipmentPage } from './pages/Equipment'
 import { ExpensesPage } from './pages/Expenses'
 import { ClockIn } from './pages/ClockIn'
@@ -30,6 +32,15 @@ import { useAuth } from './store/AuthContext'
 function AdminRoute({ element }: { element: React.ReactElement }) {
   const { isAdmin } = useRole()
   return isAdmin ? element : <Navigate to="/" replace />
+}
+
+// Same idea as AdminRoute, but for a route more than one role can reach —
+// QA/QC Review is scoped internally (by the page itself) to just a
+// supervisor's own projects, so admin and supervisor both belong here;
+// field/subcontractor still don't.
+function RoleGatedRoute({ element, allow }: { element: React.ReactElement; allow: ('admin' | 'field' | 'subcontractor' | 'supervisor')[] }) {
+  const { role } = useRole()
+  return allow.includes(role) ? element : <Navigate to="/" replace />
 }
 
 function FullScreenSpinner() {
@@ -59,6 +70,7 @@ export default function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/projects" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
+          <Route path="/projects/:id/documentation" element={<AdminRoute element={<ProjectDocumentation />} />} />
           <Route path="/production" element={<Production />} />
           <Route path="/clock-in" element={<ClockIn />} />
           <Route path="/expenses" element={<ExpensesPage />} />
@@ -68,8 +80,9 @@ export default function App() {
           <Route path="/kmz/:projectId/print/:fileId" element={<PdfPrintMode />} />
 
           {/* Admin-only routes */}
-          <Route path="/crews"      element={<AdminRoute element={<Crews />} />} />
+          <Route path="/crews"      element={<AdminRoute element={<CrewsAndSubcontractors />} />} />
           <Route path="/employees"  element={<AdminRoute element={<Employees />} />} />
+          <Route path="/qa-review"  element={<RoleGatedRoute allow={['admin', 'supervisor']} element={<QaReview />} />} />
           <Route path="/pnl"        element={<AdminRoute element={<DailyPnL />} />} />
           <Route path="/pay-stubs"  element={<AdminRoute element={<PayStubs />} />} />
           <Route path="/rate-cards" element={<AdminRoute element={<RateCards />} />} />

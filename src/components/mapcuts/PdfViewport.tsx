@@ -3,7 +3,7 @@ import { ZoomIn, ZoomOut, Square, Loader2 } from 'lucide-react'
 import type { MapCutBox } from '../../types'
 import { usePdfPage } from '../../lib/mapCuts/usePdfPage'
 import { isTypingTarget } from '../../lib/domGuards'
-import { BoxEditor } from './BoxEditor'
+import { BoxEditor, type GhostPhaseBoxes } from './BoxEditor'
 
 const ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 300, 400, 600, 800, 1000, 1200, 1600]
 const MIN_ZOOM = 25
@@ -15,6 +15,9 @@ interface PdfViewportProps {
   pageIndex: number
   boxes: MapCutBox[]
   onBoxesChange: (boxes: MapCutBox[]) => void
+  overlapPct: number
+  activeColor: string
+  otherPhaseBoxes?: GhostPhaseBoxes[]
 }
 
 interface PdfPoint { x: number; y: number }
@@ -27,7 +30,7 @@ interface Transform { scale: number; panPt: PdfPoint }
  *  feedback, then triggers a fresh pdf.js render of the new region once the
  *  gesture settles (~130ms), matching how real PDF viewers stay smooth
  *  without re-rendering on every pointermove. */
-export function PdfViewport({ file, pageIndex, boxes, onBoxesChange }: PdfViewportProps) {
+export function PdfViewport({ file, pageIndex, boxes, onBoxesChange, overlapPct, activeColor, otherPhaseBoxes }: PdfViewportProps) {
   const { page, pageWidthPt, pageHeightPt, status, error, renderRegion } = usePdfPage(file, pageIndex)
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -81,16 +84,23 @@ export function PdfViewport({ file, pageIndex, boxes, onBoxesChange }: PdfViewpo
     [page, renderRegion],
   )
 
-  // Fit the page to the container width the first time both are known, then render immediately.
+  // Fit the WHOLE page (both dimensions) inside the container the first time both are
+  // known, then render immediately. Fitting to width alone (the previous behavior) left
+  // a tall page's bottom cut off below the fixed-height container at any zoom down to
+  // MIN_ZOOM, with no way to see the full page even at the lowest zoom setting. Also
+  // deliberately NOT floored at MIN_ZOOM here (unlike manual zoom-out, via setZoom below)
+  // — a very tall/narrow sheet can genuinely need less than MIN_ZOOM to fit entirely, and
+  // this initial fit's whole job is showing the complete page, so it must never be
+  // prevented from going that low.
   useEffect(() => {
-    if (initializedRef.current || !pageWidthPt || !containerSize.w) return
-    const fitScale = containerSize.w / pageWidthPt
-    const fitZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitScale * 100))
+    if (initializedRef.current || !pageWidthPt || !pageHeightPt || !containerSize.w || !containerSize.h) return
+    const fitScale = Math.min(containerSize.w / pageWidthPt, containerSize.h / pageHeightPt)
+    const fitZoom = Math.min(MAX_ZOOM, fitScale * 100)
     initializedRef.current = true
     setZoomPercent(fitZoom)
     setPanPt({ x: 0, y: 0 })
     doRender(fitZoom / 100, { x: 0, y: 0 }, containerSize.w, containerSize.h)
-  }, [pageWidthPt, containerSize.w, containerSize.h, doRender])
+  }, [pageWidthPt, pageHeightPt, containerSize.w, containerSize.h, doRender])
 
   // Container resize after the initial fit — immediate re-render, not debounced.
   const prevSizeRef = useRef(containerSize)
@@ -239,6 +249,9 @@ export function PdfViewport({ file, pageIndex, boxes, onBoxesChange }: PdfViewpo
               containerHeightCss={containerSize.h}
               boxes={boxes}
               onBoxesChange={onBoxesChange}
+              overlapPct={overlapPct}
+              activeColor={activeColor}
+              otherPhaseBoxes={otherPhaseBoxes}
               drawArmed={effectiveDrawArmed}
               onBoxDrawn={() => setDrawArmed(false)}
               onPanDelta={applyPanDelta}

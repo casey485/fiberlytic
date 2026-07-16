@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 import { useData } from '../store/DataContext'
 import { saveBlob, loadBlob } from '../lib/fileStore'
+import { localDateStr } from '../lib/format'
 import type { MarkupStatus } from '../types'
 
 // ── Line type definitions ─────────────────────────────────────────────────────
@@ -255,15 +256,18 @@ export function DistributionLineModal({ markupId, projectId, lengthFt, onClose, 
           caption: null,
           takenAt: new Date().toISOString(),
           uploadedBy: null,
-          lat: null,
-          lng: null,
+          lat: markup?.capturedLat ?? null,
+          lng: markup?.capturedLng ?? null,
+          crewId: markup?.crewId ?? null,
+          employeeId: markup?.createdBy ?? null,
+          subcontractorId: markup?.assignedSubcontractorId ?? null,
         })
         await saveBlob(`mkp-${id}`, dataUrl)
       }
 
       // 3. Add billing lines
       if (!billingNotRequired) {
-        const today  = new Date().toISOString().slice(0, 10)
+        const today  = localDateStr()
         const usedCodes: string[] = []
         for (const [unitCode, sel] of selections) {
           if (!sel.checked || sel.qty <= 0) continue

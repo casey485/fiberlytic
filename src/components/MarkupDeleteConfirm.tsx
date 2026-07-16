@@ -14,13 +14,14 @@ interface Props {
 export function MarkupDeleteConfirm({ markup, onCancel, onConfirm }: Props) {
   return (
     <Modal
+      dark
       open={!!markup}
       onClose={onCancel}
       title="Delete this work object?"
       footer={
         <>
-          <Button variant="ghost" onClick={onCancel}>Cancel</Button>
-          <Button variant="danger" onClick={onConfirm}>Delete</Button>
+          <Button dark variant="ghost" onClick={onCancel}>Cancel</Button>
+          <Button dark variant="danger" onClick={onConfirm}>Delete</Button>
         </>
       }
     >

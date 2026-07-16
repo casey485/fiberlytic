@@ -17,7 +17,8 @@
 import type { LucideIcon } from 'lucide-react'
 import {
   Cable, Drill, GitBranch, Waypoints, Home, Tractor, Layers, Shovel,
-  Box, Milestone, Anchor, Scissors, Sprout, ShieldCheck, AlertTriangle, FileWarning,
+  Box, Milestone, Anchor, Scissors, Sprout, ShieldCheck, AlertTriangle, FileWarning, Hash,
+  Disc, Footprints,
 } from 'lucide-react'
 import type { MarkupTool, MarkupStatus, WorkObjectTypeId, PhotoProofType } from '../types'
 import type { FieldMapDrawTool } from '../components/FieldMapToolbar'
@@ -204,6 +205,35 @@ export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
     requiredPhotoPhases: ['before', 'depth_proof', 'after'], requiresNotes: true, allowedStatuses: FULL_STATUSES,
     inspectionTemplate: ['Depth correct', 'Surface restored', 'No utility strikes'],
   },
+  // ── Sequential map annotations ─────────────────────────────────────────
+  // Drop a single point and type a sequence code (e.g. "TM-047") into the
+  // Label field — that text is what shows on the map callout, no separate
+  // field: see workObjectCallout.ts, which prefers featureName as these
+  // types' callout title instead of the usual Work ID/type-label default,
+  // and AddWorkTypeGrid.tsx, which surfaces them as instant-draw quick
+  // actions (like Non-Billable Item) instead of normal grid cards, since
+  // none of them are billable work — see SEQUENTIAL_ANNOTATION_TYPES below.
+  {
+    id: 'tick_mark', label: 'Fiber Tick Mark', shortCode: 'FTM', icon: Hash,
+    defaultColor: '#22c55e', defaultGeometry: 'point', defaultMarkupTool: 'point',
+    defaultUnit: 'Each', billingKeywords: ['tick mark', 'fiber tick'],
+    requiredPhotoPhases: [], requiresNotes: false, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: [],
+  },
+  {
+    id: 'fiber_loop', label: 'Fiber Loop', shortCode: 'FLP', icon: Disc,
+    defaultColor: '#06b6d4', defaultGeometry: 'point', defaultMarkupTool: 'point',
+    defaultUnit: 'Each', billingKeywords: ['fiber loop', 'slack loop'],
+    requiredPhotoPhases: [], requiresNotes: false, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: [],
+  },
+  {
+    id: 'snow_shoe', label: 'Snow Shoe', shortCode: 'SNS', icon: Footprints,
+    defaultColor: '#eab308', defaultGeometry: 'point', defaultMarkupTool: 'point',
+    defaultUnit: 'Each', billingKeywords: ['snow shoe', 'snowshoe'],
+    requiredPhotoPhases: [], requiresNotes: false, allowedStatuses: FULL_STATUSES,
+    inspectionTemplate: [],
+  },
   {
     id: 'other', label: 'Other', shortCode: 'OTH', icon: FileWarning,
     defaultColor: '#94a3b8', defaultGeometry: 'point', defaultMarkupTool: 'point',
@@ -212,6 +242,54 @@ export const WORK_OBJECT_TYPES: WorkObjectTypeDef[] = [
     inspectionTemplate: [],
   },
 ]
+
+/** Types that are pure "drop a point, type a sequence" map annotations —
+ *  never billable, never enter Production/P&L, skip the full Add Work wizard
+ *  entirely (see AddWorkTypeGrid.tsx's quick-action buttons and
+ *  KmzMap.tsx/PdfPrintMode.tsx's startSequentialAnnotation). Add a new id
+ *  here (plus a WORK_OBJECT_TYPES entry above) to extend the family — every
+ *  other call site keys off this list instead of a specific id. */
+export const SEQUENTIAL_ANNOTATION_TYPES: WorkObjectTypeId[] = ['tick_mark', 'fiber_loop', 'snow_shoe']
+
+export function isSequentialAnnotation(id: WorkObjectTypeId | null | undefined): boolean {
+  return !!id && SEQUENTIAL_ANNOTATION_TYPES.includes(id)
+}
+
+/** Example text shown in the Sequence field's placeholder — purely cosmetic,
+ *  keyed by id so each type can hint at its own numbering convention. */
+export const SEQUENCE_PLACEHOLDER: Partial<Record<WorkObjectTypeId, string>> = {
+  tick_mark: 'e.g. TM-047',
+  fiber_loop: 'e.g. FL-012',
+  snow_shoe: 'e.g. SS-005',
+}
+
+/** Types that keep their normal Add Work grid button and drawing geometry
+ *  (Restoration still draws a polygon, the rest still drop a point) but,
+ *  like SEQUENTIAL_ANNOTATION_TYPES above, skip the Photos/Billing/Crew/
+ *  Quantity/Status wizard entirely — never billable, never enter Production/
+ *  P&L. Instead of a short sequence code, the crew types one free-text
+ *  comment (stored in markup.notes) describing what's being marked. */
+export const COMMENT_ANNOTATION_TYPES: WorkObjectTypeId[] = ['restoration', 'qa_qc', 'damage_report', 'other', 'anchor_down_guy']
+
+export function isCommentAnnotation(id: WorkObjectTypeId | null | undefined): boolean {
+  return !!id && COMMENT_ANNOTATION_TYPES.includes(id)
+}
+
+/** True for any Work Type that skips the full Add Work wizard and exposes
+ *  just one free-text field (a sequence code or a comment) — the shared gate
+ *  used wherever crew/quantity/billing fields must stay hidden or excluded. */
+export function isQuickAnnotation(id: WorkObjectTypeId | null | undefined): boolean {
+  return isSequentialAnnotation(id) || isCommentAnnotation(id)
+}
+
+/** Example text shown in the Comment field's placeholder — purely cosmetic. */
+export const COMMENT_PLACEHOLDER: Partial<Record<WorkObjectTypeId, string>> = {
+  restoration: 'e.g. Seed and straw applied, 200 sq ft',
+  qa_qc: 'e.g. Fiber count mismatch at splice 4',
+  damage_report: 'e.g. Hit gas line marker near curb, called before you dig',
+  other: 'Describe what this marks',
+  anchor_down_guy: 'e.g. Anchor set, guy wire tensioned',
+}
 
 export const WORK_OBJECT_TYPE_MAP: Record<WorkObjectTypeId, WorkObjectTypeDef> =
   Object.fromEntries(WORK_OBJECT_TYPES.map((t) => [t.id, t])) as Record<WorkObjectTypeId, WorkObjectTypeDef>

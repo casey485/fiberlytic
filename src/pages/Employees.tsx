@@ -9,7 +9,7 @@ import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
 import { ProductionPayRatesModal } from '../components/employees/ProductionPayRatesModal'
 import { CopyProductionRatesModal } from '../components/employees/CopyProductionRatesModal'
-import { moneyExact } from '../lib/format'
+import { moneyExact, localDateStr } from '../lib/format'
 import { weekStart, weekEnd } from '../lib/analytics'
 import type { Employee } from '../types'
 
@@ -22,6 +22,7 @@ type EmpForm = {
   defaultCrewId: string
   active: boolean
   isForeman: boolean
+  isSupervisor: boolean
 }
 
 function EmployeeModal({
@@ -42,6 +43,7 @@ function EmployeeModal({
     defaultCrewId: initial?.defaultCrewId ?? '',
     active: initial?.active ?? true,
     isForeman: initial?.isForeman ?? false,
+    isSupervisor: initial?.isSupervisor ?? false,
   })
   const set = <K extends keyof EmpForm>(k: K, v: EmpForm[K]) => setForm((f) => ({ ...f, [k]: v }))
   const valid = form.name.trim() && form.role.trim() && (!isAdmin || parseFloat(form.hourlyRate) >= 0)
@@ -88,6 +90,15 @@ function EmployeeModal({
         <label className="flex items-center gap-2 text-sm text-slate-700">
           <input
             type="checkbox"
+            checked={form.isSupervisor}
+            onChange={(e) => set('isSupervisor', e.target.checked)}
+            className="rounded border-slate-300"
+          />
+          Supervisor
+        </label>
+        <label className="flex items-center gap-2 text-sm text-slate-700">
+          <input
+            type="checkbox"
             checked={form.active}
             onChange={(e) => set('active', e.target.checked)}
             className="rounded border-slate-300"
@@ -105,7 +116,7 @@ export function Employees() {
   const [dialog, setDialog] = useState<{ open: boolean; emp: Employee | null }>({ open: false, emp: null })
   const [ratesEmployee, setRatesEmployee] = useState<Employee | null>(null)
   const [copyRatesOpen, setCopyRatesOpen] = useState(false)
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
 
   // Build weekly hours from clock entries (actual time worked) so hours show
   // even when production hasn't been logged yet for the week.
@@ -130,6 +141,7 @@ export function Employees() {
       defaultCrewId: form.defaultCrewId || null,
       active: form.active,
       isForeman: form.isForeman,
+      isSupervisor: form.isSupervisor,
     }
     if (dialog.emp) {
       updateEmployee(dialog.emp.id, payload)
@@ -171,7 +183,7 @@ export function Employees() {
         <CardBody className="p-0">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+              <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                 <th className="px-5 py-3 font-medium">Name</th>
                 <th className="px-5 py-3 font-medium">Role</th>
                 {isAdmin && <th className="px-5 py-3 text-right font-medium">Hourly Rate</th>}
@@ -193,12 +205,15 @@ export function Employees() {
                       {emp.isForeman && (
                         <span className="ml-2 inline-flex items-center rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">Foreman</span>
                       )}
+                      {emp.isSupervisor && (
+                        <span className="ml-2 inline-flex items-center rounded bg-cyan-100 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-700">Supervisor</span>
+                      )}
                     </td>
-                    <td className="px-5 py-3 text-slate-600">{emp.role}</td>
+                    <td className="px-5 py-3 text-slate-400">{emp.role}</td>
                     {isAdmin && (
                       <td className="px-5 py-3 text-right font-medium text-slate-800">{moneyExact(emp.hourlyRate)}/hr</td>
                     )}
-                    <td className="px-5 py-3 text-slate-500">{crew?.name ?? '—'}</td>
+                    <td className="px-5 py-3 text-slate-400">{crew?.name ?? '—'}</td>
                     <td className="px-5 py-3 text-right">
                       <span className={`font-medium ${isOT ? 'text-amber-600' : 'text-slate-700'}`}>
                         {hrs.toFixed(2)}
@@ -216,18 +231,18 @@ export function Employees() {
                       <div className="flex items-center justify-end gap-1">
                         <button
                           onClick={() => setRatesEmployee(emp)}
-                          className="p-1.5 text-slate-300 hover:text-brand-600"
+                          className="p-1.5 text-slate-600 hover:text-brand-600"
                           aria-label="Production pay rates"
                           title="Production Pay Rates"
                         >
                           <DollarSign size={14} />
                         </button>
-                        <button onClick={() => setDialog({ open: true, emp })} className="p-1.5 text-slate-300 hover:text-brand-600" aria-label="Edit">
+                        <button onClick={() => setDialog({ open: true, emp })} className="p-1.5 text-slate-600 hover:text-brand-600" aria-label="Edit">
                           <Pencil size={14} />
                         </button>
                         <button
                           onClick={() => { if (confirm(`Remove ${emp.name}?`)) deleteEmployee(emp.id) }}
-                          className="p-1.5 text-slate-300 hover:text-rose-600"
+                          className="p-1.5 text-slate-600 hover:text-rose-600"
                           aria-label="Delete"
                         >
                           <Trash2 size={14} />
@@ -240,14 +255,14 @@ export function Employees() {
 
               {inactiveEmps.map((emp) => (
                 <tr key={emp.id} className="border-b border-slate-50 opacity-50 hover:bg-slate-50/60">
-                  <td className="px-5 py-3 font-medium text-slate-500">{emp.name}</td>
-                  <td className="px-5 py-3 text-slate-400">{emp.role}</td>
-                  {isAdmin && <td className="px-5 py-3 text-right text-slate-400">{moneyExact(emp.hourlyRate)}/hr</td>}
-                  <td className="px-5 py-3 text-slate-400">—</td>
-                  <td className="px-5 py-3 text-right text-slate-400">—</td>
+                  <td className="px-5 py-3 font-medium text-slate-400">{emp.name}</td>
+                  <td className="px-5 py-3 text-slate-500">{emp.role}</td>
+                  {isAdmin && <td className="px-5 py-3 text-right text-slate-500">{moneyExact(emp.hourlyRate)}/hr</td>}
+                  <td className="px-5 py-3 text-slate-500">—</td>
+                  <td className="px-5 py-3 text-right text-slate-500">—</td>
                   <td className="px-5 py-3"><Badge tone="slate">Inactive</Badge></td>
                   <td className="px-5 py-3 text-right">
-                    <button onClick={() => setDialog({ open: true, emp })} className="p-1.5 text-slate-300 hover:text-brand-600" aria-label="Edit">
+                    <button onClick={() => setDialog({ open: true, emp })} className="p-1.5 text-slate-600 hover:text-brand-600" aria-label="Edit">
                       <Pencil size={14} />
                     </button>
                   </td>
@@ -256,7 +271,7 @@ export function Employees() {
 
               {data.employees.length === 0 && (
                 <tr>
-                  <td colSpan={isAdmin ? 7 : 6} className="px-5 py-10 text-center text-slate-400">
+                  <td colSpan={isAdmin ? 7 : 6} className="px-5 py-10 text-center text-slate-500">
                     No employees yet. Add employees to enable timecard entry with rate-based labor costs.
                   </td>
                 </tr>

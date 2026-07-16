@@ -86,7 +86,7 @@ const ALL_DRAW_TOOLS: ToolButtonDef[] = [...GENERIC_DRAW_TOOLS, ...SYMBOL_DRAW_T
 
 function ToolbarButton({
   active, disabled, title, onClick, children,
-}: { active?: boolean; disabled?: boolean; title: string; onClick: () => void; children: React.ReactNode }) {
+}: { active?: boolean; disabled?: boolean; title: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; children: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
@@ -112,8 +112,15 @@ export function FieldMapToolbar({
   activeTools,
 }: Props) {
   const { t } = useTranslation()
-  const [moreToolsOpen, setMoreToolsOpen] = useState(false)
-  const [advancedOpen, setAdvancedOpen] = useState(false)
+  // Stores the trigger button's screen position (not just an open/closed
+  // flag) so the dropdown can render with position:fixed, anchored to that
+  // point — position:absolute here would nest it inside the map's own local
+  // stacking context (see KmzMap.tsx's comments on mapContainer's z-500:
+  // "no matter how high a z-index it's given locally"), so the map paints
+  // over it regardless of z-index. position:fixed escapes that entirely,
+  // the same pattern already used for the map's other floating panels.
+  const [moreToolsAnchor, setMoreToolsAnchor] = useState<{ left: number; top: number } | null>(null)
+  const [advancedAnchor, setAdvancedAnchor] = useState<{ right: number; top: number } | null>(null)
 
   const sessionActive = activeTools !== null
   const primaryTools = sessionActive ? ALL_DRAW_TOOLS.filter((d) => activeTools.includes(d.tool)) : []
@@ -155,21 +162,28 @@ export function FieldMapToolbar({
           {overflowTools.length > 0 && (
             <div className="relative shrink-0">
               <button
-                onClick={() => setMoreToolsOpen((o) => !o)}
+                onClick={(e) => {
+                  if (moreToolsAnchor) { setMoreToolsAnchor(null); return }
+                  const rect = e.currentTarget.getBoundingClientRect()
+                  setMoreToolsAnchor({ left: rect.left, top: rect.bottom + 4 })
+                }}
                 title={t('toolbar.moreTools')}
                 className={`flex items-center gap-0.5 rounded-md p-1.5 transition ${
                   isOverflowActive ? 'bg-brand-600/25 text-brand-300' : 'text-slate-400 hover:text-slate-200 hover:bg-white/5'
                 }`}
               >
                 <Wrench size={15} />
-                <ChevronDown size={10} className={`transition-transform ${moreToolsOpen ? 'rotate-180' : ''}`} />
+                <ChevronDown size={10} className={`transition-transform ${moreToolsAnchor ? 'rotate-180' : ''}`} />
               </button>
-              {moreToolsOpen && (
-                <div className="absolute left-0 top-full z-[2000] mt-1 w-40 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
+              {moreToolsAnchor && (
+                <div
+                  className="fixed z-[2000] max-h-[60vh] w-40 overflow-y-auto rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl"
+                  style={{ left: moreToolsAnchor.left, top: moreToolsAnchor.top }}
+                >
                   {overflowTools.map(({ tool, label, labelKey, icon }) => (
                     <button
                       key={tool}
-                      onClick={() => { onSelectTool(tool); setMoreToolsOpen(false) }}
+                      onClick={() => { onSelectTool(tool); setMoreToolsAnchor(null) }}
                       className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition hover:bg-white/5 ${
                         activeTool === tool ? 'text-brand-300' : 'text-slate-300'
                       }`}
@@ -213,11 +227,22 @@ export function FieldMapToolbar({
 
       {advancedToolsChildren && (
         <div className="relative shrink-0">
-          <ToolbarButton active={advancedOpen} title={t('toolbar.advancedTools')} onClick={() => setAdvancedOpen((o) => !o)}>
+          <ToolbarButton
+            active={!!advancedAnchor}
+            title={t('toolbar.advancedTools')}
+            onClick={(e) => {
+              if (advancedAnchor) { setAdvancedAnchor(null); return }
+              const rect = e.currentTarget.getBoundingClientRect()
+              setAdvancedAnchor({ right: window.innerWidth - rect.right, top: rect.bottom + 4 })
+            }}
+          >
             <MoreHorizontal size={15} />
           </ToolbarButton>
-          {advancedOpen && (
-            <div className="absolute right-0 top-full z-[2000] mt-1 w-48 rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl">
+          {advancedAnchor && (
+            <div
+              className="fixed z-[2000] max-h-[70vh] w-48 overflow-y-auto rounded-md border border-[#2a3347] bg-[#0d0d0d] py-1 shadow-xl"
+              style={{ right: advancedAnchor.right, top: advancedAnchor.top }}
+            >
               {advancedToolsChildren}
             </div>
           )}

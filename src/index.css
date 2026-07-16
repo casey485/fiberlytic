@@ -4,8 +4,10 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Always dark */
 :root {
+  color-scheme: light;
+}
+.dark {
   color-scheme: dark;
 }
 
@@ -15,8 +17,12 @@ body,
   height: 100%;
 }
 
-/* Backdrop image fixed behind everything — dark overlay dims it so UI stays readable */
+/* Backdrop image only used behind the (always-dark) auth screens — everywhere
+ * else the light content area / dark sidebar are fully opaque and cover it. */
 html {
+  background: #fafafa;
+}
+.dark html {
   background:
     linear-gradient(rgba(0, 0, 0, 0.62), rgba(0, 0, 0, 0.62)),
     url('/backdrop.jpg') center / cover no-repeat fixed;
@@ -25,7 +31,10 @@ html {
 body {
   margin: 0;
   background: transparent;
-  @apply text-slate-100 antialiased;
+  @apply text-slate-800 antialiased;
+}
+.dark body {
+  @apply text-slate-100;
 }
 
 /* ── Dark-gold overrides — applied when .dark class is on <html> ─────────── */

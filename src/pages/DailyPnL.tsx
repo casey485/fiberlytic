@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { Line, LineChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, ReferenceLine } from 'recharts'
 import { ChevronLeft, ChevronRight, Plus, Trash2 } from 'lucide-react'
 import { useData } from '../store/DataContext'
@@ -8,9 +8,15 @@ import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { StatCard } from '../components/ui/StatCard'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
-import { money, moneyExact, percent, formatDate, formatDateShort } from '../lib/format'
-import { weekStart, weekEnd, computeMetrics, daysInMonth } from '../lib/analytics'
-import type { JobExpense } from '../types'
+import { QaFilterBar } from '../components/QaFilterBar'
+import { QaStatusBadge } from '../components/QaStatusBadge'
+import { QaStatusFilterSelect, type QaStatusFilterValue } from '../components/QaStatusFilterSelect'
+import { money, moneyExact, percent, formatDate, formatDateShort, localDateStr } from '../lib/format'
+import { weekStart, weekEnd, computeMetrics, daysInMonth, computeQaRevenueBreakdown } from '../lib/analytics'
+import { crewOrSubName } from '../lib/crewOrSub'
+import { EMPTY_QA_FILTERS } from '../lib/qaReview'
+import type { QaFilterState } from '../lib/qaReview'
+import type { JobExpense, ProductionLineItem } from '../types'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -99,9 +105,10 @@ function ExpenseModal({ onClose, defaultDate }: { onClose: () => void; defaultDa
 function WeeklyView() {
   const { data, deleteJobExpense } = useData()
   const { isAdmin } = useRole()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const [weekRef, setWeekRef] = useState(weekStart(today))
   const [projectFilter, setProjectFilter] = useState('all')
+  const [qaFilter, setQaFilter] = useState<QaStatusFilterValue>('all')
   const [addExpense, setAddExpense] = useState(false)
 
   const wStart = weekRef
@@ -110,14 +117,27 @@ function WeeklyView() {
   const prevWeek = () => setWeekRef(addDays(weekRef, -7))
   const nextWeek = () => setWeekRef(addDays(weekRef, 7))
 
+  // A line item "matches" the active QA filter — 'none' means logged outside
+  // the redline workflow entirely (no qaStatus at all).
+  // Line items with no qaStatus at all (logged before the redline QA/QC
+  // workflow existed, or via the plain Log Production/Log Crew Day flows)
+  // are treated as implicitly "approved" — they were never submitted for
+  // review, so there's nothing pending or rejected about them.
+  const qaMatches = useCallback((status: string | undefined) => {
+    if (qaFilter === 'all') return true
+    return (status ?? 'approved') === qaFilter
+  }, [qaFilter])
+
   // Revenue: production line items → production entries in this week
   const revenueRows = useMemo(() => {
-    const rows: { date: string; projectId: string; unitCode: string; description: string; uom: string; qty: number; rate: number; total: number }[] = []
+    const rows: { id: string; date: string; projectId: string; unitCode: string; description: string; uom: string; qty: number; rate: number; total: number; qaStatus: ProductionLineItem['qaStatus'] }[] = []
     for (const li of data.productionLineItems) {
       const entry = data.production.find((e) => e.id === li.productionEntryId)
       if (!entry || entry.date < wStart || entry.date > wEnd) continue
       if (projectFilter !== 'all' && entry.projectId !== projectFilter) continue
+      if (!qaMatches(li.qaStatus)) continue
       rows.push({
+        id: li.id,
         date: entry.date,
         projectId: entry.projectId,
         unitCode: li.unitCode,
@@ -126,10 +146,11 @@ function WeeklyView() {
         qty: li.quantity,
         rate: li.rateSnapshot,
         total: li.extendedTotal,
+        qaStatus: li.qaStatus,
       })
     }
     return rows.sort((a, b) => a.date.localeCompare(b.date))
-  }, [data.productionLineItems, data.production, wStart, wEnd, projectFilter])
+  }, [data.productionLineItems, data.production, wStart, wEnd, projectFilter, qaMatches])
 
   // Labor: timecards in this week
   const laborRows = useMemo(() => {
@@ -188,26 +209,30 @@ function WeeklyView() {
       data.pnl.filter((p) => p.productionEntryId).map((p) => [p.productionEntryId!, p])
     )
     return data.production
-      .filter((pe) =>
-        pe.date >= wStart && pe.date <= wEnd &&
-        (projectFilter === 'all' || pe.projectId === projectFilter)
-      )
+      .filter((pe) => {
+        if (pe.date < wStart || pe.date > wEnd) return false
+        if (projectFilter !== 'all' && pe.projectId !== projectFilter) return false
+        if (qaFilter === 'all') return true
+        const items = data.productionLineItems.filter((li) => li.productionEntryId === pe.id)
+        return items.length > 0 ? items.some((li) => qaMatches(li.qaStatus)) : qaMatches(undefined)
+      })
       .map((pe) => {
         const pnlEntry = pnlByEntryId.get(pe.id)
         const proj = data.projects.find((p) => p.id === pe.projectId)
-        const crew = data.crews.find((c) => c.id === pe.crewId)
+        const allLineItems = data.productionLineItems.filter((li) => li.productionEntryId === pe.id)
         return {
           id: pe.id,
           date: pe.date,
           projectName: proj?.name ?? '—',
-          crewName: crew?.name,
+          crewName: crewOrSubName(data, pe.crewId, pe.subcontractorId),
           footage: pe.footage,
           revenue: pnlEntry?.revenue ?? 0,
           retentionPct: proj?.retentionPct ?? 0.10,
+          lineItems: qaFilter === 'all' ? allLineItems : allLineItems.filter((li) => qaMatches(li.qaStatus)),
         }
       })
       .sort((a, b) => a.date.localeCompare(b.date))
-  }, [data.production, data.pnl, data.projects, data.crews, wStart, wEnd, projectFilter])
+  }, [data, wStart, wEnd, projectFilter, qaFilter, qaMatches])
 
   const totalRevenue = weekMetrics.revenue
   const totalLabor = laborRows.reduce((s, tc) => s + tc.laborCost, 0) + pnlLaborRows.reduce((s, e) => s + e.laborCost, 0)
@@ -245,13 +270,13 @@ function WeeklyView() {
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
           <button onClick={prevWeek} className="rounded-lg border border-slate-200 p-1.5 hover:bg-slate-50" aria-label="Previous week">
-            <ChevronLeft size={16} className="text-slate-500" />
+            <ChevronLeft size={16} className="text-slate-400" />
           </button>
           <div className="text-sm font-medium text-slate-700">
             Week of {formatDate(wStart)} – {formatDate(wEnd)}
           </div>
           <button onClick={nextWeek} className="rounded-lg border border-slate-200 p-1.5 hover:bg-slate-50" aria-label="Next week">
-            <ChevronRight size={16} className="text-slate-500" />
+            <ChevronRight size={16} className="text-slate-400" />
           </button>
         </div>
         <div className="flex items-center gap-2">
@@ -259,6 +284,7 @@ function WeeklyView() {
             <option value="all">All projects</option>
             {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
+          {isAdmin && <QaStatusFilterSelect value={qaFilter} onChange={setQaFilter} className="w-56" />}
           <Button onClick={() => setAddExpense(true)}>
             <Plus size={15} /> Add expense
           </Button>
@@ -282,7 +308,7 @@ function WeeklyView() {
 
       {isAdmin && totalRevenue > 0 && (
         <div className="mb-6 rounded-lg border border-slate-200 bg-white p-5">
-          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">P&L Waterfall</p>
+          <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-400">P&L Waterfall</p>
           <div className="grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm xl:grid-cols-4">
             <PnlRow label="Gross Revenue" value={money(totalRevenue)} />
             <PnlRow label={`Retainage Held (${Math.round(retentionPct * 100)}%)`} value={`(${money(retentionHeld)})`} tone="neg" />
@@ -299,8 +325,8 @@ function WeeklyView() {
 
       {!hasData && (
         <Card className="py-16 text-center">
-          <p className="text-slate-400">No production, timecards, or expenses logged for this week.</p>
-          <p className="mt-1 text-sm text-slate-400">Use Production → Log production or Log timecard to get started.</p>
+          <p className="text-slate-500">No production, timecards, or expenses logged for this week.</p>
+          <p className="mt-1 text-sm text-slate-500">Use Production → Log production or Log timecard to get started.</p>
         </Card>
       )}
 
@@ -314,7 +340,7 @@ function WeeklyView() {
           <CardBody className="p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-2.5 font-medium">Date</th>
                   <th className="px-5 py-2.5 font-medium">Project</th>
                   <th className="px-5 py-2.5 font-medium">Crew</th>
@@ -326,28 +352,48 @@ function WeeklyView() {
               </thead>
               <tbody>
                 {productionRows.map((pe) => {
-                  const retained = Math.round(pe.revenue * pe.retentionPct)
-                  const net = pe.revenue - retained
-                  return (
-                    <tr key={pe.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(pe.date)}</td>
-                      <td className="px-5 py-2.5 font-medium text-slate-800">{pe.projectName}</td>
-                      <td className="px-5 py-2.5">
-                        {pe.crewName
-                          ? <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{pe.crewName}</span>
-                          : <span className="text-slate-400">—</span>}
-                      </td>
-                      <td className="px-5 py-2.5 text-right text-slate-700">{pe.footage.toLocaleString()} LF</td>
-                      {isAdmin && <td className="px-5 py-2.5 text-right text-slate-600">{money(pe.revenue)}</td>}
-                      {isAdmin && (
-                        <td className="px-5 py-2.5 text-right text-amber-600">
-                          {retained > 0 ? `(${money(retained)})` : '—'}
-                          {pe.retentionPct > 0 && <span className="ml-1 text-xs text-slate-400">{Math.round(pe.retentionPct * 100)}%</span>}
+                  // One full row per rate-card line item — two unit codes on the
+                  // same entry can bill at two different rates, which a single
+                  // blended gross/retained/net figure would hide. Date/Project/
+                  // Crew span across an entry's rows. Falls back to the entry's
+                  // own footage/revenue as a single row when there are no
+                  // rate-card line items.
+                  const lineRows = pe.lineItems.length > 0
+                    ? pe.lineItems.map((li) => ({ key: li.id, unitCode: li.unitCode as string | null, quantity: li.quantity, revenue: li.extendedTotal, qaStatus: li.qaStatus }))
+                    : [{ key: pe.id, unitCode: null, quantity: pe.footage, revenue: pe.revenue, qaStatus: undefined }]
+                  const span = lineRows.length
+                  return lineRows.map((lr, j) => {
+                    const retained = Math.round(lr.revenue * pe.retentionPct)
+                    const net = lr.revenue - retained
+                    return (
+                      <tr key={lr.key} className="border-b border-slate-50 hover:bg-slate-50/60">
+                        {j === 0 && (
+                          <>
+                            <td rowSpan={span} className="whitespace-nowrap px-5 py-2.5 align-top text-slate-400">{formatDate(pe.date)}</td>
+                            <td rowSpan={span} className="px-5 py-2.5 align-top font-medium text-slate-800">{pe.projectName}</td>
+                            <td rowSpan={span} className="px-5 py-2.5 align-top">
+                              {pe.crewName
+                                ? <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{pe.crewName}</span>
+                                : <span className="text-slate-500">—</span>}
+                            </td>
+                          </>
+                        )}
+                        <td className="px-5 py-2.5 text-right text-slate-700">
+                          {lr.quantity.toLocaleString()} LF
+                          {lr.unitCode && <div className="mt-0.5 text-[10px] font-normal leading-tight text-slate-400">{lr.unitCode}</div>}
+                          <div className="mt-1 flex justify-end"><QaStatusBadge status={lr.qaStatus ?? 'approved'} /></div>
                         </td>
-                      )}
-                      {isAdmin && <td className="px-5 py-2.5 text-right font-medium text-emerald-700">{money(net)}</td>}
-                    </tr>
-                  )
+                        {isAdmin && <td className="px-5 py-2.5 text-right text-slate-400">{money(lr.revenue)}</td>}
+                        {isAdmin && (
+                          <td className="px-5 py-2.5 text-right text-amber-600">
+                            {retained > 0 ? `(${money(retained)})` : '—'}
+                            {pe.retentionPct > 0 && <span className="ml-1 text-xs text-slate-500">{Math.round(pe.retentionPct * 100)}%</span>}
+                          </td>
+                        )}
+                        {isAdmin && <td className="px-5 py-2.5 text-right font-medium text-emerald-700">{money(net)}</td>}
+                      </tr>
+                    )
+                  })
                 })}
               </tbody>
               {isAdmin && (
@@ -357,7 +403,7 @@ function WeeklyView() {
                     <td className="px-5 py-2.5 text-right font-bold text-slate-700">
                       {productionRows.reduce((s, pe) => s + pe.footage, 0).toLocaleString()} LF
                     </td>
-                    <td className="px-5 py-2.5 text-right font-semibold text-slate-600">{money(totalRevenue)}</td>
+                    <td className="px-5 py-2.5 text-right font-semibold text-slate-400">{money(totalRevenue)}</td>
                     <td className="px-5 py-2.5 text-right font-semibold text-amber-600">
                       ({money(productionRows.reduce((s, pe) => s + Math.round(pe.revenue * pe.retentionPct), 0))})
                     </td>
@@ -382,7 +428,7 @@ function WeeklyView() {
           <CardBody className="p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-2.5 font-medium">Date</th>
                   <th className="px-5 py-2.5 font-medium">Code</th>
                   <th className="px-5 py-2.5 font-medium">Description</th>
@@ -393,14 +439,17 @@ function WeeklyView() {
                 </tr>
               </thead>
               <tbody>
-                {revenueRows.map((r, i) => (
-                  <tr key={i} className="border-b border-slate-50 hover:bg-slate-50/60">
-                    <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(r.date)}</td>
-                    <td className="px-5 py-2.5 font-mono text-xs font-semibold text-brand-700">{r.unitCode}</td>
+                {revenueRows.map((r) => (
+                  <tr key={r.id} className="border-b border-slate-50 hover:bg-slate-50/60">
+                    <td className="whitespace-nowrap px-5 py-2.5 text-slate-400">{formatDate(r.date)}</td>
+                    <td className="px-5 py-2.5 font-mono text-xs font-semibold text-brand-700">
+                      {r.unitCode}
+                      <div className="mt-1"><QaStatusBadge status={r.qaStatus ?? 'approved'} /></div>
+                    </td>
                     <td className="px-5 py-2.5 text-slate-700">{r.description}</td>
-                    <td className="px-5 py-2.5 text-slate-500">{r.uom}</td>
+                    <td className="px-5 py-2.5 text-slate-400">{r.uom}</td>
                     <td className="px-5 py-2.5 text-right text-slate-700">{r.qty.toLocaleString()}</td>
-                    <td className="px-5 py-2.5 text-right text-slate-500">{moneyExact(r.rate)}</td>
+                    <td className="px-5 py-2.5 text-right text-slate-400">{moneyExact(r.rate)}</td>
                     <td className="px-5 py-2.5 text-right font-medium text-slate-800">{moneyExact(r.total)}</td>
                   </tr>
                 ))}
@@ -419,13 +468,13 @@ function WeeklyView() {
           />
           {laborRows.length === 0 && pnlLaborRows.length === 0 ? (
             <CardBody>
-              <p className="text-sm text-slate-400">No labor logged this week.</p>
+              <p className="text-sm text-slate-500">No labor logged this week.</p>
             </CardBody>
           ) : (
             <CardBody className="p-0">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                  <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="px-5 py-2.5 font-medium">Date</th>
                     <th className="px-5 py-2.5 font-medium">Source</th>
                     <th className="px-5 py-2.5 font-medium">Detail</th>
@@ -439,11 +488,11 @@ function WeeklyView() {
                     const emp = data.employees.find((e) => e.id === tc.employeeId)
                     return (
                       <tr key={tc.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                        <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(tc.date)}</td>
-                        <td className="px-5 py-2.5 text-slate-500">Timecard</td>
+                        <td className="whitespace-nowrap px-5 py-2.5 text-slate-400">{formatDate(tc.date)}</td>
+                        <td className="px-5 py-2.5 text-slate-400">Timecard</td>
                         <td className="px-5 py-2.5 font-medium text-slate-800">
                           {emp?.name ?? tc.employeeId}
-                          {emp?.role && <span className="ml-1.5 text-slate-400 font-normal">· {emp.role}</span>}
+                          {emp?.role && <span className="ml-1.5 text-slate-500 font-normal">· {emp.role}</span>}
                         </td>
                         <td className="px-5 py-2.5 text-right text-slate-700">{tc.hours.toFixed(2)}</td>
                         {isAdmin && <td className="px-5 py-2.5 text-right font-medium text-slate-800">{moneyExact(tc.laborCost)}</td>}
@@ -455,10 +504,10 @@ function WeeklyView() {
                     const proj = data.projects.find((p) => p.id === e.projectId)
                     return (
                       <tr key={e.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                        <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(e.date)}</td>
-                        <td className="px-5 py-2.5 text-slate-500">Production</td>
+                        <td className="whitespace-nowrap px-5 py-2.5 text-slate-400">{formatDate(e.date)}</td>
+                        <td className="px-5 py-2.5 text-slate-400">Production</td>
                         <td className="px-5 py-2.5 text-slate-700">{proj?.name ?? e.projectId}</td>
-                        <td className="px-5 py-2.5 text-right text-slate-400">—</td>
+                        <td className="px-5 py-2.5 text-right text-slate-500">—</td>
                         {isAdmin && <td className="px-5 py-2.5 text-right font-medium text-slate-800">{moneyExact(e.laborCost)}</td>}
                       </tr>
                     )
@@ -488,7 +537,7 @@ function WeeklyView() {
           <CardBody className="p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-2.5 font-medium">Equipment</th>
                   <th className="px-5 py-2.5 font-medium">Category</th>
                   <th className="px-5 py-2.5 font-medium">Crew</th>
@@ -506,18 +555,18 @@ function WeeklyView() {
                   const end = new Date(wEnd + 'T12:00:00')
                   while (d <= end) {
                     const dow = d.getDay()
-                    const ds = d.toISOString().slice(0, 10)
+                    const ds = localDateStr(d)
                     if (dow !== 0 && dow !== 6 && eq.deployedFrom && eq.deployedFrom <= ds) weekDays++
                     d.setDate(d.getDate() + 1)
                   }
                   return (
                     <tr key={eq.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                       <td className="px-5 py-2.5 font-medium text-slate-800">{eq.name}</td>
-                      <td className="px-5 py-2.5 text-slate-500">{eq.category}</td>
+                      <td className="px-5 py-2.5 text-slate-400">{eq.category}</td>
                       <td className="px-5 py-2.5">
                         <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{crew.name}</span>
                       </td>
-                      <td className="px-5 py-2.5 text-slate-500 text-xs">{eq.deployedFrom}</td>
+                      <td className="px-5 py-2.5 text-slate-400 text-xs">{eq.deployedFrom}</td>
                       {isAdmin && <td className="px-5 py-2.5 text-right text-slate-700">{money(daily)}</td>}
                       {isAdmin && <td className="px-5 py-2.5 text-right font-medium text-purple-700">{money(daily * weekDays)}</td>}
                     </tr>
@@ -550,13 +599,13 @@ function WeeklyView() {
         />
         {expenseRows.length === 0 ? (
           <CardBody>
-            <p className="text-sm text-slate-400">No expenses logged for this week.</p>
+            <p className="text-sm text-slate-500">No expenses logged for this week.</p>
           </CardBody>
         ) : (
           <CardBody className="p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-2.5 font-medium">Date</th>
                   <th className="px-5 py-2.5 font-medium">Crew</th>
                   <th className="px-5 py-2.5 font-medium">Location</th>
@@ -570,17 +619,17 @@ function WeeklyView() {
                   const crew = data.crews.find((c) => c.id === ex.crewId)
                   return (
                   <tr key={ex.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                    <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(ex.date)}</td>
+                    <td className="whitespace-nowrap px-5 py-2.5 text-slate-400">{formatDate(ex.date)}</td>
                     <td className="px-5 py-2.5">
                       {crew ? (
                         <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{crew.name}</span>
-                      ) : <span className="text-slate-300">—</span>}
+                      ) : <span className="text-slate-600">—</span>}
                     </td>
-                    <td className="px-5 py-2.5 text-slate-500 text-xs">{ex.location || ex.vendor || '—'}</td>
+                    <td className="px-5 py-2.5 text-slate-400 text-xs">{ex.location || ex.vendor || '—'}</td>
                     <td className="px-5 py-2.5 text-slate-700">{ex.description}</td>
                     <td className="px-5 py-2.5 text-right font-medium text-slate-800">{moneyExact(ex.amount)}</td>
                     <td className="px-5 py-2.5 text-right">
-                      <button onClick={() => deleteJobExpense(ex.id)} className="text-slate-300 hover:text-rose-600" aria-label="Delete">
+                      <button onClick={() => deleteJobExpense(ex.id)} className="text-slate-600 hover:text-rose-600" aria-label="Delete">
                         <Trash2 size={14} />
                       </button>
                     </td>
@@ -612,13 +661,13 @@ function WeeklyView() {
 function DailyView() {
   const { data } = useData()
   const { isAdmin } = useRole()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const [startDate, setStartDate] = useState(() => weekStart(today))
   const [endDate, setEndDate] = useState(() => weekEnd(today))
   const [projectFilter, setProjectFilter] = useState('all')
 
   const resetToThisWeek = () => {
-    const now = new Date().toISOString().slice(0, 10)
+    const now = localDateStr()
     setStartDate(weekStart(now))
     setEndDate(weekEnd(now))
   }
@@ -667,7 +716,7 @@ function DailyView() {
           {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
         </Select>
         <Input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-40" />
-        <span className="text-sm text-slate-400">to</span>
+        <span className="text-sm text-slate-500">to</span>
         <Input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-40" />
         <button
           onClick={resetToThisWeek}
@@ -712,7 +761,7 @@ function DailyView() {
         <CardBody className="p-0">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+              <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                 <th className="px-5 py-2.5 font-medium">Date</th>
                 <th className="px-5 py-2.5 text-right font-medium">Revenue</th>
                 {isAdmin && <th className="px-5 py-2.5 text-right font-medium">Labor</th>}
@@ -725,23 +774,23 @@ function DailyView() {
             <tbody>
               {ledger.map((row) => (
                 <tr key={row.date} className="border-b border-slate-50 hover:bg-slate-50/60">
-                  <td className="whitespace-nowrap px-5 py-2.5 text-slate-600">{formatDate(row.date)}</td>
+                  <td className="whitespace-nowrap px-5 py-2.5 text-slate-400">{formatDate(row.date)}</td>
                   <td className="px-5 py-2.5 text-right text-slate-700">{money(row.revenue)}</td>
-                  {isAdmin && <td className="px-5 py-2.5 text-right text-slate-500">{money(row.labor)}</td>}
+                  {isAdmin && <td className="px-5 py-2.5 text-right text-slate-400">{money(row.labor)}</td>}
                   {isAdmin && (
                     <td className="px-5 py-2.5 text-right text-purple-600">
-                      {row.equipment > 0 ? money(row.equipment) : <span className="text-slate-300">—</span>}
+                      {row.equipment > 0 ? money(row.equipment) : <span className="text-slate-600">—</span>}
                     </td>
                   )}
-                  <td className="px-5 py-2.5 text-right text-slate-500">{row.expenses > 0 ? money(row.expenses) : <span className="text-slate-300">—</span>}</td>
+                  <td className="px-5 py-2.5 text-right text-slate-400">{row.expenses > 0 ? money(row.expenses) : <span className="text-slate-600">—</span>}</td>
                   <td className={`px-5 py-2.5 text-right font-medium ${row.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                     {money(row.profit)}
                   </td>
-                  <td className="px-5 py-2.5 text-right text-slate-500">{percent(row.margin, 1)}</td>
+                  <td className="px-5 py-2.5 text-right text-slate-400">{percent(row.margin, 1)}</td>
                 </tr>
               ))}
               {ledger.length === 0 && (
-                <tr><td colSpan={isAdmin ? 7 : 5} className="px-5 py-10 text-center text-slate-400">No data in this range.</td></tr>
+                <tr><td colSpan={isAdmin ? 7 : 5} className="px-5 py-10 text-center text-slate-500">No data in this range.</td></tr>
               )}
             </tbody>
             {ledger.length > 0 && (
@@ -749,9 +798,9 @@ function DailyView() {
                 <tr className="border-t-2 border-slate-200 bg-slate-50 font-semibold text-slate-800">
                   <td className="px-5 py-3">Total</td>
                   <td className="px-5 py-3 text-right">{money(totals.revenue)}</td>
-                  {isAdmin && <td className="px-5 py-3 text-right text-slate-600">{money(totals.labor)}</td>}
+                  {isAdmin && <td className="px-5 py-3 text-right text-slate-400">{money(totals.labor)}</td>}
                   {isAdmin && <td className="px-5 py-3 text-right text-purple-600">{money(totals.equipment)}</td>}
-                  <td className="px-5 py-3 text-right text-slate-600">{money(totals.expenses)}</td>
+                  <td className="px-5 py-3 text-right text-slate-400">{money(totals.expenses)}</td>
                   <td className={`px-5 py-3 text-right ${totals.profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>{money(totals.profit)}</td>
                   <td className="px-5 py-3 text-right">{percent(totalMargin, 1)}</td>
                 </tr>
@@ -772,7 +821,7 @@ function PnlRow({ label, value, tone, bold }: { label: string; value: string; to
   const color = tone === 'pos' ? 'text-emerald-600' : tone === 'neg' ? 'text-rose-600' : 'text-slate-800'
   return (
     <div className="flex items-center justify-between">
-      <span className="text-slate-500">{label}</span>
+      <span className="text-slate-400">{label}</span>
       <span className={`${bold ? 'font-bold text-base' : 'font-semibold'} ${color}`}>{value}</span>
     </div>
   )
@@ -782,7 +831,56 @@ function PnlRow({ label, value, tone, bold }: { label: string; value: string; to
 // Page
 // ---------------------------------------------------------------------------
 
-type Tab = 'weekly' | 'daily'
+type Tab = 'weekly' | 'daily' | 'qa'
+
+/** Color-coded stat card for the QA/QC revenue cards — StatCard's value text
+ *  is always the same slate color, but the spec calls for Pending=amber,
+ *  Approved=green, Rejected=red, Rejection Fixed=blue per card, so this is a
+ *  small variant with a colorable value instead of extending StatCard's props
+ *  for a single call site. */
+function QaStatCard({ label, value, color, hint }: { label: string; value: string; color: string; hint?: string }) {
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+      <p className="text-sm font-medium text-slate-500">{label}</p>
+      <p className="mt-2 text-2xl font-semibold tracking-tight" style={{ color }}>{value}</p>
+      {hint && <p className="mt-1 text-xs text-slate-400">{hint}</p>}
+    </div>
+  )
+}
+
+/** Redline QA/QC Approval Workflow — P&L revenue breakdown by QA status.
+ *  A separate tab (not folded into Weekly/Daily) so computeMetrics-driven
+ *  views stay byte-for-byte unchanged; this reads computeQaRevenueBreakdown,
+ *  a purely additive sibling selector. */
+function QaRevenueView() {
+  const { data } = useData()
+  const [filters, setFilters] = useState<QaFilterState>(EMPTY_QA_FILTERS)
+  const breakdown = useMemo(() => computeQaRevenueBreakdown(data, filters), [data, filters])
+
+  const qtyLabel = (bucket: Record<string, number>) =>
+    Object.entries(bucket).length === 0 ? '—' : Object.entries(bucket).map(([uom, qty]) => `${qty.toLocaleString()} ${uom}`).join(', ')
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardBody>
+          <QaFilterBar value={filters} onChange={setFilters} />
+        </CardBody>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <QaStatCard label="Pending Review Revenue" value={money(breakdown.pendingReviewRevenue)} color="#f59e0b" hint="Not counted toward finalized revenue" />
+        <QaStatCard label="Approved Revenue" value={money(breakdown.approvedRevenue)} color="#22c55e" hint="First-pass approvals" />
+        <QaStatCard label="Rejected Revenue" value={money(breakdown.rejectedRevenue)} color="#ef4444" hint="Not counted toward invoicing" />
+        <QaStatCard label="Revenue Waiting on Corrections" value={money(breakdown.revenueWaitingOnCorrections)} color="#3b82f6" hint="Rejection fixed — awaiting re-review" />
+        <QaStatCard label="Total Submitted Revenue" value={money(breakdown.totalSubmittedRevenue)} color="#94a3b8" hint="Everything ever entered QA/QC" />
+        <QaStatCard label="Final Approved Revenue" value={money(breakdown.finalApprovedRevenue)} color="#22c55e" hint="Billable — approved + approved after correction" />
+        <QaStatCard label="Rejected Production Value" value={qtyLabel(breakdown.rejectedProductionValue)} color="#ef4444" hint="Footage/units, not dollars" />
+        <QaStatCard label="Pending Production Value" value={qtyLabel(breakdown.pendingProductionValue)} color="#f59e0b" hint="Footage/units, not dollars" />
+      </div>
+    </div>
+  )
+}
 
 export function DailyPnL() {
   const [tab, setTab] = useState<Tab>('weekly')
@@ -796,20 +894,20 @@ export function DailyPnL() {
 
       {/* Tab bar */}
       <div className="mb-6 flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 w-fit">
-        {(['weekly', 'daily'] as Tab[]).map((t) => (
+        {(['weekly', 'daily', 'qa'] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
             className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
-              tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
+              tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400 hover:text-slate-700'
             }`}
           >
-            {t === 'weekly' ? 'Weekly (Generated)' : 'Daily Ledger'}
+            {t === 'weekly' ? 'Weekly (Generated)' : t === 'daily' ? 'Daily Ledger' : 'QA/QC Revenue'}
           </button>
         ))}
       </div>
 
-      {tab === 'weekly' ? <WeeklyView /> : <DailyView />}
+      {tab === 'weekly' ? <WeeklyView /> : tab === 'daily' ? <DailyView /> : <QaRevenueView />}
     </div>
   )
 }

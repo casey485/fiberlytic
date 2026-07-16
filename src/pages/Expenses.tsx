@@ -5,7 +5,7 @@ import { useRole } from '../store/RoleContext'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { Button, Field, Input, Select } from '../components/ui/Form'
-import { money, moneyExact, formatDate } from '../lib/format'
+import { money, moneyExact, formatDate, localDateStr } from '../lib/format'
 import { weekStart, weekEnd } from '../lib/analytics'
 import type { Crew, Project } from '../types'
 
@@ -51,7 +51,7 @@ function BulkExpenseModal({ onClose, crews, projects, onImport }: {
   const [dragging, setDragging] = useState(false)
   const [imported, setImported] = useState(false)
 
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
 
   const downloadTemplate = () => {
     const header = 'Date,Crew Name,Project Name,Location,Description,Amount'
@@ -108,48 +108,48 @@ function BulkExpenseModal({ onClose, crews, projects, onImport }: {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl border border-[#2a2a2a] bg-[#141414] shadow-2xl">
+      <div className="relative w-full max-w-4xl max-h-[90vh] overflow-y-auto rounded-2xl border border-slate-200 bg-white shadow-2xl">
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-[#2a2a2a] px-6 py-4">
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
           <div className="flex items-center gap-3">
-            <FileSpreadsheet size={20} className="text-brand-400" />
+            <FileSpreadsheet size={20} className="text-amber-600" />
             <div>
-              <p className="font-semibold text-slate-100">Bulk Upload Expenses</p>
-              <p className="text-xs text-slate-500">Upload a CSV file to import multiple expenses at once</p>
+              <p className="font-semibold text-slate-800">Bulk Upload Expenses</p>
+              <p className="text-xs text-slate-400">Upload a CSV file to import multiple expenses at once</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-300"><X size={20} /></button>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X size={20} /></button>
         </div>
 
         <div className="p-6 space-y-5">
           {/* Step 1 — template */}
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Step 1 — Download the template</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-400">Step 1 — Download the template</p>
             <button
               onClick={downloadTemplate}
-              className="flex items-center gap-2 rounded-lg border border-[#2a2a2a] bg-[#1e1e1e] px-4 py-2.5 text-sm font-medium text-slate-300 hover:border-brand-600 hover:text-brand-400 transition"
+              className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-100 px-4 py-2.5 text-sm font-medium text-slate-600 hover:border-brand-600 hover:text-amber-600 transition"
             >
               <Download size={15} /> Download CSV template
             </button>
-            <p className="mt-2 text-xs text-slate-600">
-              Columns: <span className="text-slate-400">Date (YYYY-MM-DD) · Crew Name · Project Name · Location · Description · Amount</span>
+            <p className="mt-2 text-xs text-slate-400">
+              Columns: <span className="text-slate-500">Date (YYYY-MM-DD) · Crew Name · Project Name · Location · Description · Amount</span>
             </p>
           </div>
 
           {/* Step 2 — upload */}
           <div>
-            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-500">Step 2 — Upload your filled CSV</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-widest text-slate-400">Step 2 — Upload your filled CSV</p>
             <div
               onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
               onDragLeave={() => setDragging(false)}
               onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f) }}
               onClick={() => fileRef.current?.click()}
               className={`flex cursor-pointer flex-col items-center gap-2 rounded-xl border-2 border-dashed py-8 text-center transition ${
-                dragging ? 'border-brand-500 bg-brand-600/10' : 'border-[#2a2a2a] hover:border-brand-600/50'
+                dragging ? 'border-brand-500 bg-brand-600/10' : 'border-slate-200 hover:border-brand-600/50'
               }`}
             >
-              <Upload size={24} className="text-slate-500" />
-              <p className="text-sm font-medium text-slate-400">Drop your CSV here or click to browse</p>
+              <Upload size={24} className="text-slate-400" />
+              <p className="text-sm font-medium text-slate-500">Drop your CSV here or click to browse</p>
               <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden"
                 onChange={(e) => e.target.files?.[0] && handleFile(e.target.files[0])} />
             </div>
@@ -159,39 +159,39 @@ function BulkExpenseModal({ onClose, crews, projects, onImport }: {
           {rows.length > 0 && (
             <div>
               <div className="mb-3 flex items-center justify-between">
-                <p className="text-xs font-semibold uppercase tracking-widest text-slate-500">
+                <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">
                   Step 3 — Review &amp; Import
                 </p>
                 <div className="flex items-center gap-3 text-xs">
-                  <span className="text-emerald-400">{validRows.length} ready</span>
-                  {errorRows.length > 0 && <span className="text-rose-400">{errorRows.length} with errors</span>}
+                  <span className="text-emerald-600">{validRows.length} ready</span>
+                  {errorRows.length > 0 && <span className="text-rose-600">{errorRows.length} with errors</span>}
                 </div>
               </div>
 
-              <div className="overflow-x-auto rounded-xl border border-[#2a2a2a]">
+              <div className="overflow-x-auto rounded-xl border border-slate-200">
                 <table className="w-full text-xs">
                   <thead>
-                    <tr className="border-b border-[#2a2a2a] text-left">
+                    <tr className="border-b border-slate-200 text-left">
                       {['#','Date','Crew','Project','Location','Description','Amount','Status'].map((h) => (
-                        <th key={h} className="px-3 py-2 font-semibold uppercase tracking-wide text-slate-600 first:pl-4 last:pr-4">{h}</th>
+                        <th key={h} className="px-3 py-2 font-semibold uppercase tracking-wide text-slate-400 first:pl-4 last:pr-4">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((r) => (
-                      <tr key={r.rowNum} className={`border-b border-[#1e1e1e] ${r.errors.length > 0 ? 'bg-rose-500/5' : ''}`}>
-                        <td className="pl-4 py-2 text-slate-600">{r.rowNum}</td>
-                        <td className="px-3 py-2 text-slate-400">{r.date}</td>
-                        <td className={`px-3 py-2 ${r.crew ? 'text-slate-300' : 'text-rose-400'}`}>{r.crewName || '—'}</td>
-                        <td className={`px-3 py-2 ${r.project ? 'text-slate-300' : 'text-rose-400'}`}>{r.projectName || '—'}</td>
-                        <td className="px-3 py-2 text-slate-500">{r.location || '—'}</td>
-                        <td className="px-3 py-2 text-slate-300">{r.description || '—'}</td>
-                        <td className="px-3 py-2 text-slate-300">{r.amount ? `$${parseFloat(r.amount).toFixed(2)}` : '—'}</td>
+                      <tr key={r.rowNum} className={`border-b border-slate-100 ${r.errors.length > 0 ? 'bg-rose-50' : ''}`}>
+                        <td className="pl-4 py-2 text-slate-400">{r.rowNum}</td>
+                        <td className="px-3 py-2 text-slate-500">{r.date}</td>
+                        <td className={`px-3 py-2 ${r.crew ? 'text-slate-600' : 'text-rose-600'}`}>{r.crewName || '—'}</td>
+                        <td className={`px-3 py-2 ${r.project ? 'text-slate-600' : 'text-rose-600'}`}>{r.projectName || '—'}</td>
+                        <td className="px-3 py-2 text-slate-400">{r.location || '—'}</td>
+                        <td className="px-3 py-2 text-slate-600">{r.description || '—'}</td>
+                        <td className="px-3 py-2 text-slate-600">{r.amount ? `$${parseFloat(r.amount).toFixed(2)}` : '—'}</td>
                         <td className="pr-4 py-2">
                           {r.errors.length === 0 ? (
-                            <span className="text-emerald-400">✓ Ready</span>
+                            <span className="text-emerald-600">✓ Ready</span>
                           ) : (
-                            <span className="flex items-start gap-1 text-rose-400">
+                            <span className="flex items-start gap-1 text-rose-600">
                               <AlertCircle size={12} className="mt-0.5 shrink-0" />
                               {r.errors[0]}
                             </span>
@@ -204,7 +204,7 @@ function BulkExpenseModal({ onClose, crews, projects, onImport }: {
               </div>
 
               {errorRows.length > 0 && (
-                <p className="mt-2 text-xs text-slate-600">
+                <p className="mt-2 text-xs text-slate-400">
                   Rows with errors will be skipped. Fix them in your CSV and re-upload to include them.
                 </p>
               )}
@@ -215,7 +215,7 @@ function BulkExpenseModal({ onClose, crews, projects, onImport }: {
                     <Upload size={15} /> Import {validRows.length} expense{validRows.length !== 1 ? 's' : ''}
                   </Button>
                 ) : (
-                  <div className="flex items-center gap-2 rounded-lg bg-emerald-500/15 px-4 py-2.5 text-sm font-medium text-emerald-400">
+                  <div className="flex items-center gap-2 rounded-lg bg-emerald-50 px-4 py-2.5 text-sm font-medium text-emerald-700">
                     <CheckCircle size={16} /> {validRows.length} expense{validRows.length !== 1 ? 's' : ''} imported successfully!
                   </div>
                 )}
@@ -226,17 +226,17 @@ function BulkExpenseModal({ onClose, crews, projects, onImport }: {
 
           {/* Crew & project name reference */}
           <details className="group">
-            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-widest text-slate-600 hover:text-slate-400">
+            <summary className="cursor-pointer text-xs font-semibold uppercase tracking-widest text-slate-400 hover:text-slate-500">
               View valid crew &amp; project names ▾
             </summary>
             <div className="mt-3 grid grid-cols-2 gap-4">
               <div>
-                <p className="mb-1 text-xs font-semibold text-slate-500">Crews</p>
-                {crews.map((c) => <p key={c.id} className="text-xs text-slate-400">{c.name}</p>)}
+                <p className="mb-1 text-xs font-semibold text-slate-400">Crews</p>
+                {crews.map((c) => <p key={c.id} className="text-xs text-slate-500">{c.name}</p>)}
               </div>
               <div>
-                <p className="mb-1 text-xs font-semibold text-slate-500">Projects</p>
-                {projects.map((p) => <p key={p.id} className="text-xs text-slate-400">{p.name}</p>)}
+                <p className="mb-1 text-xs font-semibold text-slate-400">Projects</p>
+                {projects.map((p) => <p key={p.id} className="text-xs text-slate-500">{p.name}</p>)}
               </div>
             </div>
           </details>
@@ -253,7 +253,7 @@ function monthEnd(dateStr: string): string {
   const d = new Date(dateStr.slice(0, 7) + '-01T00:00:00')
   d.setMonth(d.getMonth() + 1)
   d.setDate(0)
-  return d.toISOString().slice(0, 10)
+  return localDateStr(d)
 }
 
 type ExpenseForm = {
@@ -268,7 +268,7 @@ type ExpenseForm = {
 export function ExpensesPage() {
   const { data, addJobExpense, deleteJobExpense } = useData()
   const { isAdmin, activeEmployeeId } = useRole()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const [dateStart, setDateStart] = useState(() => monthStart(today))
   const [dateEnd, setDateEnd] = useState(() => monthEnd(today))
   const [crewFilter, setCrewFilter] = useState('all')
@@ -276,13 +276,13 @@ export function ExpensesPage() {
   const [showBulk, setShowBulk] = useState(false)
 
   const resetToThisMonth = () => {
-    const now = new Date().toISOString().slice(0, 10)
+    const now = localDateStr()
     setDateStart(monthStart(now))
     setDateEnd(monthEnd(now))
   }
 
   const resetToThisWeek = () => {
-    const now = new Date().toISOString().slice(0, 10)
+    const now = localDateStr()
     setDateStart(weekStart(now))
     setDateEnd(weekEnd(now))
   }
@@ -441,12 +441,12 @@ export function ExpensesPage() {
 
         {todayExpenses.length > 0 && (
           <div className="mt-6">
-            <p className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Submitted today</p>
+            <p className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Submitted today</p>
             <Card>
               <CardBody className="p-0">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                    <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                       <th className="px-5 py-2 font-medium">Crew</th>
                       <th className="px-5 py-2 font-medium">Description</th>
                       <th className="px-5 py-2 font-medium">Location</th>
@@ -463,11 +463,11 @@ export function ExpensesPage() {
                           <td className="px-5 py-2.5">
                             {crew
                               ? <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{crew.name}</span>
-                              : <span className="text-slate-300">—</span>}
+                              : <span className="text-slate-600">—</span>}
                           </td>
                           <td className="px-5 py-2.5 text-slate-700">{ex.description}</td>
-                          <td className="px-5 py-2.5 text-slate-500">{ex.location || ex.vendor || '—'}</td>
-                          <td className="px-5 py-2.5 text-xs text-slate-400">{proj?.name ?? '—'}</td>
+                          <td className="px-5 py-2.5 text-slate-400">{ex.location || ex.vendor || '—'}</td>
+                          <td className="px-5 py-2.5 text-xs text-slate-500">{proj?.name ?? '—'}</td>
                           <td className="px-5 py-2.5 text-right font-semibold text-slate-800">{moneyExact(ex.amount)}</td>
                         </tr>
                       )
@@ -533,12 +533,12 @@ export function ExpensesPage() {
           {data.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </Select>
         <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} className="w-40" />
-        <span className="text-sm text-slate-400">to</span>
+        <span className="text-sm text-slate-500">to</span>
         <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} className="w-40" />
         <button onClick={resetToThisMonth} className="text-sm font-medium text-brand-600 hover:text-brand-700">
           This month
         </button>
-        <button onClick={resetToThisWeek} className="text-sm font-medium text-slate-400 hover:text-slate-600">
+        <button onClick={resetToThisWeek} className="text-sm font-medium text-slate-500 hover:text-slate-400">
           This week
         </button>
       </div>
@@ -550,7 +550,7 @@ export function ExpensesPage() {
             const crew = data.crews.find((c) => c.id === crewId)
             return (
               <div key={crewId} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
-                <p className="text-xs text-slate-400">{crew?.name ?? 'Unknown crew'}</p>
+                <p className="text-xs text-slate-500">{crew?.name ?? 'Unknown crew'}</p>
                 <p className="mt-0.5 text-xl font-bold text-slate-800">{money(total)}</p>
               </div>
             )
@@ -572,7 +572,7 @@ export function ExpensesPage() {
         />
         {expenses.length === 0 ? (
           <CardBody>
-            <p className="py-10 text-center text-sm text-slate-400">
+            <p className="py-10 text-center text-sm text-slate-500">
               No crew expenses in this date range. Click "Log expense" to add one.
             </p>
           </CardBody>
@@ -580,7 +580,7 @@ export function ExpensesPage() {
           <CardBody className="p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-2.5 font-medium">Date</th>
                   <th className="px-5 py-2.5 font-medium">Crew</th>
                   <th className="px-5 py-2.5 font-medium">Location</th>
@@ -596,20 +596,20 @@ export function ExpensesPage() {
                   const proj = data.projects.find((p) => p.id === ex.jobId)
                   return (
                     <tr key={ex.id} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="whitespace-nowrap px-5 py-2.5 text-slate-500">{formatDate(ex.date)}</td>
+                      <td className="whitespace-nowrap px-5 py-2.5 text-slate-400">{formatDate(ex.date)}</td>
                       <td className="px-5 py-2.5">
                         {crew
                           ? <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{crew.name}</span>
-                          : <span className="text-slate-300">—</span>}
+                          : <span className="text-slate-600">—</span>}
                       </td>
-                      <td className="px-5 py-2.5 text-slate-500">{ex.location || ex.vendor || <span className="text-slate-300">—</span>}</td>
+                      <td className="px-5 py-2.5 text-slate-400">{ex.location || ex.vendor || <span className="text-slate-600">—</span>}</td>
                       <td className="px-5 py-2.5 text-slate-700">{ex.description}</td>
-                      <td className="px-5 py-2.5 text-xs text-slate-400">{proj?.name ?? '—'}</td>
+                      <td className="px-5 py-2.5 text-xs text-slate-500">{proj?.name ?? '—'}</td>
                       <td className="px-5 py-2.5 text-right font-semibold text-slate-800">{moneyExact(ex.amount)}</td>
                       <td className="px-5 py-2.5 text-right">
                         <button
                           onClick={() => deleteJobExpense(ex.id)}
-                          className="text-slate-300 hover:text-rose-600"
+                          className="text-slate-600 hover:text-rose-600"
                           aria-label="Delete"
                         >
                           <Trash2 size={14} />

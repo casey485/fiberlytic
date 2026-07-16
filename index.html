@@ -4,16 +4,19 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Nextgen Fiber LLC</title>
-    <!-- Apply dark class before first paint — default is dark -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <title>FiberLytic</title>
+    <!-- Apply dark class before first paint — default is light (FiberLytic brand: light content area, dark sidebar) -->
     <script>
       try {
         var s = localStorage.getItem('fiberlytic:theme');
-        var dark = s !== 'light'; // only go light if explicitly stored as 'light'
+        var dark = s === 'dark'; // only go dark if explicitly stored as 'dark'
         if (dark) document.documentElement.classList.add('dark');
         document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
       } catch(e) {
-        document.documentElement.classList.add('dark');
+        document.documentElement.style.colorScheme = 'light';
       }
     </script>
   </head>

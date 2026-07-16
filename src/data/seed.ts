@@ -195,6 +195,22 @@ const rateCardUnits: RateCardUnit[] = [
   { id: 'rcu-14', rateCardId: 'rc-essentia-ug', unitCode: '4U-R',   description: 'Install up to 36" Vault in Rock',       uom: 'EA',   rate: 350.00 },
   { id: 'rcu-15', rateCardId: 'rc-essentia-ug', unitCode: '5U-R',   description: 'Install up to 48" Vault in Rock',       uom: 'EA',   rate: 675.00 },
   { id: 'rcu-16', rateCardId: 'rc-essentia-ug', unitCode: '8U-SR',  description: 'Underground (Solid) Rock Adder',        uom: 'EA',   rate: 65.00  },
+  // --- Splicing billing codes (category: "Splicing" pre-filters these under the "Splicing" work type in Add Work) ---
+  { id: 'rcu-17', rateCardId: 'rc-essentia-ug', unitCode: 'FS16',   description: 'Install New Enclosure (Aerial/UG/Building)',          uom: 'EA', rate: 185.00, category: 'Splicing' },
+  { id: 'rcu-18', rateCardId: 'rc-essentia-ug', unitCode: 'FS07A',  description: 'New Enclosure (Tap), Mid-Sheath Entry, Splice 1-4 Fibers', uom: 'EA', rate: 165.00, category: 'Splicing' },
+  { id: 'rcu-19', rateCardId: 'rc-essentia-ug', unitCode: 'FS01',   description: 'Fiber Splice, 1-24 Splices',                           uom: 'EA', rate: 95.00,  category: 'Splicing' },
+  { id: 'rcu-20', rateCardId: 'rc-essentia-ug', unitCode: 'FS02',   description: 'Fiber Splice, 25-96 Splices',                          uom: 'EA', rate: 220.00, category: 'Splicing' },
+  { id: 'rcu-21', rateCardId: 'rc-essentia-ug', unitCode: 'FS03',   description: 'Fiber Splice, 97+ Splices',                            uom: 'EA', rate: 380.00, category: 'Splicing' },
+  { id: 'rcu-22', rateCardId: 'rc-essentia-ug', unitCode: 'FS04',   description: 'Ribbon Fiber Splice, Per Burn',                        uom: 'EA', rate: 18.00,  category: 'Splicing' },
+  { id: 'rcu-23', rateCardId: 'rc-essentia-ug', unitCode: 'FS07',   description: 'Mid-Sheath / Ring-Cut Splice, Up to 4',                uom: 'EA', rate: 140.00, category: 'Splicing' },
+  { id: 'rcu-24', rateCardId: 'rc-essentia-ug', unitCode: 'FS08',   description: 'Re-Entry, Bring New Fiber Into Enclosure',             uom: 'EA', rate: 110.00, category: 'Splicing' },
+  { id: 'rcu-25', rateCardId: 'rc-essentia-ug', unitCode: 'FS10',   description: 'OTDR Testing of Existing Fiber (Not New Build)',       uom: 'EA', rate: 75.00,  category: 'Splicing' },
+  { id: 'rcu-26', rateCardId: 'rc-essentia-ug', unitCode: 'FS13',   description: 'Optimize Node / OLT / Pigtail',                        uom: 'EA', rate: 90.00,  category: 'Splicing' },
+  { id: 'rcu-27', rateCardId: 'rc-essentia-ug', unitCode: 'FS14',   description: 'Audit Enclosure / Fiber Splicer Hourly (Pre-Approved)', uom: 'EA', rate: 65.00,  category: 'Splicing' },
+  { id: 'rcu-28', rateCardId: 'rc-essentia-ug', unitCode: 'FS15',   description: 'Replace or Upgrade Existing Enclosure',                uom: 'EA', rate: 175.00, category: 'Splicing' },
+  { id: 'rcu-29', rateCardId: 'rc-essentia-ug', unitCode: 'AS24',   description: 'De/Re-Lash Enclosure',                                 uom: 'EA', rate: 55.00,  category: 'Splicing' },
+  { id: 'rcu-30', rateCardId: 'rc-essentia-ug', unitCode: 'MC01A',  description: 'Hang OLT Node',                                        uom: 'EA', rate: 130.00, category: 'Splicing' },
+  { id: 'rcu-31', rateCardId: 'rc-essentia-ug', unitCode: 'US01',   description: 'Open Underground Enclosure (Coil/Uncoil)',             uom: 'EA', rate: 45.00,  category: 'Splicing' },
 ]
 
 // --- Employees ---------------------------------------------------------------
@@ -262,8 +278,9 @@ function generateActivity() {
 
       const footage = rand(econ.dailyFootage[0], econ.dailyFootage[1])
       const hours = pick([8, 8, 9, 10])
+      const productionEntryId = `prod-${pid++}`
       production.push({
-        id: `prod-${pid++}`,
+        id: productionEntryId,
         date,
         projectId,
         crewId: crew.id,
@@ -277,6 +294,13 @@ function generateActivity() {
       const laborCost = crewLaborCost(crew, hours, footage).total
       const equipmentCost = econ.equipPerDay
       const otherCost = rand(80, 320)
+      // productionEntryId links this PnLEntry back to the production row it was
+      // generated from — without it, DailyPnL.tsx's "Production" table (which
+      // joins pnl rows onto production rows via this id) can't find a match and
+      // silently shows $0 revenue / no retainage for every seeded row, even
+      // though the aggregate totals elsewhere (computeMetrics, which sums pnl
+      // directly) look correct. Real markup-sourced entries already set this
+      // (see DataContext.tsx's addProduction) — seed data needs to match.
       pnl.push({
         id: `pnl-${lid++}`,
         date,
@@ -286,6 +310,7 @@ function generateActivity() {
         materialCost: 0,
         equipmentCost,
         otherCost,
+        productionEntryId,
       })
     }
   }
@@ -389,5 +414,11 @@ export function generateSeedData(): AppData {
     mapReadingSessions: [],
     employeeProductionRates: [],
     productionPayAllocations: [],
+    subcontractors: [],
+    notifications: [],
+    materialRequests: [],
+    spliceEnclosures: [],
+    fiberTapReports: [],
+    spliceReportTemplates: [],
   }
 }

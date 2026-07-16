@@ -12,15 +12,35 @@ import { Modal } from './ui/Modal'
 import { Button, Field, Input, Select, Textarea } from './ui/Form'
 import { AddWorkTypeGrid } from './AddWorkTypeGrid'
 import { AddWorkDiscardConfirm } from './AddWorkDiscardConfirm'
+import { SpliceEnclosureForm } from './SpliceEnclosureForm'
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { saveBlob, loadBlob } from '../lib/fileStore'
 import { recentUnitCodes } from '../lib/analytics'
 import { submitMarkupToProduction } from '../lib/productionFromMarkup'
+import { crewOrSubSelectorOptions } from '../lib/crewOrSub'
+import { resolveActorId } from '../lib/actorId'
 import { MARKUP_STATUS_META, PHOTO_PROOF_META } from '../types'
 import type { MarkupStatus, PhotoProofType, FieldMarkup, WorkObjectTypeId } from '../types'
-import { WORK_OBJECT_TYPES, WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
+import { WORK_OBJECT_TYPES, WORK_OBJECT_TYPE_MAP, isSequentialAnnotation, SEQUENCE_PLACEHOLDER } from '../lib/workObjectTypes'
 import type { WorkObjectTypeDef } from '../lib/workObjectTypes'
+import { localDateStr } from '../lib/format'
+
+/**
+ * TEMPORARY test-trial toggle — set back to `true` once trials are done to
+ * restore normal required-field enforcement on the Details step (Work Type,
+ * Comments, Status, Crew, Quantity, GPS): no red asterisks, no blocked
+ * Next/Save while `false`, so testers can click through Details freely.
+ *
+ * Billing is NOT gated by this flag — it's enforced unconditionally (see
+ * billingErrors below) even during test trials, because a redline finished
+ * with zero billing lines never generates a Production/P&L entry at all
+ * (submitMarkupToProduction bails out completely when there's nothing
+ * billable) — it just silently vanishes from Production/Dashboard/P&L
+ * while still looking "done" on the Field Map. That's a data-completeness
+ * problem, not a required-field annoyance, so it stays locked regardless.
+ */
+const REQUIRE_ADD_WORK_FIELDS = false
 
 /** Human-readable Work ID, e.g. "WO-TRN-014" — generated once, at final Save. Scoped
  *  per-project-per-type so numbers stay small; defensively re-incremented on collision
@@ -38,7 +58,7 @@ function generateWorkId(typeDef: WorkObjectTypeDef, projectId: string, allMarkup
   return candidate
 }
 
-type Step = 'details' | 'photos' | 'billing'
+type Step = 'details' | 'splice' | 'photos' | 'billing'
 
 interface Props {
   open: boolean
@@ -50,6 +70,10 @@ interface Props {
   /** "Non-Billable Item" — draws a reference line immediately with no wizard at all;
    *  see startNonBillableLine in KmzMap.tsx / PdfPrintMode.tsx. */
   onPickNonBillable: () => void
+  /** Fiber Tick Mark / Fiber Loop / Snow Shoe — drops a point immediately with no
+   *  wizard at all, straight to WorkObjectPropertiesPanel's Sequence-only view;
+   *  see startSequentialAnnotation. */
+  onPickSequential: (typeId: WorkObjectTypeId) => void
 }
 
 function PhotoThumb({ photoId }: { photoId: string }) {
@@ -59,28 +83,71 @@ function PhotoThumb({ photoId }: { photoId: string }) {
   return <img src={src} className="h-14 w-14 shrink-0 rounded object-cover border border-[#2a3347]" />
 }
 
-export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, onPickNonBillable }: Props) {
+export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, onPickNonBillable, onPickSequential }: Props) {
   const { t } = useTranslation()
   const {
     data, updateMarkup, deleteMarkup, addMarkupPhoto, deleteMarkupPhoto, addMarkupVideo,
     addMarkupBilling, deleteMarkupBilling, updateMarkupBilling,
-    addProduction, toggleFavoriteUnitCode,
+    addProduction, toggleFavoriteUnitCode, addNotification, logQaSubmitted,
   } = useData()
-  const { activeEmployeeId } = useRole()
+  const { role, activeEmployeeId, activeSubcontractorId, activeSupervisorEmployeeId } = useRole()
+  // Supervisor and subcontractor sessions each keep their own separate
+  // identity from In-House view (see RoleContext's doc comment and
+  // lib/actorId.ts) — this is the id recorded as "who did this" for any
+  // edit a session makes below.
+  const effectiveActorId = resolveActorId(role, activeEmployeeId, activeSupervisorEmployeeId, activeSubcontractorId)
+  const crewOrSubOptions = crewOrSubSelectorOptions(data, role, activeSubcontractorId)
   const [step, setStep] = useState<Step>('details')
   const [billingSearch, setBillingSearch] = useState('')
   const [billingView, setBillingView] = useState<'suggested' | 'favorites' | 'recent' | 'all'>('recent')
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'capturing' | 'error'>('idle')
   const [savingBilling, setSavingBilling] = useState(false)
   const [photoPhaseOverride, setPhotoPhaseOverride] = useState<PhotoProofType | null>(null)
+  const [spliceSlotOverride, setSpliceSlotOverride] = useState<{ kind: 'enclosure_mounted' } | { kind: 'tray'; trayNumber: number } | null>(null)
   const [showDiscardConfirm, setShowDiscardConfirm] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  // Tracks the billing line just added so its quantity input can be
+  // auto-focused/selected right away — see addBillingLine's comment.
+  const [justAddedBillingId, setJustAddedBillingId] = useState<string | null>(null)
+  const billingQtyInputRefs = useRef<Map<string, HTMLInputElement>>(new Map())
 
   const markup = markupId ? data.fieldMarkups.find((m) => m.id === markupId) ?? null : null
   const typeDef = markup?.workObjectType ? WORK_OBJECT_TYPE_MAP[markup.workObjectType] : null
   const project = data.projects.find((p) => p.id === projectId)
-  const assignedRateCard = project?.rateCardId ? data.rateCards.find((rc) => rc.id === project.rateCardId) ?? null : null
+  const assignedSubcontractor = markup?.assignedSubcontractorId
+    ? (data.subcontractors ?? []).find((s) => s.id === markup.assignedSubcontractorId) ?? null
+    : null
+  // Resolution order, most specific first: (1) this subcontractor's own
+  // per-project override for the project being worked — lets a subcontractor
+  // running several jobs at once bill each at its own negotiated rate;
+  // (2) the project's own assigned rate card. There's no single company-wide
+  // fallback rate card anymore — once a subcontractor can carry a different
+  // rate card per project, a lone "default" is either redundant (duplicates
+  // whatever the project already specifies) or actively wrong (silently
+  // applies one project's deal to every other project the same company
+  // works), so the only two sources of truth are "this project, this
+  // company's negotiated rate" or "this project's own rate card."
+  const subProjectRateCardId = assignedSubcontractor?.projectRateCards?.find((pr) => pr.projectId === projectId)?.rateCardId
+  const effectiveRateCardId = subProjectRateCardId || project?.rateCardId
+  const assignedRateCard = effectiveRateCardId ? data.rateCards.find((rc) => rc.id === effectiveRateCardId) ?? null : null
   const rateCardUnits = assignedRateCard ? data.rateCardUnits.filter((u) => u.rateCardId === assignedRateCard.id) : []
+  // A subcontractor session must never see the customer's rate — the price
+  // we bill the client for a unit code is exactly the "what we make" figure
+  // established elsewhere in the app. They see their own pay instead
+  // (rate × payRatePercent/100); with no percentage configured yet, the
+  // dollar figure is hidden entirely rather than guessing 100%. An in-house
+  // field session gets the same rate hidden too — they're paid hourly via
+  // Time Clock, unrelated to the billing rate card, so there's no pay
+  // figure to substitute in; it's just gone, same as a subcontractor with
+  // no pay rate configured yet. A supervisor gets the same treatment — full
+  // access to pick the right unit, just never the $ figure next to it.
+  const activeSub = role === 'subcontractor' ? (data.subcontractors ?? []).find((s) => s.id === activeSubcontractorId) : null
+  const subPayFactor = activeSub?.payRatePercent != null ? activeSub.payRatePercent / 100 : null
+  function displayRate(rawRate: number): string | null {
+    if (role === 'field' || role === 'supervisor') return null
+    if (role !== 'subcontractor') return `$${rawRate.toFixed(2)}`
+    return subPayFactor != null ? `$${(rawRate * subPayFactor).toFixed(2)}` : null
+  }
   const billingLines = markup ? data.markupBilling.filter((b) => b.markupId === markup.id) : []
   const photos = markup ? data.markupPhotos.filter((p) => p.markupId === markup.id) : []
   const favoriteCodes = data.favoriteUnitCodes ?? []
@@ -103,16 +170,28 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
       setStep('details'); setBillingSearch('')
       setBillingView(suggestedUnits.length > 0 ? 'suggested' : 'recent')
       setPhotoPhaseOverride(null)
+      setSpliceSlotOverride(null)
       setShowDiscardConfirm(false)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markupId])
 
+  // Focus + select the quantity input of whatever billing line was just
+  // added, so the very next thing typed lands in that field — the point of
+  // capturing quantity per line "at the moment" a unit is picked, rather
+  // than pre-filling every line from one shared upfront number.
+  useEffect(() => {
+    if (!justAddedBillingId) return
+    const input = billingQtyInputRefs.current.get(justAddedBillingId)
+    if (input) { input.focus(); input.select() }
+    setJustAddedBillingId(null)
+  }, [justAddedBillingId])
+
   if (!open) return null
 
   function patchMarkup(patch: Partial<FieldMarkup>) {
     if (!markup) return
-    updateMarkup(markup.id, patch, activeEmployeeId)
+    updateMarkup(markup.id, patch, effectiveActorId)
   }
 
   function captureGps() {
@@ -137,15 +216,19 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
   // ── Step 1: Type (no markup yet — map isn't clickable behind a blocking modal, which is fine here) ──
   if (!markupId) {
     return (
-      <Modal open={open} onClose={onClose} title={t('addWork.chooseType')} size="lg">
-        <AddWorkTypeGrid onSelect={onPickType} onSelectNonBillable={onPickNonBillable} />
+      <Modal dark open={open} onClose={onClose} title={t('addWork.chooseType')} size="lg">
+        <AddWorkTypeGrid onSelect={onPickType} onSelectNonBillable={onPickNonBillable} onSelectSequential={onPickSequential} />
       </Modal>
     )
   }
 
   if (!markup) return null
 
-  async function handlePhotoFiles(files: FileList | null, phase: PhotoProofType | null) {
+  async function handlePhotoFiles(
+    files: FileList | null,
+    phase: PhotoProofType | null,
+    spliceProofSlot?: { kind: 'enclosure_mounted' } | { kind: 'tray'; trayNumber: number } | null,
+  ) {
     if (!files || !markup) return
     for (const file of Array.from(files)) {
       await new Promise<void>((resolve) => {
@@ -160,8 +243,10 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
           }
           const id = addMarkupPhoto({
             markupId: markup.id, caption: null, takenAt: new Date().toISOString(),
-            uploadedBy: null, lat: null, lng: null, phase,
-          }, activeEmployeeId)
+            uploadedBy: null, lat: markup.capturedLat ?? null, lng: markup.capturedLng ?? null, phase,
+            crewId: markup.crewId, employeeId: markup.createdBy, subcontractorId: markup.assignedSubcontractorId,
+            ...(spliceProofSlot ? { spliceProofSlot } : {}),
+          }, effectiveActorId)
           await saveBlob(`mkp-${id}`, dataUrl)
           resolve()
         }
@@ -187,26 +272,37 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
 
   function addBillingLine(unit: (typeof rateCardUnits)[number]) {
     if (!markup) return
-    const quantity = markup.quantity ?? 1
-    addMarkupBilling({
-      markupId: markup.id, date: new Date().toISOString().slice(0, 10), crewId: markup.crewId,
+    // Quantity is captured per billing line, right here, not as one shared
+    // upfront field — a work item that needs two different codes (e.g. a
+    // footage code and a separate bundle-count code) gets its own real
+    // quantity for each, instead of both silently inheriting the same
+    // number. markup.quantity can still carry a value from legacy data or a
+    // later edit (WorkObjectPropertiesPanel), so it's still honored as a
+    // starting point if present; otherwise an LF-billed unit starts from the
+    // geometry's own drawn length (closer to correct than a flat "1" for a
+    // linear item), and anything else starts at 1 — both are just starting
+    // points the field/subcontractor is expected to correct via the
+    // quantity input that's auto-focused right after this line is added.
+    const quantity = markup.quantity ?? (unit.uom === 'LF' ? Math.round(markup.lengthFt ?? 0) || 1 : 1)
+    const newBillingId = addMarkupBilling({
+      markupId: markup.id, date: markup.workDate ?? localDateStr(), crewId: markup.crewId,
       rateCode: unit.unitCode, description: unit.description, unitType: unit.uom,
       quantity, rate: unit.rate, total: quantity * unit.rate,
       billable: true, invoiceStatus: 'not_billed', notes: null,
-    }, activeEmployeeId)
+    }, effectiveActorId)
+    setJustAddedBillingId(newBillingId)
   }
 
   interface DetailsErrors {
-    workObjectType?: string; comments?: string; status?: string; crew?: string; quantity?: string; gps?: string
+    workObjectType?: string; comments?: string; status?: string; crew?: string; gps?: string
   }
   function detailsErrors(): DetailsErrors {
-    if (!markup) return {}
+    if (!markup || !REQUIRE_ADD_WORK_FIELDS) return {}
     const errs: DetailsErrors = {}
     if (!markup.workObjectType) errs.workObjectType = t('addWork.validation.workTypeRequired')
     if (!markup.notes?.trim()) errs.comments = t('addWork.validation.commentsRequired')
     if (!markup.status) errs.status = t('addWork.validation.statusRequired')
-    if (!markup.crewId) errs.crew = t('addWork.validation.crewRequired')
-    if (markup.quantity == null) errs.quantity = t('addWork.validation.quantityRequired')
+    if (!markup.crewId && !markup.assignedSubcontractorId) errs.crew = t('addWork.validation.crewRequired')
     const hasGps = markup.capturedLat != null && markup.capturedLng != null
     if (!hasGps && !markup.gpsUnavailableConfirmed) errs.gps = t('addWork.validation.gpsRequired')
     return errs
@@ -219,12 +315,32 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
     if (!typeDef) return []
     return typeDef.requiredPhotoPhases.filter((phase) => !photos.some((p) => p.phase === phase))
   }
+  // Splicing-only, and unlike photosErrors above, this DOES block Next — the
+  // real paperwork's photo checklist (enclosure mounted + one photo per tray,
+  // matching the enclosure's own tray count) is a hard completeness
+  // requirement, not a recommendation, so it gets real count enforcement
+  // instead of the informational-only treatment every other work type gets.
+  function spliceProofErrors(): string[] {
+    if (typeDef?.id !== 'splicing' || !markup) return []
+    const enclosure = (data.spliceEnclosures ?? []).find((s) => s.markupId === markup.id)
+    if (!enclosure) return ['Splice enclosure detail']
+    const missing: string[] = []
+    if (!photos.some((p) => p.spliceProofSlot?.kind === 'enclosure_mounted')) missing.push('Enclosure mounted photo')
+    for (let tray = 1; tray <= enclosure.trayCount; tray++) {
+      if (!photos.some((p) => p.spliceProofSlot?.kind === 'tray' && p.spliceProofSlot.trayNumber === tray)) {
+        missing.push(`Tray ${tray} photo`)
+      }
+    }
+    return missing
+  }
   function billingErrors(): string | null {
+    // Always enforced, even during test trials — see REQUIRE_ADD_WORK_FIELDS's
+    // doc comment above for why this one can't be relaxed.
     if (billingLines.length === 0) return t('addWork.validation.billingRequired')
     if (!billingLines.some((b) => b.quantity > 0)) return t('addWork.validation.billingQuantityRequired')
     return null
   }
-  const isWizardComplete = Object.keys(detailsErrors()).length === 0 && !billingErrors()
+  const isWizardComplete = Object.keys(detailsErrors()).length === 0 && !billingErrors() && spliceProofErrors().length === 0
 
   function requestClose() {
     if (isWizardComplete) { onClose(); return }
@@ -241,14 +357,14 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
   }
 
   function handleSave() {
-    if (!markup || billingErrors() || Object.keys(detailsErrors()).length > 0) return
+    if (!markup || billingErrors() || Object.keys(detailsErrors()).length > 0 || spliceProofErrors().length > 0) return
     const workId = typeDef ? generateWorkId(typeDef, markup.projectId, data.fieldMarkups) : markup.workId ?? null
     patchMarkup({ workId })
     setSavingBilling(true)
     try {
       submitMarkupToProduction({
         markup: { ...markup, workId }, billingEntries: billingLines,
-        activeEmployeeId, data, addProduction, updateMarkupBilling, updateMarkup,
+        activeEmployeeId: effectiveActorId, data, addProduction, updateMarkupBilling, updateMarkup, addNotification, logQaSubmitted,
       })
     } finally {
       setSavingBilling(false)
@@ -256,37 +372,39 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
     }
   }
 
-  const steps: Step[] = ['details', 'photos', 'billing']
+  const isSplicing = typeDef?.id === 'splicing'
+  const steps: Step[] = isSplicing ? ['details', 'splice', 'photos', 'billing'] : ['details', 'photos', 'billing']
   const stepIdx = steps.indexOf(step)
   const nextRequiredPhase = typeDef?.requiredPhotoPhases.find((phase) => !photos.some((p) => p.phase === phase)) ?? null
   const stepDisabled =
     step === 'details' ? Object.keys(detailsErrors()).length > 0 :
-    step === 'photos' ? false :
+    step === 'splice' ? false :
+    step === 'photos' ? (isSplicing ? spliceProofErrors().length > 0 : false) :
     !!billingErrors()
   const checklist: { label: string; done: boolean; step: Step }[] = [
     { label: t('addWork.field.workType'), done: !detailsErrors().workObjectType, step: 'details' },
     { label: t('addWork.field.comments'), done: !detailsErrors().comments, step: 'details' },
     { label: t('addWork.field.status'), done: !detailsErrors().status, step: 'details' },
     { label: t('addWork.field.crew'), done: !detailsErrors().crew, step: 'details' },
-    { label: t('addWork.field.quantity'), done: !detailsErrors().quantity, step: 'details' },
     { label: t('addWork.field.gps'), done: !detailsErrors().gps, step: 'details' },
-    { label: t('addWork.steps.photos'), done: photosErrors().length === 0, step: 'photos' },
+    { label: t('addWork.steps.photos'), done: isSplicing ? spliceProofErrors().length === 0 : photosErrors().length === 0, step: 'photos' },
     { label: t('addWork.steps.billing'), done: !billingErrors(), step: 'billing' },
   ]
 
   return (
     <>
     <Modal
+      dark
       open={open}
       onClose={requestClose}
       title={t('addWork.title', { type: typeDef?.label ?? 'Work Object' })}
       size="lg"
       footer={
         <div className="flex w-full items-center justify-between">
-          <Button variant="ghost" onClick={() => (stepIdx === 0 ? requestClose() : setStep(steps[stepIdx - 1]))}>
+          <Button dark variant="ghost" onClick={() => (stepIdx === 0 ? requestClose() : setStep(steps[stepIdx - 1]))}>
             {stepIdx === 0 ? t('addWork.cancel') : t('addWork.back')}
           </Button>
-          <Button
+          <Button dark
             onClick={() => (stepIdx === steps.length - 1 ? handleSave() : setStep(steps[stepIdx + 1]))}
             disabled={savingBilling || stepDisabled}
           >
@@ -324,8 +442,8 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
 
       {step === 'details' && (
         <div className="space-y-3">
-          <Field label={t('addWork.field.workType')} required error={detailsErrors().workObjectType}>
-            <Select
+          <Field dark label={t('addWork.field.workType')} required={REQUIRE_ADD_WORK_FIELDS} error={detailsErrors().workObjectType}>
+            <Select dark
               value={markup.workObjectType ?? ''}
               onChange={(e) => {
                 const newType = WORK_OBJECT_TYPE_MAP[e.target.value as WorkObjectTypeId]
@@ -337,15 +455,19 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
               {WORK_OBJECT_TYPES.map((wt) => <option key={wt.id} value={wt.id}>{wt.label}</option>)}
             </Select>
           </Field>
-          <Field label={t('addWork.field.label')}>
-            <Input
+          <Field dark label={isSequentialAnnotation(typeDef?.id) ? 'Sequence' : typeDef?.id === 'feeder_fiber' ? 'Feeder ID' : t('addWork.field.label')}>
+            <Input dark
+              autoFocus={isSequentialAnnotation(typeDef?.id)}
               value={markup.featureName ?? markup.label ?? ''}
               onChange={(e) => patchMarkup({ featureName: e.target.value, label: e.target.value })}
-              placeholder={t('addWork.field.labelPlaceholder')}
+              placeholder={
+                (typeDef?.id && SEQUENCE_PLACEHOLDER[typeDef.id])
+                ?? (typeDef?.id === 'feeder_fiber' ? 'Optional feeder ID' : t('addWork.field.labelPlaceholder'))
+              }
             />
           </Field>
-          <Field label={t('addWork.field.comments')} required error={detailsErrors().comments}>
-            <Textarea
+          <Field dark label={t('addWork.field.comments')} required={REQUIRE_ADD_WORK_FIELDS} error={detailsErrors().comments}>
+            <Textarea dark
               value={markup.notes ?? ''}
               onChange={(e) => patchMarkup({ notes: e.target.value })}
               placeholder={typeDef?.requiresNotes ? t('addWork.field.commentsRequired') : t('addWork.field.commentsOptional')}
@@ -353,8 +475,8 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
             />
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label={t('addWork.field.status')} required error={detailsErrors().status}>
-              <Select
+            <Field dark label={t('addWork.field.status')} required={REQUIRE_ADD_WORK_FIELDS} error={detailsErrors().status}>
+              <Select dark
                 value={markup.status}
                 onChange={(e) => patchMarkup({ status: e.target.value as MarkupStatus })}
                 className={detailsErrors().status ? 'border-red-500/70' : undefined}
@@ -364,28 +486,47 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
                 ))}
               </Select>
             </Field>
-            <Field label={t('addWork.field.crew')} required error={detailsErrors().crew}>
-              <Select
-                value={markup.crewId ?? ''}
-                onChange={(e) => patchMarkup({ crewId: e.target.value || null })}
+            <Field dark label={t('addWork.field.crew')} required={REQUIRE_ADD_WORK_FIELDS} error={detailsErrors().crew} hint="Subcontractors bill against their own rate card instead of the project's, if they have one on file.">
+              <Select dark
+                value={markup.assignedSubcontractorId ? `sub:${markup.assignedSubcontractorId}` : markup.crewId ? `crew:${markup.crewId}` : ''}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (!v) { patchMarkup({ crewId: null, assignedSubcontractorId: null }); return }
+                  const [kind, id] = v.split(':')
+                  patchMarkup(kind === 'sub' ? { assignedSubcontractorId: id, crewId: null } : { crewId: id, assignedSubcontractorId: null })
+                }}
                 className={detailsErrors().crew ? 'border-red-500/70' : undefined}
               >
                 <option value="">{t('addWork.field.unassigned')}</option>
-                {data.crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                {crewOrSubOptions.length === 1 ? (
+                  // Subcontractor session: only their own name, per the isolation
+                  // principle already applied to the Subcontractor Dashboard —
+                  // never show the internal crew roster or other companies.
+                  <option value={`${crewOrSubOptions[0].kind === 'subcontractor' ? 'sub' : 'crew'}:${crewOrSubOptions[0].id}`}>
+                    {crewOrSubOptions[0].name}
+                  </option>
+                ) : (
+                  <>
+                    <optgroup label="In-House Crews">
+                      {crewOrSubOptions.filter((o) => o.kind === 'crew').map((o) => (
+                        <option key={o.id} value={`crew:${o.id}`}>{o.name}</option>
+                      ))}
+                    </optgroup>
+                    {crewOrSubOptions.some((o) => o.kind === 'subcontractor') && (
+                      <optgroup label="Subcontractors">
+                        {crewOrSubOptions.filter((o) => o.kind === 'subcontractor').map((o) => (
+                          <option key={o.id} value={`sub:${o.id}`}>{o.name}</option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </>
+                )}
               </Select>
             </Field>
           </div>
-          <Field label={`${t('addWork.field.quantity')}${typeDef ? ` (${typeDef.defaultUnit})` : ''}`} required error={detailsErrors().quantity}>
-            <Input
-              type="number"
-              value={markup.quantity ?? ''}
-              onChange={(e) => patchMarkup({ quantity: e.target.value === '' ? null : Number(e.target.value) })}
-              className={detailsErrors().quantity ? 'border-red-500/70' : undefined}
-            />
-          </Field>
-          <Field label={t('addWork.field.gps')} required error={detailsErrors().gps}>
+          <Field dark label={t('addWork.field.gps')} required={REQUIRE_ADD_WORK_FIELDS} error={detailsErrors().gps}>
             <div className="flex items-center gap-2 flex-wrap">
-              <Button type="button" variant="secondary" onClick={captureGps} disabled={gpsStatus === 'capturing'}>
+              <Button dark type="button" variant="secondary" onClick={captureGps} disabled={gpsStatus === 'capturing'}>
                 <MapPin size={13} className="mr-1.5" />
                 {gpsStatus === 'capturing' ? t('addWork.field.capturingGps') : t('addWork.field.captureGps')}
               </Button>
@@ -395,7 +536,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
               {gpsStatus === 'error' && !markup.gpsUnavailableConfirmed && (
                 <>
                   <span className="text-[11px] text-red-400">{t('addWork.field.gpsError')}</span>
-                  <Button type="button" variant="ghost" onClick={() => patchMarkup({ gpsUnavailableConfirmed: true })}>
+                  <Button dark type="button" variant="ghost" onClick={() => patchMarkup({ gpsUnavailableConfirmed: true })}>
                     {t('addWork.field.gpsUnavailableConfirm')}
                   </Button>
                 </>
@@ -408,7 +549,75 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
         </div>
       )}
 
-      {step === 'photos' && (
+      {step === 'splice' && (
+        <SpliceEnclosureForm markupId={markup.id} projectId={markup.projectId} />
+      )}
+
+      {step === 'photos' && isSplicing && (
+        <div className="space-y-3">
+          <p className="rounded-md border border-[#2a2a2a] bg-white/[0.03] px-2.5 py-2 text-[11px] text-slate-400">
+            Every enclosure needs a photo of it mounted on the line, plus one photo per tray (matching the tray count entered on the Splice step) before this item can be saved.
+          </p>
+          {spliceProofErrors().length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {spliceProofErrors().map((label) => (
+                <span key={label} className="rounded-full border border-amber-700/60 px-2 py-0.5 text-[10px] font-medium text-amber-400">
+                  {label}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {photos.filter((p) => p.spliceProofSlot).map((p) => (
+              <div key={p.id} className="relative">
+                <PhotoThumb photoId={p.id} />
+                <span className="absolute bottom-0 inset-x-0 truncate rounded-b bg-black/70 px-1 text-center text-[8px] text-white">
+                  {p.spliceProofSlot?.kind === 'enclosure_mounted' ? 'Enclosure' : `Tray ${(p.spliceProofSlot as { trayNumber: number }).trayNumber}`}
+                </span>
+                <button
+                  onClick={() => deleteMarkupPhoto(p.id, effectiveActorId)}
+                  className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-white"
+                >
+                  <X size={8} />
+                </button>
+              </div>
+            ))}
+          </div>
+          <Field dark label="Tag next photo as">
+            <Select dark
+              value={spliceSlotOverride ? (spliceSlotOverride.kind === 'enclosure_mounted' ? 'enclosure_mounted' : `tray:${spliceSlotOverride.trayNumber}`) : ''}
+              onChange={(e) => {
+                const v = e.target.value
+                setSpliceSlotOverride(v === 'enclosure_mounted' ? { kind: 'enclosure_mounted' } : v.startsWith('tray:') ? { kind: 'tray', trayNumber: Number(v.split(':')[1]) } : null)
+              }}
+            >
+              <option value="enclosure_mounted">Enclosure mounted on line</option>
+              {Array.from({ length: (data.spliceEnclosures ?? []).find((s) => s.markupId === markup.id)?.trayCount ?? 0 }, (_, i) => i + 1).map((tray) => (
+                <option key={tray} value={`tray:${tray}`}>Tray {tray}</option>
+              ))}
+            </Select>
+          </Field>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            capture="environment"
+            className="hidden"
+            onChange={(e) => handlePhotoFiles(e.target.files, null, spliceSlotOverride ?? { kind: 'enclosure_mounted' })}
+          />
+          <div className="flex gap-2">
+            <Button dark variant="secondary" onClick={() => fileInputRef.current?.click()}>
+              <Camera size={13} className="mr-1.5" /> {t('addWork.photos.takePhoto')}
+            </Button>
+            <Button dark variant="secondary" onClick={() => fileInputRef.current?.click()}>
+              <ImagePlus size={13} className="mr-1.5" /> {t('addWork.photos.upload')}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {step === 'photos' && !isSplicing && (
         <div className="space-y-3">
           {typeDef && typeDef.requiredPhotoPhases.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
@@ -438,7 +647,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
                   </span>
                 )}
                 <button
-                  onClick={() => deleteMarkupPhoto(p.id, activeEmployeeId)}
+                  onClick={() => deleteMarkupPhoto(p.id, effectiveActorId)}
                   className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-white"
                 >
                   <X size={8} />
@@ -446,8 +655,8 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
               </div>
             ))}
           </div>
-          <Field label={t('addWork.photos.tagNextPhotoAs')}>
-            <Select
+          <Field dark label={t('addWork.photos.tagNextPhotoAs')}>
+            <Select dark
               value={photoPhaseOverride ?? nextRequiredPhase ?? 'other'}
               onChange={(e) => setPhotoPhaseOverride(e.target.value as PhotoProofType)}
             >
@@ -467,10 +676,10 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
             onChange={(e) => handlePhotoFiles(e.target.files, photoPhaseOverride ?? nextRequiredPhase ?? 'other')}
           />
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
+            <Button dark variant="secondary" onClick={() => fileInputRef.current?.click()}>
               <Camera size={13} className="mr-1.5" /> {t('addWork.photos.takePhoto')}
             </Button>
-            <Button variant="secondary" onClick={() => fileInputRef.current?.click()}>
+            <Button dark variant="secondary" onClick={() => fileInputRef.current?.click()}>
               <ImagePlus size={13} className="mr-1.5" /> {t('addWork.photos.upload')}
             </Button>
           </div>
@@ -491,6 +700,10 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
                       <span className="min-w-0 flex-1 truncate">{b.rateCode} — {b.description}</span>
                       <span className="flex shrink-0 items-center gap-1">
                         <input
+                          ref={(el) => {
+                            if (el) billingQtyInputRefs.current.set(b.id, el)
+                            else billingQtyInputRefs.current.delete(b.id)
+                          }}
                           type="number"
                           value={b.quantity}
                           onChange={(e) => {
@@ -499,9 +712,17 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
                           }}
                           className="w-14 rounded border border-[#2a3347] bg-[#141414] px-1 py-0.5 text-right text-[11px] text-slate-200 outline-none"
                         />
-                        <span className="text-slate-500">{b.unitType} × ${b.rate.toFixed(2)} = ${b.total.toFixed(2)}</span>
+                        <span className="text-slate-500">
+                          {role === 'field' || role === 'supervisor'
+                            ? b.unitType
+                            : role !== 'subcontractor'
+                              ? `${b.unitType} × $${b.rate.toFixed(2)} = $${b.total.toFixed(2)}`
+                              : subPayFactor != null
+                                ? `${b.unitType} · Your pay: $${(b.total * subPayFactor).toFixed(2)}`
+                                : b.unitType}
+                        </span>
                       </span>
-                      <button onClick={() => deleteMarkupBilling(b.id, activeEmployeeId)} className="shrink-0 text-slate-600 hover:text-red-400">
+                      <button onClick={() => deleteMarkupBilling(b.id, effectiveActorId)} className="shrink-0 text-slate-600 hover:text-red-400">
                         <Trash2 size={11} />
                       </button>
                     </li>
@@ -517,7 +738,7 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
                 <>
                   <div className="relative">
                     <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-600" />
-                    <Input
+                    <Input dark
                       value={billingSearch}
                       onChange={(e) => setBillingSearch(e.target.value)}
                       placeholder={t('addWork.billing.searchPlaceholder')}
@@ -558,7 +779,9 @@ export function AddWorkModal({ open, projectId, markupId, onClose, onPickType, o
                             {u.description}
                             {u.category && <span className="ml-1.5 text-slate-600">({u.category})</span>}
                           </span>
-                          <span className="text-slate-500">{u.unitCode} · ${u.rate.toFixed(2)}/{u.uom}</span>
+                          <span className="text-slate-500">
+                            {u.unitCode}{displayRate(u.rate) ? ` · ${displayRate(u.rate)}/${u.uom}` : ''}
+                          </span>
                         </button>
                         <button
                           onClick={() => toggleFavoriteUnitCode(u.unitCode)}

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { X, ChevronDown, Save, Trash2, Ruler } from 'lucide-react'
 import { useData } from '../store/DataContext'
+import { localDateStr } from '../lib/format'
 import { FEATURE_STATUS_META } from '../types'
 import type { MapFeature, FeatureStatus } from '../types'
 
@@ -29,7 +30,7 @@ export function FeaturePanel({ feature, onClose, onStatusChange }: Props) {
   const [tab, setTab] = useState<'production' | 'history' | 'details'>('production')
 
   // Production form state
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const [date,             setDate]             = useState(today)
   const [crewId,           setCrewId]           = useState(data.crews[0]?.id ?? '')
   const [workType,         setWorkType]         = useState<string>('')

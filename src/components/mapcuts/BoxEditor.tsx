@@ -1,9 +1,19 @@
 import { useRef, useState } from 'react'
 import { ArrowUp, ArrowDown, Trash2, RotateCw } from 'lucide-react'
 import type { MapCutBox } from '../../types'
-import { fracToPixelRect, pixelToFracRect, rotatePoint, computeSnap, snapRotation, type Rect } from '../../lib/mapCuts/geometry'
+import { expandRect, fracToPixelRect, pixelToFracRect, rotatePoint, computeSnap, snapRotation, type Rect } from '../../lib/mapCuts/geometry'
 
 interface PdfPoint { x: number; y: number }
+
+/** Another phase's finalized boxes, rendered underneath the active phase's
+ *  own (interactive) boxes as a non-interactive, color-coded ghost — no
+ *  resize/rotate handles, just an outline + label so the user can see what's
+ *  already claimed elsewhere while drawing the current phase. */
+export interface GhostPhaseBoxes {
+  color: string
+  label: string
+  boxes: MapCutBox[]
+}
 
 interface BoxEditorProps {
   /** The source page's true physical size, in PDF points — the coordinate
@@ -18,6 +28,18 @@ interface BoxEditorProps {
   containerHeightCss: number
   boxes: MapCutBox[]
   onBoxesChange: (boxes: MapCutBox[]) => void
+  /** 0-30. Purely a preview — draws a dashed outline of expandRect(box,
+   *  overlapPct) around every box so the Overlap slider has visible
+   *  on-screen feedback. The actual overlap is applied later, at generate
+   *  time, by pdfBuilder.ts via this same expandRect. */
+  overlapPct: number
+  /** This phase's own highlight color (phaseColor(pkg.phaseNumber)) — used
+   *  for its own boxes instead of a fixed green, so the active phase is
+   *  visually distinct from every other phase's ghosted boxes below, which
+   *  are drawn in their own phase colors. */
+  activeColor: string
+  /** Other phases in this print's phase family, drawn as read-only ghosts. */
+  otherPhaseBoxes?: GhostPhaseBoxes[]
   /** True while the "Draw Box" tool is armed — background drag draws a new
    *  box instead of panning. Auto-disarms itself via onBoxDrawn once one box
    *  is committed, matching this app's existing draw-tool convention
@@ -75,7 +97,7 @@ function rotationFromPointer(cx: number, cy: number, pointerPt: [number, number]
 
 export function BoxEditor({
   pageWidthPt, pageHeightPt, scale, panPt, containerWidthCss, containerHeightCss,
-  boxes, onBoxesChange, drawArmed, onBoxDrawn, onPanDelta,
+  boxes, onBoxesChange, overlapPct, activeColor, otherPhaseBoxes, drawArmed, onBoxDrawn, onPanDelta,
 }: BoxEditorProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -245,6 +267,30 @@ export function BoxEditor({
         onPointerMove={onSvgPointerMove}
         onPointerUp={onSvgPointerUp}
       >
+        {otherPhaseBoxes?.map((phase) => (
+          <g key={phase.label} style={{ pointerEvents: 'none' }}>
+            {phase.boxes.map((box) => {
+              const rectPx = fracToPixelRect(box, pageWidthPt, pageHeightPt)
+              const cx = rectPx.x + rectPx.width / 2
+              const cy = rectPx.y + rectPx.height / 2
+              return (
+                <g key={box.id} transform={box.rotation ? `rotate(${box.rotation} ${cx} ${cy})` : undefined}>
+                  <rect
+                    x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
+                    fill={phase.color} fillOpacity={0.1} stroke={phase.color} strokeWidth={strokeW}
+                  />
+                  <text
+                    x={rectPx.x + handleR * 0.6} y={rectPx.y + labelSize * 1.1}
+                    fontSize={labelSize * 0.85} fontWeight={700} fill={phase.color}
+                    style={{ paintOrder: 'stroke', stroke: '#0a0a0a', strokeWidth: strokeW * 2 }}
+                  >
+                    {phase.label}
+                  </text>
+                </g>
+              )
+            })}
+          </g>
+        ))}
         {boxes.map((box) => {
           const rectPx = fracToPixelRect(box, pageWidthPt, pageHeightPt)
           const cx = rectPx.x + rectPx.width / 2
@@ -258,10 +304,21 @@ export function BoxEditor({
           ]
           return (
             <g key={box.id} transform={box.rotation ? `rotate(${box.rotation} ${cx} ${cy})` : undefined}>
+              {overlapPct > 0 && (() => {
+                const expandedPx = fracToPixelRect(expandRect(box, overlapPct), pageWidthPt, pageHeightPt)
+                return (
+                  <rect
+                    x={expandedPx.x} y={expandedPx.y} width={expandedPx.width} height={expandedPx.height}
+                    fill="none" stroke="#e2e8f0" strokeOpacity={0.6} strokeDasharray={`${5 / scale} ${4 / scale}`}
+                    strokeWidth={strokeW} style={{ pointerEvents: 'none' }}
+                  />
+                )
+              })()}
               <rect
                 x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
-                fill={isSelected ? 'rgba(59,130,246,0.15)' : 'rgba(34,197,94,0.10)'}
-                stroke={isSelected ? '#3b82f6' : '#22c55e'}
+                fill={isSelected ? 'rgba(59,130,246,0.15)' : activeColor}
+                fillOpacity={isSelected ? undefined : 0.1}
+                stroke={isSelected ? '#3b82f6' : activeColor}
                 strokeWidth={strokeW}
                 style={{ cursor: 'move' }}
                 onPointerDown={(e) => onBoxPointerDown(e, box)}
@@ -272,7 +329,7 @@ export function BoxEditor({
                 x={rectPx.x + handleR * 0.6} y={rectPx.y + labelSize * 1.1}
                 fontSize={labelSize}
                 fontWeight={700}
-                fill={isSelected ? '#3b82f6' : '#22c55e'}
+                fill={isSelected ? '#3b82f6' : activeColor}
                 style={{ pointerEvents: 'none', paintOrder: 'stroke', stroke: '#0a0a0a', strokeWidth: strokeW * 2 }}
               >
                 {box.order}

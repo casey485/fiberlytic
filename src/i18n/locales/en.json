@@ -35,6 +35,7 @@
     "title": "Add Work — {{type}}",
     "steps": {
       "details": "Details",
+      "splice": "Splice",
       "photos": "Photos",
       "billing": "Billing"
     },

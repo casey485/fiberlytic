@@ -17,6 +17,7 @@ import type {
   MapFeature,
   MarkupAttachment,
   MarkupBilling,
+  MarkupHistoryAction,
   MarkupHistoryEntry,
   MarkupInspection,
   MarkupPhoto,
@@ -24,25 +25,35 @@ import type {
   MapCutPackage,
   MapReadingSession,
   Material,
+  MaterialRequest,
+  Notification,
+  NotificationType,
   Photo,
   ProductionEntry,
   ProductionLineItem,
   PnLEntry,
   Project,
   ProjectFile,
+  QaStatus,
   RateCard,
   RateCardUnit,
+  Subcontractor,
   Timecard,
   EmployeeProductionRate,
   ProductionPayAllocation,
+  SpliceEnclosure,
+  FiberTapReport,
+  SpliceReportTemplate,
+  SpliceReportKind,
 } from '../types'
 import { generateSeedData } from '../data/seed'
 import { crewLaborCost } from '../lib/laborCost'
-import { daysInMonth, workTypeDivisions } from '../lib/analytics'
+import { daysInMonth, workTypeDivisions, entryDisplayFootage } from '../lib/analytics'
+import { localDateStr } from '../lib/format'
 import { saveBlob, deleteBlob } from '../lib/fileStore'
 import { enqueue as enqueueSyncEntry, flush as flushSyncEntries } from '../lib/syncQueue'
 
-const STORAGE_KEY = 'fiberlytic:data:v1'
+export const STORAGE_KEY = 'fiberlytic:data:v1'
 
 /** Bring older saved data up to the current shape. */
 function migrateData(raw: AppData): AppData {
@@ -54,10 +65,18 @@ function migrateData(raw: AppData): AppData {
   }))
 
   // Migrate projects: promote legacy `workType` (singular) → `workTypes` (array),
-  // back-fill retentionPct to 10% when unset, recompute footageComplete from production
+  // back-fill retentionPct to 10% when unset, recompute footageComplete from production.
+  // Runs on every load (not gated by a version check), so this has to use the
+  // same LF-preferring logic as recomputeFootage below — a multi-crew redline
+  // split intentionally zeroes entry.footage on non-primary crews, and a
+  // raw sum here would silently re-stomp footageComplete back down to that
+  // undercount on every single page refresh even after recomputeFootage had
+  // it right.
   const footageByProject = new Map<string, number>()
   for (const pe of raw.production ?? []) {
-    footageByProject.set(pe.projectId, (footageByProject.get(pe.projectId) ?? 0) + pe.footage)
+    const lineItems = (raw.productionLineItems ?? []).filter((li) => li.productionEntryId === pe.id)
+    const footage = entryDisplayFootage(pe, lineItems)
+    footageByProject.set(pe.projectId, (footageByProject.get(pe.projectId) ?? 0) + footage)
   }
   const projects = (raw.projects ?? []).map((p) => {
     const pAny = p as unknown as Record<string, unknown>
@@ -218,6 +237,38 @@ function migrateData(raw: AppData): AppData {
     return { ...entry, revenue: Math.round(pe.footage * rate) }
   })
 
+  // Purge records still referencing a project that no longer exists.
+  // deleteProject's cascade used to only clean production/pnl/timecards/
+  // jobExpenses — it never touched fieldMarkups, markupBilling, or
+  // productionLineItems, so a deleted project's redlines lived on forever as
+  // still-"pending" QA data: Production/P&L correctly showed nothing for that
+  // project, but SubcontractorDashboard's Pending Earnings (and any other
+  // QA-revenue figure, since those read productionLineItems/markupBilling
+  // directly, not production/pnl) kept counting them. deleteProject's cascade
+  // is now fixed too (see below), so this becomes a no-op once any
+  // already-orphaned records from before that fix are cleaned up here.
+  const validProjectIds = new Set(projects.map((p) => p.id))
+  const orphanedMarkupIds = new Set(
+    (raw.fieldMarkups ?? []).filter((m) => !validProjectIds.has(m.projectId)).map((m) => m.id),
+  )
+  const validProductionEntryIds = new Set(
+    (raw.production ?? []).filter((e) => validProjectIds.has(e.projectId)).map((e) => e.id),
+  )
+
+  // Retroactive repair for a separate bug (now fixed at the source — see
+  // lib/actorId.ts's createdByActorId): every effectiveActorId computation
+  // across the app used to fall through to activeEmployeeId for a
+  // subcontractor session too, instead of treating it as its own identity —
+  // stamping FieldMarkup.createdBy with whatever in-house employee this
+  // device had last picked in In-House view. Any markup that's clearly
+  // subcontractor-created (assignedSubcontractorId is set) can never have a
+  // legitimate Employee createdBy, so this un-stamps the stale id wherever
+  // it's still baked in from before that fix — the real, correct
+  // attribution was always assignedSubcontractorId, set independently.
+  const fieldMarkupsFixed = (raw.fieldMarkups ?? []).map((m) =>
+    m.assignedSubcontractorId && m.createdBy ? { ...m, createdBy: null } : m,
+  )
+
   return {
     ...raw,
     crews,
@@ -227,28 +278,41 @@ function migrateData(raw: AppData): AppData {
     clients: raw.clients ?? [],
     rateCards,
     rateCardUnits: raw.rateCardUnits ?? [],
-    productionLineItems: raw.productionLineItems ?? [],
+    production: raw.production ?? [],
+    materials: raw.materials ?? [],
+    invoices: raw.invoices ?? [],
+    productionLineItems: (raw.productionLineItems ?? []).filter(
+      (li) => !li.productionEntryId || validProductionEntryIds.has(li.productionEntryId),
+    ),
     timecards: raw.timecards ?? [],
     jobExpenses,
     equipment: raw.equipment ?? [],
     projectFiles: raw.projectFiles ?? [],
     clockEntries: raw.clockEntries ?? [],
-    kmzUploads: raw.kmzUploads ?? [],
-    mapFeatures: raw.mapFeatures ?? [],
-    featureProduction: raw.featureProduction ?? [],
-    fieldMarkups: raw.fieldMarkups ?? [],
-    markupPhotos: raw.markupPhotos ?? [],
-    markupBilling: raw.markupBilling ?? [],
-    fieldMapOverlays: raw.fieldMapOverlays ?? [],
+    kmzUploads: (raw.kmzUploads ?? []).filter((k) => validProjectIds.has(k.projectId)),
+    mapFeatures: (raw.mapFeatures ?? []).filter((f) => validProjectIds.has(f.projectId)),
+    featureProduction: (raw.featureProduction ?? []).filter((f) => validProjectIds.has(f.projectId)),
+    fieldMarkups: fieldMarkupsFixed.filter((m) => !orphanedMarkupIds.has(m.id)),
+    markupPhotos: (raw.markupPhotos ?? []).filter((p) => !orphanedMarkupIds.has(p.markupId)),
+    markupBilling: (raw.markupBilling ?? []).filter((b) => !orphanedMarkupIds.has(b.markupId)),
+    fieldMapOverlays: (raw.fieldMapOverlays ?? []).filter((o) => validProjectIds.has(o.projectId)),
     favoriteUnitCodes: raw.favoriteUnitCodes ?? [],
-    markupVideos: raw.markupVideos ?? [],
-    markupInspections: raw.markupInspections ?? [],
-    markupAttachments: raw.markupAttachments ?? [],
-    markupHistory: raw.markupHistory ?? [],
-    mapCutPackages: raw.mapCutPackages ?? [],
-    mapReadingSessions: raw.mapReadingSessions ?? [],
+    markupVideos: (raw.markupVideos ?? []).filter((v) => !orphanedMarkupIds.has(v.markupId)),
+    markupInspections: (raw.markupInspections ?? []).filter((i) => !orphanedMarkupIds.has(i.markupId)),
+    markupAttachments: (raw.markupAttachments ?? []).filter((a) => !orphanedMarkupIds.has(a.markupId)),
+    markupHistory: (raw.markupHistory ?? []).filter((h) => !orphanedMarkupIds.has(h.markupId)),
+    mapCutPackages: (raw.mapCutPackages ?? []).filter((m) => validProjectIds.has(m.projectId)),
+    mapReadingSessions: (raw.mapReadingSessions ?? []).filter((m) => validProjectIds.has(m.projectId)),
     employeeProductionRates: raw.employeeProductionRates ?? [],
     productionPayAllocations: raw.productionPayAllocations ?? [],
+    subcontractors: raw.subcontractors ?? [],
+    notifications: (raw.notifications ?? []).filter((n) => validProjectIds.has(n.projectId)),
+    materialRequests: (raw.materialRequests ?? []).filter((r) => validProjectIds.has(r.projectId)),
+    photos: (raw.photos ?? []).filter((p) => validProjectIds.has(p.projectId)),
+    aerialLashFiberRuns: (raw.aerialLashFiberRuns ?? []).filter((a) => validProjectIds.has(a.projectId)),
+    spliceEnclosures: (raw.spliceEnclosures ?? []).filter((s) => !orphanedMarkupIds.has(s.markupId)),
+    fiberTapReports: (raw.fiberTapReports ?? []).filter((r) => validProjectIds.has(r.projectId)),
+    spliceReportTemplates: raw.spliceReportTemplates ?? [],
   }
 }
 
@@ -275,7 +339,7 @@ function historyEntry(
   markupId: string,
   action: MarkupHistoryEntry['action'],
   actor: string | null,
-  extra?: { field?: string; oldValue?: string | null; newValue?: string | null },
+  extra?: { field?: string; oldValue?: string | null; newValue?: string | null; note?: string },
 ): MarkupHistoryEntry {
   return { id: newId('mhist'), markupId, timestamp: new Date().toISOString(), actor, action, ...extra }
 }
@@ -307,6 +371,56 @@ function diffMarkupUpdate(markupId: string, before: FieldMarkup, patch: Partial<
   return entries
 }
 
+const QA_NOTIFICATION_TITLES: Record<NotificationType, string> = {
+  redline_submitted: 'New redline submitted for review',
+  redline_approved: 'Redline approved',
+  redline_rejected: 'Redline rejected',
+  redline_rejection_fixed: 'Rejection marked fixed — ready for re-review',
+  redline_approved_after_correction: 'Corrected redline approved',
+  redline_edited_after_approval: 'Approved redline edited — ready for re-review',
+}
+
+/** Builds a complete Notification (including id/createdAt/readAt) for a QA/QC
+ *  review action — called from inside a setData updater (not through the
+ *  addNotification method, since a mutation-inside-a-mutation would be an
+ *  anti-pattern), so it must return a ready-to-store record, not an Omit<>. */
+function buildQaNotification(
+  type: NotificationType,
+  markup: FieldMarkup,
+  billing: MarkupBilling,
+  project: Project | undefined,
+  fieldEmployee: Employee | undefined,
+  recipientRole: 'admin' | 'field' = 'field',
+  subcontractor?: Subcontractor,
+): Notification {
+  const subcontractorId = billing.assignedSubcontractorId ?? markup.assignedSubcontractorId ?? null
+  const isSubcontractor = !!subcontractorId
+  const fieldUserName = subcontractor?.companyName ?? fieldEmployee?.name ?? (isSubcontractor ? 'Subcontractor' : 'Unknown')
+  return {
+    id: newId('notif'),
+    type,
+    markupId: markup.id,
+    markupBillingId: billing.id,
+    projectId: markup.projectId,
+    recipientRole,
+    // Mutually exclusive: a subcontractor-owned line routes to the
+    // Subcontractor view's notification bell via recipientSubcontractorId,
+    // never to recipientEmployeeId (and vice versa for in-house work).
+    recipientEmployeeId: recipientRole === 'field' && !isSubcontractor ? markup.createdBy : null,
+    recipientSubcontractorId: recipientRole === 'field' && isSubcontractor ? subcontractorId : null,
+    title: QA_NOTIFICATION_TITLES[type],
+    body: `${billing.description} — ${project?.name ?? 'Unknown project'}`,
+    createdAt: new Date().toISOString(),
+    readAt: null,
+    meta: {
+      projectName: project?.name ?? 'Unknown project',
+      location: project?.location ?? '',
+      fieldUserName,
+      isSubcontractor,
+    },
+  }
+}
+
 export type LineItemInput = Omit<ProductionLineItem, 'id' | 'productionEntryId'>
 
 interface DataContextValue {
@@ -326,12 +440,28 @@ interface DataContextValue {
   addMaterial: (m: Omit<Material, 'id'>) => void
   updateMaterial: (id: string, patch: Partial<Material>) => void
   deleteMaterial: (id: string) => void
+  // Material check-out requests
+  addMaterialRequest: (r: Omit<MaterialRequest, 'id' | 'createdAt' | 'status' | 'fulfilledAt'>) => string
+  markMaterialRequestFulfilled: (id: string) => void
+  // Splicing — per-enclosure splice records + per-node fiber tap reports
+  addSpliceEnclosure: (e: Omit<SpliceEnclosure, 'id' | 'createdAt' | 'updatedAt'>) => string
+  updateSpliceEnclosure: (id: string, patch: Partial<SpliceEnclosure>) => void
+  deleteSpliceEnclosure: (id: string) => void
+  addFiberTapReport: (r: Omit<FiberTapReport, 'id' | 'createdAt' | 'updatedAt'>) => string
+  updateFiberTapReport: (id: string, patch: Partial<FiberTapReport>) => void
+  deleteFiberTapReport: (id: string) => void
+  /** Uploading a new template for a kind replaces any existing one of that kind. */
+  upsertSpliceReportTemplate: (kind: SpliceReportKind, t: Omit<SpliceReportTemplate, 'id' | 'kind' | 'createdAt' | 'updatedAt' | 'hasMasterWorkbook'>) => Promise<void>
+  deleteSpliceReportTemplate: (kind: SpliceReportKind) => Promise<void>
+  /** Persists the growing multi-tab workbook produced by saveEnclosureToMasterWorkbook. */
+  setSpliceMasterWorkbookData: (kind: SpliceReportKind, fileData: string) => Promise<void>
   // Photos
   addPhoto: (p: Omit<Photo, 'id'>) => Photo
   deletePhoto: (id: string) => void
   // Invoices
   addInvoice: (i: Omit<Invoice, 'id'>) => string
   updateInvoice: (id: string, patch: Partial<Invoice>) => void
+  markInvoicePaid: (id: string) => void
   deleteInvoice: (id: string) => void
   // Clients
   addClient: (c: Omit<Client, 'id'>) => Client
@@ -396,6 +526,10 @@ interface DataContextValue {
   addClockIn: (entry: Omit<ClockEntry, 'id'>) => ClockEntry
   clockOut: (id: string) => void
   deleteClockEntry: (id: string) => void
+  /** Bulk delete — one setData call instead of looping deleteClockEntry, so
+   *  selecting a whole employee's history and clearing it doesn't trigger a
+   *  re-render per row. */
+  deleteClockEntries: (ids: string[]) => void
   updateClockEntry: (id: string, patch: Partial<Omit<ClockEntry, 'id'>>) => void
   // KMZ production workflow
   addKmzUpload: (upload: Omit<KmzUpload, 'id'>, features: Omit<MapFeature, 'kmzUploadId' | 'projectId'>[]) => KmzUpload
@@ -440,6 +574,28 @@ interface DataContextValue {
   flushSyncQueue: () => Promise<{ ok: boolean; flushed: number }>
   // Misc
   resetData: () => void
+
+  // --- Subcontractors ---
+  addSubcontractor: (s: Omit<Subcontractor, 'id'>) => Subcontractor
+  updateSubcontractor: (id: string, patch: Partial<Subcontractor>) => void
+  deleteSubcontractor: (id: string) => void
+
+  // --- Notifications ---
+  addNotification: (n: Omit<Notification, 'id' | 'createdAt' | 'readAt'>) => string
+  markNotificationRead: (id: string) => void
+  markAllNotificationsRead: (recipientRole: 'admin' | 'field', recipientEmployeeId?: string | null, recipientSubcontractorId?: string | null) => void
+
+  // --- Redline QA/QC Approval Workflow — reviews one MarkupBilling line at a
+  // time (the "redline item" granularity), cascades the new status onto every
+  // ProductionLineItem generated from that line, and writes a permanent
+  // markupHistory entry. Never creates a duplicate rejection record — re-
+  // rejecting overwrites the live qa* fields on the same MarkupBilling row;
+  // the full history of every note (including superseded ones) survives in
+  // markupHistory, which is append-only. ---
+  approveQaLine: (markupBillingId: string, actor: string | null, note?: string) => void
+  rejectQaLine: (markupBillingId: string, actor: string | null, note: string) => void
+  markRejectionFixedQa: (markupBillingId: string, actor: string | null, note?: string) => void
+  logQaSubmitted: (markupId: string, actor?: string | null) => void
 }
 
 const DataContext = createContext<DataContextValue | null>(null)
@@ -506,14 +662,113 @@ export function DataProvider({ children }: { children: ReactNode }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  // One-time migration: zero out labor/equipment cost that was already saved
+  // on Field-Map-sourced PnLEntry rows before addProduction stopped
+  // generating it for them. Without this, every redline submitted prior to
+  // that fix keeps showing its old flat-rate cost (e.g. the same $318 on
+  // every "Directional Drill" row) forever — the fix only stops *new*
+  // entries from getting it, it can't retroactively touch what's already in
+  // localStorage.
+  useEffect(() => {
+    // Scoped to crew-sourced entries only (no subcontractorId) — subcontractor
+    // entries are handled by the backfill migration below, which needs to set
+    // a *nonzero* labor cost; if this ran unscoped it would zero that back out
+    // on every subsequent load.
+    const markupSourcedIds = new Set(
+      data.production.filter((pe) => pe.sourceMarkupId && !pe.subcontractorId).map((pe) => pe.id),
+    )
+    const stale = data.pnl.filter(
+      (p) => p.productionEntryId && markupSourcedIds.has(p.productionEntryId) && (p.laborCost > 0 || p.equipmentCost > 0),
+    )
+    if (stale.length === 0) return
+    const staleIds = new Set(stale.map((p) => p.id))
+    setData((d) => ({
+      ...d,
+      pnl: d.pnl.map((p) => (staleIds.has(p.id) ? { ...p, laborCost: 0, equipmentCost: 0 } : p)),
+    }))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // One-time migration: backfill subcontractor pay cost onto existing
+  // ProductionEntry/PnLEntry rows created before addProduction started
+  // computing it (see the subcontractor branch above) — without this,
+  // every subcontractor-sourced entry submitted before the fix keeps
+  // showing $0 labor cost forever, understating cost/overstating profit
+  // on every admin P&L view that already loaded that data.
+  useEffect(() => {
+    const subById = new Map((data.subcontractors ?? []).map((s) => [s.id, s]))
+    const subProdIds = new Map(
+      data.production.filter((pe) => pe.subcontractorId).map((pe) => [pe.id, pe.subcontractorId!]),
+    )
+    if (subProdIds.size === 0) return
+    const needsBackfill = data.pnl.filter((p) => {
+      if (!p.productionEntryId || p.laborCost !== 0) return false
+      const subId = subProdIds.get(p.productionEntryId)
+      if (!subId) return false
+      const sub = subById.get(subId)
+      return !!sub && sub.payRatePercent != null && sub.payRatePercent > 0 && p.revenue > 0
+    })
+    if (needsBackfill.length === 0) return
+    setData((d) => ({
+      ...d,
+      pnl: d.pnl.map((p) => {
+        const subId = p.productionEntryId ? subProdIds.get(p.productionEntryId) : undefined
+        const sub = subId ? subById.get(subId) : undefined
+        if (!sub || sub.payRatePercent == null || p.laborCost !== 0 || p.revenue <= 0) return p
+        return { ...p, laborCost: Math.round(p.revenue * sub.payRatePercent / 100) }
+      }),
+    }))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // One-time migration: Subcontractor.rateCardId (a single company-wide
+  // fallback) was removed in favor of Subcontractor.projectRateCards
+  // (per-project entries only) — a subcontractor can carry a different
+  // negotiated rate per project now, so one lone "default" was either
+  // redundant or silently wrong for whichever other project the same
+  // company also worked. For any subcontractor that still has the old field
+  // in localStorage, seed a projectRateCards entry for each project they're
+  // currently assigned to (skipping any project that already has its own
+  // override) so their existing effective rate doesn't just disappear, then
+  // drop the legacy field.
+  useEffect(() => {
+    const legacy = (data.subcontractors ?? []).filter(
+      (s) => (s as unknown as { rateCardId?: string | null }).rateCardId,
+    )
+    if (legacy.length === 0) return
+    setData((d) => ({
+      ...d,
+      subcontractors: (d.subcontractors ?? []).map(({ rateCardId: legacyRateCardId, ...rest }: { rateCardId?: string | null } & Subcontractor) => {
+        if (!legacyRateCardId) return rest
+        const existingProjectIds = new Set((rest.projectRateCards ?? []).map((pr) => pr.projectId))
+        const assignedProjectIds = d.projects
+          .filter((p) => p.subcontractorIds?.includes(rest.id) && !existingProjectIds.has(p.id))
+          .map((p) => p.id)
+        return {
+          ...rest,
+          projectRateCards: [
+            ...(rest.projectRateCards ?? []),
+            ...assignedProjectIds.map((projectId) => ({ projectId, rateCardId: legacyRateCardId })),
+          ],
+        }
+      }),
+    }))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const value = useMemo<DataContextValue>(() => {
-    const recomputeFootage = (projects: Project[], production: ProductionEntry[]) =>
+    // Prefers each entry's LF line-item sum over its raw footage field (see
+    // entryDisplayFootage's doc comment) — a multi-crew redline split
+    // intentionally zeroes footage on non-primary crews, and summing that
+    // raw field directly would silently undercount footageComplete for any
+    // project with production that went through that path.
+    const recomputeFootage = (projects: Project[], production: ProductionEntry[], productionLineItems: ProductionLineItem[]) =>
       projects.map((p) => {
         if (p.status === 'complete') return p
         const total = production
           .filter((e) => e.projectId === p.id)
-          .reduce((sum, e) => sum + e.footage, 0)
-        return { ...p, footageComplete: total }
+          .reduce((sum, e) => sum + entryDisplayFootage(e, productionLineItems.filter((li) => li.productionEntryId === e.id)), 0)
+        return { ...p, footageComplete: Math.round(total) }
       })
 
     // Shared by updateMarkupBilling and updateMarkup (Quantity field): given a
@@ -531,7 +786,45 @@ export function DataProvider({ children }: { children: ReactNode }) {
       const newRevenue = Math.round(siblingItems.reduce((s, li) => s + li.extendedTotal, 0))
       const production = d.production.map((e) => (e.id === entryId ? { ...e, footage: newFootage } : e))
       const pnl = d.pnl.map((e) => (e.productionEntryId === entryId ? { ...e, revenue: newRevenue } : e))
-      return { productionLineItems, production, pnl, projects: recomputeFootage(d.projects, production) }
+      return { productionLineItems, production, pnl, projects: recomputeFootage(d.projects, production, productionLineItems) }
+    }
+
+    // Shared by updateMarkup and updateMarkupBilling: a billing-relevant edit
+    // (quantity, rate, etc.) landing on a line that was already 'approved' or
+    // 'approved_after_correction' means the approval no longer reflects
+    // what's actually billed — silently leaving it "approved" would let a
+    // changed footage/dollar amount go out the door with nobody having
+    // actually re-checked the new number. Reset it to 'pending_review' (same
+    // status a first submission gets) and notify the supervisor, exactly
+    // like markRejectionFixedQa's "ready for re-review" notification below.
+    // A no-op for lines that were never reviewed or are already pending/
+    // rejected — this only reopens a line QA had actively signed off on.
+    const reopenQaIfAlreadyApproved = (
+      d: AppData,
+      markupBilling: MarkupBilling[],
+      billingId: string,
+    ): Pick<AppData, 'markupBilling' | 'productionLineItems' | 'notifications'> => {
+      const before = markupBilling.find((b) => b.id === billingId)
+      if (!before || (before.qaStatus !== 'approved' && before.qaStatus !== 'approved_after_correction')) {
+        return { markupBilling, productionLineItems: d.productionLineItems, notifications: d.notifications ?? [] }
+      }
+      const nextBilling = markupBilling.map((b) =>
+        b.id === billingId
+          ? { ...b, qaStatus: 'pending_review' as const, qaApprovedBy: null, qaApprovedAt: null, qaReviewedBy: null, qaReviewedAt: null }
+          : b,
+      )
+      const productionLineItems = (d.productionLineItems ?? []).map((li) =>
+        li.sourceMarkupBillingId === billingId ? { ...li, qaStatus: 'pending_review' as const } : li,
+      )
+      const markup = (d.fieldMarkups ?? []).find((m) => m.id === before.markupId)
+      const project = markup ? (d.projects ?? []).find((p) => p.id === markup.projectId) : undefined
+      const fieldEmployee = markup?.createdBy ? (d.employees ?? []).find((e) => e.id === markup.createdBy) : undefined
+      const subId = before.assignedSubcontractorId ?? markup?.assignedSubcontractorId
+      const subcontractor = subId ? (d.subcontractors ?? []).find((s) => s.id === subId) : undefined
+      const notifications = markup
+        ? [...(d.notifications ?? []), buildQaNotification('redline_edited_after_approval', markup, before, project, fieldEmployee, 'admin', subcontractor)]
+        : (d.notifications ?? [])
+      return { markupBilling: nextBilling, productionLineItems, notifications }
     }
 
     return {
@@ -545,16 +838,47 @@ export function DataProvider({ children }: { children: ReactNode }) {
       updateProject(id, patch) {
         setData((d) => ({ ...d, projects: d.projects.map((p) => (p.id === id ? { ...p, ...patch } : p)) }))
       },
+      // Cascades to every project-scoped table, not just production/pnl — a
+      // gap here previously left a deleted project's redlines/billing lines
+      // alive forever with their qaStatus intact, still counted by
+      // computeQaRevenueBreakdown (SubcontractorDashboard's Pending Earnings,
+      // the P&L QA cards) even though Production/P&L correctly showed
+      // nothing for the project. See migrateData's orphan-purge for the
+      // one-time repair of data already corrupted by that gap.
       deleteProject(id) {
-        setData((d) => ({
-          ...d,
-          projects: d.projects.filter((p) => p.id !== id),
-          production: d.production.filter((e) => e.projectId !== id),
-          pnl: d.pnl.filter((e) => e.projectId !== id),
-          timecards: d.timecards.filter((t) => t.jobId !== id),
-          jobExpenses: d.jobExpenses.filter((e) => e.jobId !== id),
-          crews: d.crews.map((c) => (c.currentProjectId === id ? { ...c, currentProjectId: null, status: 'idle' } : c)),
-        }))
+        setData((d) => {
+          const removedMarkupIds = new Set((d.fieldMarkups ?? []).filter((m) => m.projectId === id).map((m) => m.id))
+          const removedProductionEntryIds = new Set(d.production.filter((e) => e.projectId === id).map((e) => e.id))
+          return {
+            ...d,
+            projects: d.projects.filter((p) => p.id !== id),
+            production: d.production.filter((e) => e.projectId !== id),
+            pnl: d.pnl.filter((e) => e.projectId !== id),
+            timecards: d.timecards.filter((t) => t.jobId !== id),
+            jobExpenses: d.jobExpenses.filter((e) => e.jobId !== id),
+            crews: d.crews.map((c) => (c.currentProjectId === id ? { ...c, currentProjectId: null, status: 'idle' } : c)),
+            productionLineItems: (d.productionLineItems ?? []).filter((li) => !li.productionEntryId || !removedProductionEntryIds.has(li.productionEntryId)),
+            photos: (d.photos ?? []).filter((p) => p.projectId !== id),
+            fieldMarkups: (d.fieldMarkups ?? []).filter((m) => m.projectId !== id),
+            markupPhotos: (d.markupPhotos ?? []).filter((p) => !removedMarkupIds.has(p.markupId)),
+            markupBilling: (d.markupBilling ?? []).filter((b) => !removedMarkupIds.has(b.markupId)),
+            markupVideos: (d.markupVideos ?? []).filter((v) => !removedMarkupIds.has(v.markupId)),
+            markupInspections: (d.markupInspections ?? []).filter((i) => !removedMarkupIds.has(i.markupId)),
+            markupAttachments: (d.markupAttachments ?? []).filter((a) => !removedMarkupIds.has(a.markupId)),
+            markupHistory: (d.markupHistory ?? []).filter((h) => !removedMarkupIds.has(h.markupId)),
+            notifications: (d.notifications ?? []).filter((n) => n.projectId !== id),
+            materialRequests: (d.materialRequests ?? []).filter((r) => r.projectId !== id),
+            kmzUploads: (d.kmzUploads ?? []).filter((k) => k.projectId !== id),
+            mapFeatures: (d.mapFeatures ?? []).filter((f) => f.projectId !== id),
+            featureProduction: (d.featureProduction ?? []).filter((f) => f.projectId !== id),
+            fieldMapOverlays: (d.fieldMapOverlays ?? []).filter((o) => o.projectId !== id),
+            mapCutPackages: (d.mapCutPackages ?? []).filter((m) => m.projectId !== id),
+            mapReadingSessions: (d.mapReadingSessions ?? []).filter((m) => m.projectId !== id),
+            aerialLashFiberRuns: (d.aerialLashFiberRuns ?? []).filter((a) => a.projectId !== id),
+            spliceEnclosures: (d.spliceEnclosures ?? []).filter((s) => !removedMarkupIds.has(s.markupId)),
+            fiberTapReports: (d.fiberTapReports ?? []).filter((r) => r.projectId !== id),
+          }
+        })
       },
 
       addCrew(c) {
@@ -583,11 +907,40 @@ export function DataProvider({ children }: { children: ReactNode }) {
             ? lineItems.reduce((s, li) => s + li.extendedTotal, 0)
             : null
 
-          const laborCost = crewLaborCost(crew, entry.hours, entry.footage).total
           const revenue = revenueFromItems ?? entry.footage * resolveRatePerFoot(project, d.rateCards, d.rateCardUnits)
 
+          // A Field Map redline (sourceMarkupId set) never carries real tracked
+          // hours or equipment usage — the Add Work wizard doesn't ask for
+          // either, so entry.hours is always 0. A 'daily' pay type ignores
+          // hours entirely and would otherwise charge a full flat day rate
+          // per redline regardless of how much was actually done, and
+          // equipment cost is a flat monthly share with the same problem —
+          // neither reflects anything the crew actually logged. Rather than
+          // fabricate a cost from unverified defaults, markup-sourced entries
+          // get $0 here; real cost still flows in normally via Time Clock /
+          // Crew Day Entry timecards, which computeMetrics already prefers
+          // over this pnl fallback wherever they exist.
+          const isMarkupSourced = !!entry.sourceMarkupId
+          // A subcontractor entry has no crewId (see productionFromMarkup.ts /
+          // Production.tsx's merged crew-or-sub selector), so it has no
+          // equivalent "timecard" fallback to recover cost from later like
+          // crew work does — without this branch every subcontractor entry
+          // silently costs $0 forever, overstating admin-facing profit by
+          // however much the subcontractor is actually owed. Their pay is a
+          // percentage of what this entry billed, snapshotted here the same
+          // way billing lines snapshot their rate (see MarkupBilling.rate) —
+          // if the rate isn't configured yet, cost stays $0 rather than
+          // guessing, matching SubcontractorDashboard's own "show nothing"
+          // rule for the same unconfigured case.
+          const subcontractor = entry.subcontractorId
+            ? (d.subcontractors ?? []).find((s) => s.id === entry.subcontractorId)
+            : null
+          const laborCost = subcontractor
+            ? Math.round(revenue * (subcontractor.payRatePercent ?? 0) / 100)
+            : isMarkupSourced ? 0 : crewLaborCost(crew, entry.hours, entry.footage).total
+
           // Sum daily cost of all active equipment assigned to this crew (monthly / actual days in that month)
-          const equipmentCost = Math.round(
+          const equipmentCost = isMarkupSourced ? 0 : Math.round(
             d.equipment
               .filter((eq) => eq.active && eq.crewId === entry.crewId)
               .reduce((s, eq) => s + eq.monthlyCost / daysInMonth(entry.date), 0)
@@ -615,12 +968,13 @@ export function DataProvider({ children }: { children: ReactNode }) {
             (p) => p.productionEntryId || !(p.date === entry.date && p.projectId === entry.projectId)
           )
 
+          const productionLineItems = [...d.productionLineItems, ...newLineItems]
           return {
             ...d,
             production,
             pnl: [...pnlBase, pnlLine],
-            productionLineItems: [...d.productionLineItems, ...newLineItems],
-            projects: recomputeFootage(d.projects, production),
+            productionLineItems,
+            projects: recomputeFootage(d.projects, production, productionLineItems),
           }
         })
         return entryId
@@ -637,13 +991,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
             // Legacy entries have no productionEntryId — match by date + project
             return !(entry && e.date === entry.date && e.projectId === entry.projectId)
           })
+          const productionLineItems = d.productionLineItems.filter((li) => li.productionEntryId !== id)
           return {
             ...d,
             production,
             pnl,
-            productionLineItems: d.productionLineItems.filter((li) => li.productionEntryId !== id),
+            productionLineItems,
             photos: d.photos.filter((p) => p.productionEntryId !== id),
-            projects: recomputeFootage(d.projects, production),
+            projects: recomputeFootage(d.projects, production, productionLineItems),
           }
         })
       },
@@ -656,6 +1011,113 @@ export function DataProvider({ children }: { children: ReactNode }) {
       },
       deleteMaterial(id) {
         setData((d) => ({ ...d, materials: d.materials.filter((m) => m.id !== id) }))
+      },
+
+      addMaterialRequest(r) {
+        const id = newId('matreq')
+        setData((d) => ({
+          ...d,
+          materialRequests: [
+            ...(d.materialRequests ?? []),
+            { ...r, id, status: 'pending', createdAt: new Date().toISOString(), fulfilledAt: null },
+          ],
+        }))
+        return id
+      },
+      markMaterialRequestFulfilled(id) {
+        setData((d) => ({
+          ...d,
+          materialRequests: (d.materialRequests ?? []).map((r) =>
+            r.id === id ? { ...r, status: 'fulfilled', fulfilledAt: new Date().toISOString() } : r,
+          ),
+        }))
+      },
+
+      addSpliceEnclosure(e) {
+        const id = newId('splice')
+        setData((d) => ({
+          ...d,
+          spliceEnclosures: [
+            ...(d.spliceEnclosures ?? []),
+            { ...e, id, createdAt: new Date().toISOString(), updatedAt: null },
+          ],
+        }))
+        return id
+      },
+      updateSpliceEnclosure(id, patch) {
+        setData((d) => ({
+          ...d,
+          spliceEnclosures: (d.spliceEnclosures ?? []).map((s) =>
+            s.id === id ? { ...s, ...patch, updatedAt: new Date().toISOString() } : s,
+          ),
+        }))
+      },
+      deleteSpliceEnclosure(id) {
+        setData((d) => ({ ...d, spliceEnclosures: (d.spliceEnclosures ?? []).filter((s) => s.id !== id) }))
+      },
+
+      addFiberTapReport(r) {
+        const id = newId('taprpt')
+        setData((d) => ({
+          ...d,
+          fiberTapReports: [
+            ...(d.fiberTapReports ?? []),
+            { ...r, id, createdAt: new Date().toISOString(), updatedAt: null },
+          ],
+        }))
+        return id
+      },
+      updateFiberTapReport(id, patch) {
+        setData((d) => ({
+          ...d,
+          fiberTapReports: (d.fiberTapReports ?? []).map((r) =>
+            r.id === id ? { ...r, ...patch, updatedAt: new Date().toISOString() } : r,
+          ),
+        }))
+      },
+      deleteFiberTapReport(id) {
+        setData((d) => ({ ...d, fiberTapReports: (d.fiberTapReports ?? []).filter((r) => r.id !== id) }))
+      },
+
+      async upsertSpliceReportTemplate(kind, t) {
+        const existing = data.spliceReportTemplates?.find((x) => x.kind === kind)
+        const sameBaseFile = existing?.fileData === t.fileData
+        // The master workbook was cloned from the old fileData — only keep
+        // accumulating into it if this upload is the *same* base file (e.g.
+        // just a mapping tweak); a genuinely new file starts fresh, so the
+        // stale blob (if any) is no longer reachable and gets cleaned up.
+        if (!sameBaseFile && existing?.hasMasterWorkbook) await deleteBlob(`spltpl-${existing.id}`)
+        setData((d) => {
+          const id = existing?.id ?? newId('rpttpl')
+          const template: SpliceReportTemplate = {
+            ...t,
+            kind,
+            id,
+            hasMasterWorkbook: sameBaseFile ? (existing?.hasMasterWorkbook ?? false) : false,
+            createdAt: existing?.createdAt ?? new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }
+          return {
+            ...d,
+            spliceReportTemplates: [...(d.spliceReportTemplates ?? []).filter((x) => x.kind !== kind), template],
+          }
+        })
+      },
+      async setSpliceMasterWorkbookData(kind, fileData) {
+        const template = data.spliceReportTemplates?.find((x) => x.kind === kind)
+        if (!template) return
+        await saveBlob(`spltpl-${template.id}`, fileData)
+        setData((d) => ({
+          ...d,
+          spliceReportTemplates: (d.spliceReportTemplates ?? []).map((t) =>
+            t.kind === kind ? { ...t, hasMasterWorkbook: true, updatedAt: new Date().toISOString() } : t,
+          ),
+        }))
+      },
+      async deleteSpliceReportTemplate(kind) {
+        const template = data.spliceReportTemplates?.find((x) => x.kind === kind)
+        if (template?.hasMasterWorkbook) await deleteBlob(`spltpl-${template.id}`)
+        setData((d) => ({ ...d, spliceReportTemplates: (d.spliceReportTemplates ?? []).filter((x) => x.kind !== kind) }))
       },
 
       addPhoto(p) {
@@ -677,8 +1139,22 @@ export function DataProvider({ children }: { children: ReactNode }) {
       updateInvoice(id, patch) {
         setData((d) => ({ ...d, invoices: d.invoices.map((i) => (i.id === id ? { ...i, ...patch } : i)) }))
       },
+      markInvoicePaid(id) {
+        setData((d) => ({
+          ...d,
+          invoices: d.invoices.map((i) => (i.id === id ? { ...i, status: 'paid', paidDate: new Date().toISOString() } : i)),
+        }))
+      },
       deleteInvoice(id) {
-        setData((d) => ({ ...d, invoices: d.invoices.filter((i) => i.id !== id) }))
+        setData((d) => ({
+          ...d,
+          invoices: d.invoices.filter((i) => i.id !== id),
+          // Un-invoicing: a deleted invoice's source billing lines must not
+          // stay permanently locked out of future invoicing with a dangling
+          // Invoice.id reference — clear invoiceId so they become
+          // invoiceable candidates again.
+          markupBilling: (d.markupBilling ?? []).map((b) => (b.invoiceId === id ? { ...b, invoiceId: null } : b)),
+        }))
       },
 
       // --- Clients ---
@@ -860,13 +1336,14 @@ export function DataProvider({ children }: { children: ReactNode }) {
             (p) => p.productionEntryId || !(p.date === entry.date && p.projectId === entry.projectId)
           )
 
+          const productionLineItems = [...d.productionLineItems, ...newLineItems]
           return {
             ...d,
             production,
             pnl: [...pnlBase, pnlLine],
             timecards: [...d.timecards, ...timecards],
-            productionLineItems: [...d.productionLineItems, ...newLineItems],
-            projects: recomputeFootage(d.projects, production),
+            productionLineItems,
+            projects: recomputeFootage(d.projects, production, productionLineItems),
           }
         })
         return entryId
@@ -877,14 +1354,15 @@ export function DataProvider({ children }: { children: ReactNode }) {
         }
         setData((d) => {
           const production = d.production.filter((e) => e.id !== productionEntryId)
+          const productionLineItems = d.productionLineItems.filter((li) => li.productionEntryId !== productionEntryId)
           return {
             ...d,
             production,
             pnl: d.pnl.filter((e) => e.productionEntryId !== productionEntryId),
-            productionLineItems: d.productionLineItems.filter((li) => li.productionEntryId !== productionEntryId),
+            productionLineItems,
             timecards: d.timecards.filter((t) => t.productionEntryId !== productionEntryId),
             photos: d.photos.filter((p) => p.productionEntryId !== productionEntryId),
-            projects: recomputeFootage(d.projects, production),
+            projects: recomputeFootage(d.projects, production, productionLineItems),
           }
         })
       },
@@ -931,7 +1409,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
           const photos = patch.projectId
             ? d.photos.map((p) => p.productionEntryId === id ? { ...p, projectId: patch.projectId! } : p)
             : d.photos
-          return { ...d, production, timecards, pnl, productionLineItems, photos, projects: recomputeFootage(d.projects, production) }
+          return { ...d, production, timecards, pnl, productionLineItems, photos, projects: recomputeFootage(d.projects, production, productionLineItems) }
         })
       },
 
@@ -1031,6 +1509,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       deleteClockEntry(id) {
         setData((d) => ({ ...d, clockEntries: (d.clockEntries ?? []).filter((e) => e.id !== id) }))
       },
+      deleteClockEntries(ids) {
+        const idSet = new Set(ids)
+        setData((d) => ({ ...d, clockEntries: (d.clockEntries ?? []).filter((e) => !idSet.has(e.id)) }))
+      },
       updateClockEntry(id, patch) {
         setData((d) => ({
           ...d,
@@ -1113,10 +1595,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
       // ── Field markup ─────────────────────────────────────────────────────────
       addMarkup(m) {
         const id = newId('mkp')
-        const now = new Date().toISOString()
+        const nowDate = new Date()
+        const now = nowDate.toISOString()
+        // workDate defaults to the crew's LOCAL calendar day (see localDateStr) —
+        // every markup gets one here, billable or not (Non-Billable Item,
+        // comment/sequential annotations included), so a PDF export's
+        // date-range filter picks up everything entered that day, not just
+        // billable lines.
         setData((d) => ({
           ...d,
-          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: now, workDate: m.workDate ?? now.slice(0, 10), syncStatus: 'pending' }],
+          fieldMarkups: [...(d.fieldMarkups ?? []), { ...m, id, createdAt: now, workDate: m.workDate ?? localDateStr(nowDate), syncStatus: 'pending' }],
           markupHistory: [...(d.markupHistory ?? []), historyEntry(id, 'created', m.createdBy ?? null)],
         }))
         enqueueSyncEntry('markup', id, id, 'create')
@@ -1148,12 +1636,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
             const affected = (d.markupBilling ?? []).filter((b) => b.markupId === id && b.quantity === oldQuantity)
             if (affected.length > 0) {
               const affectedIds = new Set(affected.map((b) => b.id))
-              const markupBilling = (d.markupBilling ?? []).map((b) =>
+              let markupBilling = (d.markupBilling ?? []).map((b) =>
                 affectedIds.has(b.id) ? { ...b, quantity: newQuantity, total: newQuantity * b.rate } : b,
               )
               let productionLineItems = result.productionLineItems
               result = { ...result, markupBilling }
               for (const b of affected) {
+                // The old quantity's already-approved review no longer reflects
+                // what's actually billed now — reopen it for the supervisor.
+                const reopened = reopenQaIfAlreadyApproved(result, markupBilling, b.id)
+                markupBilling = reopened.markupBilling
+                productionLineItems = reopened.productionLineItems
+                result = { ...result, markupBilling, productionLineItems, notifications: reopened.notifications }
+
                 const linkedLineItem = productionLineItems.find((li) => li.sourceMarkupBillingId === b.id)
                 if (!linkedLineItem) continue
                 productionLineItems = productionLineItems.map((li) =>
@@ -1201,6 +1696,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
           markupInspections: (d.markupInspections ?? []).filter((i) => i.markupId !== id),
           markupAttachments: (d.markupAttachments ?? []).filter((a) => a.markupId !== id),
           markupHistory: (d.markupHistory ?? []).filter((h) => h.markupId !== id),
+          notifications: (d.notifications ?? []).filter((n) => n.markupId !== id),
+          spliceEnclosures: (d.spliceEnclosures ?? []).filter((s) => s.markupId !== id),
         }))
         enqueueSyncEntry('markup', id, id, 'delete')
         // Blobs in IndexedDB are cleaned up lazily — orphaned blobs are small and rarely accumulate
@@ -1210,6 +1707,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
       // the markup plus its photos/billing/history intact for audit and just flags it deletedAt,
       // while cascading a real removal of whatever production/P&L it had already generated —
       // mirrors deleteProduction's existing cascade exactly, just keyed by sourceMarkupId.
+      // Also removes any notification about this markup (QA submitted/approved/rejected etc.) —
+      // once the line itself is gone there's nothing left to act on, so a "Redline rejected" or
+      // "Corrected redline approved" alert sitting in the bell would just be a dead link.
       softDeleteMarkup(id, actor = null) {
         const now = new Date().toISOString()
         for (const p of data.photos) {
@@ -1221,14 +1721,16 @@ export function DataProvider({ children }: { children: ReactNode }) {
           const removedIds = new Set((d.production ?? []).filter((e) => e.sourceMarkupId === id).map((e) => e.id))
           const production = (d.production ?? []).filter((e) => !removedIds.has(e.id))
           const pnl = (d.pnl ?? []).filter((e) => !(e.productionEntryId && removedIds.has(e.productionEntryId)))
+          const productionLineItems = (d.productionLineItems ?? []).filter((li) => !removedIds.has(li.productionEntryId))
           return {
             ...d,
             fieldMarkups: (d.fieldMarkups ?? []).map((m) => (m.id === id ? { ...m, deletedAt: now, deletedBy: actor } : m)),
             production,
             pnl,
-            productionLineItems: (d.productionLineItems ?? []).filter((li) => !removedIds.has(li.productionEntryId)),
+            productionLineItems,
             photos: (d.photos ?? []).filter((p) => !p.productionEntryId || !removedIds.has(p.productionEntryId)),
-            projects: recomputeFootage(d.projects, production),
+            notifications: (d.notifications ?? []).filter((n) => n.markupId !== id),
+            projects: recomputeFootage(d.projects, production, productionLineItems),
             markupHistory: [...(d.markupHistory ?? []), historyEntry(id, 'deleted', actor)],
           }
         })
@@ -1273,7 +1775,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
       updateMarkupBilling(id, patch) {
         const billing = data.markupBilling.find((b) => b.id === id)
         setData((d) => {
-          const markupBilling = (d.markupBilling ?? []).map((b) => (b.id === id ? { ...b, ...patch } : b))
+          let markupBilling = (d.markupBilling ?? []).map((b) => (b.id === id ? { ...b, ...patch } : b))
           const fieldMarkups = billing
             ? (d.fieldMarkups ?? []).map((m) => (m.id === billing.markupId ? { ...m, syncStatus: 'pending' as const } : m))
             : (d.fieldMarkups ?? [])
@@ -1286,16 +1788,27 @@ export function DataProvider({ children }: { children: ReactNode }) {
           // billing code moves on.
           const billingChanged = 'quantity' in patch || 'rate' in patch || 'total' in patch
             || 'rateCode' in patch || 'description' in patch || 'unitType' in patch
+
+          let result = { ...d, markupBilling, fieldMarkups }
+          if (billingChanged) {
+            // The old, already-approved review no longer reflects what's
+            // actually billed now — reopen it for the supervisor rather than
+            // leaving a stale "approved" stamp on a number nobody re-checked.
+            const reopened = reopenQaIfAlreadyApproved(result, markupBilling, id)
+            markupBilling = reopened.markupBilling
+            result = { ...result, markupBilling, productionLineItems: reopened.productionLineItems, notifications: reopened.notifications }
+          }
+
           const updatedBilling = billingChanged ? markupBilling.find((b) => b.id === id) : undefined
           const linkedLineItem = updatedBilling
-            ? (d.productionLineItems ?? []).find((li) => li.sourceMarkupBillingId === id)
+            ? (result.productionLineItems ?? []).find((li) => li.sourceMarkupBillingId === id)
             : undefined
 
           if (!linkedLineItem || !updatedBilling) {
-            return { ...d, markupBilling, fieldMarkups }
+            return result
           }
 
-          const productionLineItems = d.productionLineItems.map((li) =>
+          const productionLineItems = result.productionLineItems.map((li) =>
             li.id === linkedLineItem.id
               ? {
                   ...li,
@@ -1310,10 +1823,8 @@ export function DataProvider({ children }: { children: ReactNode }) {
           )
 
           return {
-            ...d,
-            markupBilling,
-            fieldMarkups,
-            ...applyLineItemToProduction(d, productionLineItems, linkedLineItem.productionEntryId),
+            ...result,
+            ...applyLineItemToProduction(result, productionLineItems, linkedLineItem.productionEntryId),
           }
         })
         enqueueSyncEntry('markupBilling', id, billing?.markupId ?? null, 'update')
@@ -1330,6 +1841,169 @@ export function DataProvider({ children }: { children: ReactNode }) {
         })
         const billing = data.markupBilling.find((b) => b.id === id)
         enqueueSyncEntry('markupBilling', id, billing?.markupId ?? null, 'delete')
+      },
+
+      // ── Redline QA/QC Approval Workflow ─────────────────────────────────────
+      // Reviews one MarkupBilling line (the "redline item" granularity — a
+      // single markup can carry several independently-reviewed billing lines).
+      // Cascades the new status onto every ProductionLineItem generated from
+      // that line (mirrors the quantity-cascade pattern in updateMarkup/
+      // updateMarkupBilling above) so computeQaRevenueBreakdown never needs a
+      // live join. Never creates a duplicate rejection record — the qa* fields
+      // on MarkupBilling are simply overwritten in place; the permanent trail
+      // of every note (including superseded ones) lives in markupHistory.
+      approveQaLine(markupBillingId, actor = null, note) {
+        setData((d) => {
+          const before = (d.markupBilling ?? []).find((b) => b.id === markupBillingId)
+          if (!before) return d
+          const markup = (d.fieldMarkups ?? []).find((m) => m.id === before.markupId)
+          const newStatus: QaStatus = before.qaStatus === 'rejection_fixed' ? 'approved_after_correction' : 'approved'
+          const now = new Date().toISOString()
+
+          const markupBilling = (d.markupBilling ?? []).map((b) =>
+            b.id === markupBillingId
+              ? { ...b, qaStatus: newStatus, qaApprovedBy: actor, qaApprovedAt: now, qaReviewedBy: actor, qaReviewedAt: now }
+              : b,
+          )
+          const productionLineItems = (d.productionLineItems ?? []).map((li) =>
+            li.sourceMarkupBillingId === markupBillingId ? { ...li, qaStatus: newStatus } : li,
+          )
+          const action: MarkupHistoryAction = newStatus === 'approved_after_correction' ? 'qa_approved_after_correction' : 'qa_approved'
+          const notifType: NotificationType = newStatus === 'approved_after_correction' ? 'redline_approved_after_correction' : 'redline_approved'
+
+          const project = markup ? (d.projects ?? []).find((p) => p.id === markup.projectId) : undefined
+          const fieldEmployee = markup?.createdBy ? (d.employees ?? []).find((e) => e.id === markup.createdBy) : undefined
+          const subId = before.assignedSubcontractorId ?? markup?.assignedSubcontractorId
+          const subcontractor = subId ? (d.subcontractors ?? []).find((s) => s.id === subId) : undefined
+          const notifications = markup
+            ? [...(d.notifications ?? []), buildQaNotification(notifType, markup, before, project, fieldEmployee, 'field', subcontractor)]
+            : (d.notifications ?? [])
+
+          return {
+            ...d,
+            markupBilling,
+            productionLineItems,
+            markupHistory: [...(d.markupHistory ?? []), historyEntry(before.markupId, action, actor, note ? { note } : undefined)],
+            notifications,
+          }
+        })
+      },
+      rejectQaLine(markupBillingId, actor = null, note) {
+        if (!note.trim()) return
+        setData((d) => {
+          const before = (d.markupBilling ?? []).find((b) => b.id === markupBillingId)
+          if (!before) return d
+          const markup = (d.fieldMarkups ?? []).find((m) => m.id === before.markupId)
+          const now = new Date().toISOString()
+
+          const markupBilling = (d.markupBilling ?? []).map((b) =>
+            b.id === markupBillingId
+              ? { ...b, qaStatus: 'rejected' as const, qaRejectedBy: actor, qaRejectedAt: now, qaRejectionNote: note, qaReviewedBy: actor, qaReviewedAt: now }
+              : b,
+          )
+          const productionLineItems = (d.productionLineItems ?? []).map((li) =>
+            li.sourceMarkupBillingId === markupBillingId ? { ...li, qaStatus: 'rejected' as const } : li,
+          )
+
+          const project = markup ? (d.projects ?? []).find((p) => p.id === markup.projectId) : undefined
+          const fieldEmployee = markup?.createdBy ? (d.employees ?? []).find((e) => e.id === markup.createdBy) : undefined
+          const subId = before.assignedSubcontractorId ?? markup?.assignedSubcontractorId
+          const subcontractor = subId ? (d.subcontractors ?? []).find((s) => s.id === subId) : undefined
+          const notifications = markup
+            ? [...(d.notifications ?? []), buildQaNotification('redline_rejected', markup, before, project, fieldEmployee, 'field', subcontractor)]
+            : (d.notifications ?? [])
+
+          return {
+            ...d,
+            markupBilling,
+            productionLineItems,
+            markupHistory: [...(d.markupHistory ?? []), historyEntry(before.markupId, 'qa_rejected', actor, { note })],
+            notifications,
+          }
+        })
+      },
+      markRejectionFixedQa(markupBillingId, actor = null, note) {
+        setData((d) => {
+          const before = (d.markupBilling ?? []).find((b) => b.id === markupBillingId)
+          if (!before) return d
+          const markup = (d.fieldMarkups ?? []).find((m) => m.id === before.markupId)
+          const now = new Date().toISOString()
+
+          const markupBilling = (d.markupBilling ?? []).map((b) =>
+            b.id === markupBillingId
+              ? { ...b, qaStatus: 'rejection_fixed' as const, qaCorrectedBy: actor, qaCorrectedAt: now }
+              : b,
+          )
+          const productionLineItems = (d.productionLineItems ?? []).map((li) =>
+            li.sourceMarkupBillingId === markupBillingId ? { ...li, qaStatus: 'rejection_fixed' as const } : li,
+          )
+
+          const project = markup ? (d.projects ?? []).find((p) => p.id === markup.projectId) : undefined
+          const fieldEmployee = markup?.createdBy ? (d.employees ?? []).find((e) => e.id === markup.createdBy) : undefined
+          const notifications = markup
+            ? [...(d.notifications ?? []), buildQaNotification('redline_rejection_fixed', markup, before, project, fieldEmployee, 'admin')]
+            : (d.notifications ?? [])
+
+          return {
+            ...d,
+            markupBilling,
+            productionLineItems,
+            markupHistory: [...(d.markupHistory ?? []), historyEntry(before.markupId, 'qa_rejection_fixed', actor, note ? { note } : undefined)],
+            notifications,
+          }
+        })
+      },
+      // Called once per markup (not per billing line) from submitMarkupToProduction,
+      // which can't reach historyEntry()/setData directly since it lives outside
+      // DataContext — this is its one hook back in, so "Submitted" shows up in the
+      // permanent QA/QC audit trail alongside Reviewed/Approved/Rejected/Corrected.
+      logQaSubmitted(markupId, actor = null) {
+        setData((d) => ({
+          ...d,
+          markupHistory: [...(d.markupHistory ?? []), historyEntry(markupId, 'qa_submitted', actor)],
+        }))
+      },
+
+      // --- Subcontractors ---
+      addSubcontractor(s) {
+        const sub: Subcontractor = { ...s, id: newId('subc') }
+        setData((d) => ({ ...d, subcontractors: [...(d.subcontractors ?? []), sub] }))
+        return sub
+      },
+      updateSubcontractor(id, patch) {
+        setData((d) => ({ ...d, subcontractors: (d.subcontractors ?? []).map((s) => (s.id === id ? { ...s, ...patch } : s)) }))
+      },
+      deleteSubcontractor(id) {
+        setData((d) => ({ ...d, subcontractors: (d.subcontractors ?? []).filter((s) => s.id !== id) }))
+      },
+
+      // --- Notifications ---
+      addNotification(n) {
+        const id = newId('notif')
+        setData((d) => ({
+          ...d,
+          notifications: [...(d.notifications ?? []), { ...n, id, createdAt: new Date().toISOString(), readAt: null }],
+        }))
+        return id
+      },
+      markNotificationRead(id) {
+        setData((d) => ({
+          ...d,
+          notifications: (d.notifications ?? []).map((n) => (n.id === id ? { ...n, readAt: n.readAt ?? new Date().toISOString() } : n)),
+        }))
+      },
+      markAllNotificationsRead(recipientRole, recipientEmployeeId, recipientSubcontractorId) {
+        setData((d) => ({
+          ...d,
+          notifications: (d.notifications ?? []).map((n) =>
+            n.recipientRole === recipientRole
+            && (recipientRole === 'admin'
+              || (recipientSubcontractorId ? n.recipientSubcontractorId === recipientSubcontractorId : n.recipientEmployeeId === recipientEmployeeId))
+            && !n.readAt
+              ? { ...n, readAt: new Date().toISOString() }
+              : n,
+          ),
+        }))
       },
 
       // ── Work Object videos ────────────────────────────────────────────────

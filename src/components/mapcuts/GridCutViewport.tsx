@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { ZoomIn, ZoomOut, Loader2 } from 'lucide-react'
 import type { GridCellSelection } from '../../types'
 import { usePdfPage } from '../../lib/mapCuts/usePdfPage'
-import { GridCellOverlay } from './GridCellOverlay'
+import { GridCellOverlay, type GhostPhase } from './GridCellOverlay'
 
 const ZOOM_PRESETS = [25, 50, 75, 100, 125, 150, 200, 300, 400, 600, 800, 1000, 1200, 1600]
 const MIN_ZOOM = 25
@@ -16,6 +16,9 @@ interface GridCutViewportProps {
   cols: number
   selection: GridCellSelection
   onSelectionChange: (next: GridCellSelection) => void
+  overlapPct: number
+  activeColor: string
+  otherPhases?: GhostPhase[]
 }
 
 interface PdfPoint { x: number; y: number }
@@ -29,7 +32,7 @@ interface Transform { scale: number; panPt: PdfPoint }
  *  never affect Manual Cut's behavior. Only the low-level, mode-agnostic
  *  usePdfPage hook (no editing logic of its own) is reused from PdfViewport's
  *  side, the same way pdfBuilder.ts is already safely shared by both. */
-export function GridCutViewport({ file, pageIndex, rows, cols, selection, onSelectionChange }: GridCutViewportProps) {
+export function GridCutViewport({ file, pageIndex, rows, cols, selection, onSelectionChange, overlapPct, activeColor, otherPhases }: GridCutViewportProps) {
   const { page, pageWidthPt, pageHeightPt, status, error, renderRegion } = usePdfPage(file, pageIndex)
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -79,15 +82,23 @@ export function GridCutViewport({ file, pageIndex, rows, cols, selection, onSele
     [page, renderRegion],
   )
 
+  // Fit the WHOLE page (both dimensions) inside the container the first time both are
+  // known, then render immediately. Fitting to width alone (the previous behavior) left
+  // a tall page's bottom cut off below the fixed-height container at any zoom down to
+  // MIN_ZOOM, with no way to see the full page even at the lowest zoom setting. Also
+  // deliberately NOT floored at MIN_ZOOM here (unlike manual zoom-out, via setZoom below)
+  // — a very tall/narrow sheet can genuinely need less than MIN_ZOOM to fit entirely, and
+  // this initial fit's whole job is showing the complete page, so it must never be
+  // prevented from going that low.
   useEffect(() => {
-    if (initializedRef.current || !pageWidthPt || !containerSize.w) return
-    const fitScale = containerSize.w / pageWidthPt
-    const fitZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, fitScale * 100))
+    if (initializedRef.current || !pageWidthPt || !pageHeightPt || !containerSize.w || !containerSize.h) return
+    const fitScale = Math.min(containerSize.w / pageWidthPt, containerSize.h / pageHeightPt)
+    const fitZoom = Math.min(MAX_ZOOM, fitScale * 100)
     initializedRef.current = true
     setZoomPercent(fitZoom)
     setPanPt({ x: 0, y: 0 })
     doRender(fitZoom / 100, { x: 0, y: 0 }, containerSize.w, containerSize.h)
-  }, [pageWidthPt, containerSize.w, containerSize.h, doRender])
+  }, [pageWidthPt, pageHeightPt, containerSize.w, containerSize.h, doRender])
 
   const prevSizeRef = useRef(containerSize)
   useEffect(() => {
@@ -206,6 +217,9 @@ export function GridCutViewport({ file, pageIndex, rows, cols, selection, onSele
               cols={cols}
               selection={selection}
               onSelectionChange={onSelectionChange}
+              overlapPct={overlapPct}
+              activeColor={activeColor}
+              otherPhases={otherPhases}
               onPanDelta={applyPanDelta}
             />
           </>

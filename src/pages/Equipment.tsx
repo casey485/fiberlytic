@@ -7,11 +7,11 @@ import { Card, CardBody } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
-import { money } from '../lib/format'
+import { money, localDateStr } from '../lib/format'
 import { daysInMonth } from '../lib/analytics'
 import type { Equipment, EquipmentCategory } from '../types'
 
-const TODAY = new Date().toISOString().slice(0, 10)
+const TODAY = localDateStr()
 
 const CATEGORIES: EquipmentCategory[] = [
   'Bore Rig',
@@ -33,7 +33,7 @@ type EqForm = {
   active: boolean
 }
 
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => localDateStr()
 
 const blankForm = (): EqForm => ({
   name: '',
@@ -133,7 +133,7 @@ function EquipmentModal({
         <Field label="Daily cost (auto)">
           <div className="flex h-10 items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-700">
             {daily > 0 ? money(daily) : '—'}
-            {daily > 0 && <span className="ml-1.5 text-xs font-normal text-slate-400">/ day · {daysInMonth(TODAY)} days this month</span>}
+            {daily > 0 && <span className="ml-1.5 text-xs font-normal text-slate-500">/ day · {daysInMonth(TODAY)} days this month</span>}
           </div>
         </Field>
         <div className="sm:col-span-2">
@@ -220,26 +220,26 @@ export function EquipmentPage() {
       {isAdmin && data.equipment.length > 0 && (
         <div className="mb-6 grid grid-cols-2 gap-4 sm:grid-cols-3">
           <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Active pieces</p>
+            <p className="text-xs uppercase tracking-wide text-slate-500">Active pieces</p>
             <p className="mt-1 text-2xl font-bold text-slate-800">{data.equipment.filter((e) => e.active).length}</p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Total monthly cost</p>
+            <p className="text-xs uppercase tracking-wide text-slate-500">Total monthly cost</p>
             <p className="mt-1 text-2xl font-bold text-slate-800">{money(totalMonthly)}</p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-4">
-            <p className="text-xs uppercase tracking-wide text-slate-400">Total daily cost</p>
+            <p className="text-xs uppercase tracking-wide text-slate-500">Total daily cost</p>
             <p className="mt-1 text-2xl font-bold text-brand-600">{money(totalDaily)}</p>
-            <p className="mt-0.5 text-xs text-slate-400">across all active equipment</p>
+            <p className="mt-0.5 text-xs text-slate-500">across all active equipment</p>
           </div>
         </div>
       )}
 
       {data.equipment.length === 0 ? (
         <Card className="py-16 text-center">
-          <Wrench size={32} className="mx-auto mb-3 text-slate-300" />
-          <p className="text-slate-500 font-medium">No equipment added yet</p>
-          <p className="mt-1 text-sm text-slate-400">Add bore rigs, trucks, and other equipment to track their cost per production day.</p>
+          <Wrench size={32} className="mx-auto mb-3 text-slate-600" />
+          <p className="text-slate-400 font-medium">No equipment added yet</p>
+          <p className="mt-1 text-sm text-slate-500">Add bore rigs, trucks, and other equipment to track their cost per production day.</p>
           {isAdmin && (
             <Button className="mt-4" onClick={() => setAdding(true)}>
               <Plus size={15} /> Add first piece of equipment
@@ -251,7 +251,7 @@ export function EquipmentPage() {
           <CardBody className="p-0">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-3 font-medium">Equipment</th>
                   <th className="px-5 py-3 font-medium">Category</th>
                   <th className="px-5 py-3 font-medium">Crew</th>
@@ -270,18 +270,18 @@ export function EquipmentPage() {
                     <tr key={eq.id} className="border-b border-slate-50 hover:bg-slate-50/60">
                       <td className="px-5 py-3">
                         <p className="font-medium text-slate-800">{eq.name}</p>
-                        {eq.description && <p className="text-xs text-slate-400 mt-0.5">{eq.description}</p>}
+                        {eq.description && <p className="text-xs text-slate-500 mt-0.5">{eq.description}</p>}
                       </td>
-                      <td className="px-5 py-3 text-slate-600">{eq.category}</td>
+                      <td className="px-5 py-3 text-slate-400">{eq.category}</td>
                       <td className="px-5 py-3">
                         {crew ? (
                           <span className="rounded-full bg-brand-50 px-2 py-0.5 text-xs font-medium text-brand-700">{crew.name}</span>
                         ) : (
-                          <span className="text-slate-400">—</span>
+                          <span className="text-slate-500">—</span>
                         )}
                       </td>
-                      <td className="px-5 py-3 text-slate-500 text-xs">
-                        {eq.deployedFrom ? eq.deployedFrom : <span className="text-slate-300">—</span>}
+                      <td className="px-5 py-3 text-slate-400 text-xs">
+                        {eq.deployedFrom ? eq.deployedFrom : <span className="text-slate-600">—</span>}
                       </td>
                       {isAdmin && (
                         <td className="px-5 py-3 text-right text-slate-700">{money(eq.monthlyCost)}</td>
@@ -299,14 +299,14 @@ export function EquipmentPage() {
                           <div className="flex items-center justify-end gap-2">
                             <button
                               onClick={() => setEditing(eq)}
-                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                              className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
                               aria-label="Edit"
                             >
                               <Pencil size={14} />
                             </button>
                             <button
                               onClick={() => remove(eq)}
-                              className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                              className="rounded p-1 text-slate-500 hover:bg-rose-50 hover:text-rose-600"
                               aria-label="Delete"
                             >
                               <Trash2 size={14} />
@@ -321,7 +321,7 @@ export function EquipmentPage() {
               {isAdmin && data.equipment.filter((e) => e.active).length > 1 && (
                 <tfoot>
                   <tr className="border-t-2 border-slate-200 bg-slate-50">
-                    <td colSpan={3} className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <td colSpan={3} className="px-5 py-3 text-right text-xs font-semibold uppercase tracking-wide text-slate-400">
                       Active totals
                     </td>
                     <td className="px-5 py-3 text-right font-bold text-slate-800">{money(totalMonthly)}</td>
@@ -338,7 +338,7 @@ export function EquipmentPage() {
       {/* Per-crew cost breakdown */}
       {isAdmin && data.equipment.some((e) => e.crewId && e.active) && (
         <div className="mt-6">
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500">Daily cost by crew</h2>
+          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-400">Daily cost by crew</h2>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {[...byCrew.entries()]
               .filter(([crewId]) => crewId !== null)
@@ -351,11 +351,11 @@ export function EquipmentPage() {
                 return (
                   <div key={crewId} className="rounded-xl border border-slate-200 bg-white p-4">
                     <p className="text-sm font-semibold text-slate-800">{crew?.name ?? 'Unknown crew'}</p>
-                    <p className="mt-2 text-2xl font-bold text-brand-600">{money(crewDaily)}<span className="ml-1 text-xs font-normal text-slate-400">/day</span></p>
-                    <p className="text-xs text-slate-400">{money(crewMonthly)}/mo · {activeItems.length} item{activeItems.length !== 1 ? 's' : ''}</p>
+                    <p className="mt-2 text-2xl font-bold text-brand-600">{money(crewDaily)}<span className="ml-1 text-xs font-normal text-slate-500">/day</span></p>
+                    <p className="text-xs text-slate-500">{money(crewMonthly)}/mo · {activeItems.length} item{activeItems.length !== 1 ? 's' : ''}</p>
                     <ul className="mt-3 space-y-1">
                       {activeItems.map((e) => (
-                        <li key={e.id} className="flex items-center justify-between text-xs text-slate-600">
+                        <li key={e.id} className="flex items-center justify-between text-xs text-slate-400">
                           <span>{e.name}</span>
                           <span className="font-medium">{money(e.monthlyCost / daysInMonth(TODAY))}/day</span>
                         </li>

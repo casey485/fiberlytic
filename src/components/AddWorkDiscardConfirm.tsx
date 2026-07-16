@@ -18,15 +18,16 @@ export function AddWorkDiscardConfirm({ open, onSaveDraft, onDiscard, onCancel }
   const { t } = useTranslation()
   return (
     <Modal
+      dark
       open={open}
       onClose={onCancel}
       title={t('addWork.discard.title')}
       footer={
         <div className="flex w-full items-center justify-between">
-          <Button variant="ghost" onClick={onCancel}>{t('addWork.discard.keepEditing')}</Button>
+          <Button dark variant="ghost" onClick={onCancel}>{t('addWork.discard.keepEditing')}</Button>
           <div className="flex items-center gap-2">
-            <Button variant="danger" onClick={onDiscard}>{t('addWork.discard.discard')}</Button>
-            <Button variant="primary" onClick={onSaveDraft}>{t('addWork.discard.saveAsDraft')}</Button>
+            <Button dark variant="danger" onClick={onDiscard}>{t('addWork.discard.discard')}</Button>
+            <Button dark variant="primary" onClick={onSaveDraft}>{t('addWork.discard.saveAsDraft')}</Button>
           </div>
         </div>
       }

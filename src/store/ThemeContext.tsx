@@ -17,9 +17,9 @@ function applyDark(dark: boolean) {
 function getInitialDark(): boolean {
   try {
     const stored = localStorage.getItem(THEME_KEY)
-    if (stored === 'light') return false
+    if (stored === 'dark') return true
   } catch { /* localStorage blocked */ }
-  return true
+  return false
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {

@@ -35,6 +35,7 @@
     "title": "Adicionar Trabalho — {{type}}",
     "steps": {
       "details": "Detalhes",
+      "splice": "Emenda",
       "photos": "Fotos",
       "billing": "Faturamento"
     },

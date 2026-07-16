@@ -24,6 +24,20 @@ export const number = (n: number) => new Intl.NumberFormat('en-US').format(Math.
 export const percent = (n: number, digits = 0) =>
   `${(n * 100).toFixed(digits)}%`
 
+/** "YYYY-MM-DD" in the browser's LOCAL calendar day — never
+ *  `date.toISOString().slice(0, 10)`, which reads UTC and silently rolls to
+ *  the next (or previous) calendar day for anyone west (or east) of UTC once
+ *  local time crosses midnight-UTC — e.g. it's still "today" at 9pm Eastern,
+ *  but toISOString() has already ticked into UTC tomorrow. Pass an existing
+ *  Date (e.g. `new Date(markup.createdAt)`) to get the LOCAL calendar day a
+ *  stored UTC timestamp falls on; omit it for "today." */
+export function localDateStr(d: Date = new Date()): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
+
 /** "Mar 14, 2026" */
 export const formatDate = (iso: string) => {
   const d = new Date(iso + 'T00:00:00')

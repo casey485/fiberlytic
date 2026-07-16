@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAuth } from '../store/AuthContext'
-import { Eye, EyeOff, AlertCircle, CheckCircle, Zap, ArrowLeft } from 'lucide-react'
+import { Eye, EyeOff, AlertCircle, CheckCircle, ArrowLeft } from 'lucide-react'
 
 type View = 'login' | 'forgot' | 'forgot_sent'
 
@@ -72,16 +72,17 @@ export function Login() {
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex flex-col items-center justify-center p-4">
       {/* Background glow */}
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_left,_#f9731608_0%,_transparent_60%)] pointer-events-none" />
-      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_bottom_right,_#f9731605_0%,_transparent_60%)] pointer-events-none" />
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_top_left,_#ffffff08_0%,_transparent_60%)] pointer-events-none" />
+      <div className="fixed inset-0 bg-[radial-gradient(ellipse_at_bottom_right,_#ffffff05_0%,_transparent_60%)] pointer-events-none" />
 
       {/* Branding */}
       <div className="mb-8 text-center">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-orange-500/10 border border-orange-500/20 mb-4">
-          <Zap size={28} className="text-orange-500" />
-        </div>
-        <h1 className="text-2xl font-bold text-white tracking-tight">NextGen Fiber LLC</h1>
-        <p className="text-sm text-slate-500 mt-1">Powered by Fiberlytic</p>
+        <img src="/logo.svg" alt="FiberLytic" className="mx-auto mb-4 h-14 w-14 rounded-2xl" />
+        <h1 className="font-heading text-2xl tracking-tight text-white">
+          <span className="font-bold text-white">FIBER</span>
+          <span className="font-normal text-slate-400">LYTIC</span>
+        </h1>
+        <p className="text-sm text-slate-500 mt-1">The Operating System for Fiber Construction.</p>
       </div>
 
       {/* Card */}
@@ -97,7 +98,7 @@ export function Login() {
               <div className="flex items-start gap-2 mb-4 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2.5">
                 <AlertCircle size={13} className="text-amber-400 shrink-0 mt-0.5" />
                 <p className="text-xs text-amber-300">
-                  Firebase not configured. Add credentials to <code className="text-orange-400">.env.local</code>.
+                  Firebase not configured. Add credentials to <code className="text-fiber-400">.env.local</code>.
                 </p>
               </div>
             )}
@@ -109,11 +110,11 @@ export function Login() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@nextgenfiberllc.com"
+                  placeholder="you@fiberlytic.com"
                   autoComplete="email"
                   autoFocus
                   required
-                  className="w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:border-orange-500/50 focus:outline-none focus:ring-1 focus:ring-orange-500/30 transition"
+                  className="w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:border-fiber-500/50 focus:outline-none focus:ring-1 focus:ring-fiber-500/30 transition"
                 />
               </div>
 
@@ -127,7 +128,7 @@ export function Login() {
                     placeholder="••••••••"
                     autoComplete="current-password"
                     required
-                    className="w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3.5 py-2.5 pr-10 text-sm text-white placeholder-slate-600 focus:border-orange-500/50 focus:outline-none focus:ring-1 focus:ring-orange-500/30 transition"
+                    className="w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3.5 py-2.5 pr-10 text-sm text-white placeholder-slate-600 focus:border-fiber-500/50 focus:outline-none focus:ring-1 focus:ring-fiber-500/30 transition"
                   />
                   <button
                     type="button"
@@ -146,8 +147,8 @@ export function Login() {
                     onClick={() => setRemember((v) => !v)}
                     className={`h-4 w-4 rounded border flex items-center justify-center transition cursor-pointer ${
                       remember
-                        ? 'border-orange-500 bg-orange-500'
-                        : 'border-[#3a3a3a] bg-[#1a1a1a] hover:border-orange-500/50'
+                        ? 'border-fiber-500 bg-fiber-500'
+                        : 'border-[#3a3a3a] bg-[#1a1a1a] hover:border-fiber-500/50'
                     }`}
                   >
                     {remember && <span className="text-white text-[10px] font-bold leading-none">✓</span>}
@@ -158,7 +159,7 @@ export function Login() {
                 <button
                   type="button"
                   onClick={() => { setView('forgot'); setResetEmail(email); setError('') }}
-                  className="text-xs text-orange-500 hover:text-orange-400 transition"
+                  className="text-xs text-fiber-500 hover:text-fiber-400 transition"
                 >
                   Forgot password?
                 </button>
@@ -175,11 +176,11 @@ export function Login() {
             <button
               type="submit"
               disabled={loading || !firebaseReady}
-              className="mt-6 w-full rounded-xl bg-orange-500 py-3 text-sm font-semibold text-white hover:bg-orange-400 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
+              className="mt-6 w-full rounded-xl bg-white py-3 text-sm font-semibold text-black hover:bg-brand-100 disabled:opacity-50 disabled:cursor-not-allowed transition flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>
-                  <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  <span className="h-4 w-4 rounded-full border-2 border-black/30 border-t-black animate-spin" />
                   Signing in…
                 </>
               ) : (
@@ -211,10 +212,10 @@ export function Login() {
                 type="email"
                 value={resetEmail}
                 onChange={(e) => setResetEmail(e.target.value)}
-                placeholder="you@nextgenfiberllc.com"
+                placeholder="you@fiberlytic.com"
                 autoFocus
                 required
-                className="w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:border-orange-500/50 focus:outline-none focus:ring-1 focus:ring-orange-500/30 transition"
+                className="w-full rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3.5 py-2.5 text-sm text-white placeholder-slate-600 focus:border-fiber-500/50 focus:outline-none focus:ring-1 focus:ring-fiber-500/30 transition"
               />
             </div>
 
@@ -228,11 +229,11 @@ export function Login() {
             <button
               type="submit"
               disabled={loading}
-              className="mt-6 w-full rounded-xl bg-orange-500 py-3 text-sm font-semibold text-white hover:bg-orange-400 disabled:opacity-50 transition flex items-center justify-center gap-2"
+              className="mt-6 w-full rounded-xl bg-white py-3 text-sm font-semibold text-black hover:bg-brand-100 disabled:opacity-50 transition flex items-center justify-center gap-2"
             >
               {loading ? (
                 <>
-                  <span className="h-4 w-4 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+                  <span className="h-4 w-4 rounded-full border-2 border-black/30 border-t-black animate-spin" />
                   Sending…
                 </>
               ) : (
@@ -250,7 +251,7 @@ export function Login() {
             </div>
             <h2 className="text-lg font-semibold text-white mb-2">Check Your Email</h2>
             <p className="text-sm text-slate-400 mb-1">If that account exists, a reset link was sent to</p>
-            <p className="text-sm font-medium text-orange-400 mb-6">{resetEmail}</p>
+            <p className="text-sm font-medium text-fiber-400 mb-6">{resetEmail}</p>
             <p className="text-xs text-slate-600 mb-8">
               Click the link in the email to reset your password. The link expires in 1 hour.
             </p>
@@ -266,7 +267,7 @@ export function Login() {
 
       {/* Footer */}
       <div className="mt-8 text-center space-y-1">
-        <p className="text-xs text-slate-700">NextGen Fiber LLC · All rights reserved</p>
+        <p className="text-xs text-slate-700">FiberLytic · Provium Tech Inc. · All rights reserved</p>
         <p className="text-xs text-slate-800">Secured by Firebase Authentication</p>
       </div>
     </div>

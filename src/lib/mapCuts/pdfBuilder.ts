@@ -1,15 +1,10 @@
 import type { jsPDF as JsPDFType } from 'jspdf'
 import type { PDFPageProxy } from 'pdfjs-dist'
-import type { MapCutBox, MapCutPackage } from '../../types'
+import type { MapCutPackage } from '../../types'
 import { openPdfDocument, renderViewportRegion, isRenderCancelledError, type RenderRegionOpts } from './render'
-import { expandRect, rectCorners, type Rect } from './geometry'
-import { mapImageArea, drawTitleBlock } from './titleBlock'
-
-/** Browsers cap canvas dimensions around this (pdf.js hard-codes the same
- *  constant internally for its own oversized-page handling). A single box's
- *  bounding box, at very high DPI, can still exceed it on a large sheet —
- *  clamped per-box below rather than thrown as an error. */
-const MAX_CANVAS_DIM = 16384
+import type { Rect } from './geometry'
+import { drawTitleBlock } from './titleBlock'
+import { outputPageDimsPt, computeBoxRenderGeometry, computeOutputImagePlacement } from './boxTransform'
 
 async function renderRegionOnce(page: PDFPageProxy, opts: RenderRegionOpts): Promise<HTMLCanvasElement> {
   const { canvas, promise } = renderViewportRegion(page, opts)
@@ -37,30 +32,6 @@ function cropRotatedRegion(source: HTMLCanvasElement, rectPx: Rect, rotationDeg:
   if (rotationDeg) ctx.rotate((-rotationDeg * Math.PI) / 180)
   ctx.drawImage(source, -cx, -cy)
   return canvas
-}
-
-/** Picks this output page's physical size in points. For the named sizes,
- *  orientation is chosen per-box to match the box's own aspect ratio (a wide,
- *  short cut gets a landscape sheet; a tall, narrow cut gets portrait) rather
- *  than forcing every sheet the same way. Custom size is used exactly as
- *  entered, no auto-flip. */
-function pageDimsPt(pkg: MapCutPackage, box: MapCutBox): [number, number] {
-  if (pkg.pageSize === 'custom') {
-    const wIn = pkg.customWidthIn ?? 11
-    const hIn = pkg.customHeightIn ?? 8.5
-    return [wIn * 72, hIn * 72]
-  }
-  const longShortIn: Record<'11x17' | '8.5x11' | 'legal' | 'ansiC' | 'ansiD', [number, number]> = {
-    '11x17': [17, 11], // = ANSI B
-    '8.5x11': [11, 8.5],
-    legal: [14, 8.5],
-    ansiC: [22, 17],
-    ansiD: [34, 22],
-  }
-  const [longIn, shortIn] = longShortIn[pkg.pageSize]
-  const landscape = box.width >= box.height
-  const [wIn, hIn] = landscape ? [longIn, shortIn] : [shortIn, longIn]
-  return [wIn * 72, hIn * 72]
 }
 
 export interface BuildMapCutPdfResult {
@@ -99,7 +70,6 @@ export async function buildMapCutPdf(
       const thumbnailDataUrl = thumbCanvas.toDataURL('image/jpeg', 0.7)
 
       const { jsPDF } = await import('jspdf')
-      const outputDpi = pkg.outputDpi ?? 300
       const lossless = pkg.losslessOutput ?? false
       const imageFormat = lossless ? 'PNG' : 'JPEG'
 
@@ -107,7 +77,7 @@ export async function buildMapCutPdf(
 
       for (let i = 0; i < boxes.length; i++) {
         const box = boxes[i]
-        const [wPt, hPt] = pageDimsPt(pkg, box)
+        const [wPt, hPt] = outputPageDimsPt(pkg, box)
         const orientation = wPt >= hPt ? 'landscape' : 'portrait'
 
         if (i === 0) {
@@ -118,53 +88,25 @@ export async function buildMapCutPdf(
         const pageW = pdf!.internal.pageSize.getWidth()
         const pageH = pdf!.internal.pageSize.getHeight()
 
-        const expandedFrac = expandRect({ x: box.x, y: box.y, width: box.width, height: box.height }, pkg.overlapPct)
-
         // Render this box's axis-aligned bounding box (in PDF points) directly from the
         // vector source at outputDpi, then rotate-crop the exact box out of that —
         // every box gets its own full-DPI vector-sourced render, never a shared raster.
-        const cornersPt = rectCorners(expandedFrac, box.rotation).map(([fx, fy]) => [fx * pageWidthPt, fy * pageHeightPt])
-        const xs = cornersPt.map(([x]) => x)
-        const ys = cornersPt.map(([, y]) => y)
-        const aabbXPt = Math.min(...xs)
-        const aabbYPt = Math.min(...ys)
-        const aabbWPt = Math.max(...xs) - aabbXPt
-        const aabbHPt = Math.max(...ys) - aabbYPt
-
-        let renderScale = outputDpi / 72
-        const maxDim = Math.max(aabbWPt, aabbHPt) * renderScale
-        if (maxDim > MAX_CANVAS_DIM) renderScale *= MAX_CANVAS_DIM / maxDim
+        // Shared with the redline-sync inverse transform (PdfPrintMode.tsx) via
+        // boxTransform.ts, so the two can never drift apart.
+        const geom = computeBoxRenderGeometry(pkg, box, { w: pageWidthPt, h: pageHeightPt })
 
         const aabbCanvas = await renderRegionOnce(page, {
-          scale: renderScale,
-          regionXPx: aabbXPt * renderScale,
-          regionYPx: aabbYPt * renderScale,
-          outputWidthPx: aabbWPt * renderScale,
-          outputHeightPx: aabbHPt * renderScale,
+          scale: geom.renderScale,
+          regionXPx: geom.aabbXPt * geom.renderScale,
+          regionYPx: geom.aabbYPt * geom.renderScale,
+          outputWidthPx: geom.aabbWPt * geom.renderScale,
+          outputHeightPx: geom.aabbHPt * geom.renderScale,
         })
 
-        const rectPxInAabb: Rect = {
-          x: (expandedFrac.x * pageWidthPt - aabbXPt) * renderScale,
-          y: (expandedFrac.y * pageHeightPt - aabbYPt) * renderScale,
-          width: expandedFrac.width * pageWidthPt * renderScale,
-          height: expandedFrac.height * pageHeightPt * renderScale,
-        }
-        const cropCanvas = cropRotatedRegion(aabbCanvas, rectPxInAabb, box.rotation)
+        const cropCanvas = cropRotatedRegion(aabbCanvas, geom.rectPxInAabb, box.rotation)
         const cropDataUrl = lossless ? cropCanvas.toDataURL('image/png') : cropCanvas.toDataURL('image/jpeg', 0.92)
 
-        const area = mapImageArea(pageW, pageH)
-        const cropRatio = cropCanvas.width / cropCanvas.height
-        const areaRatio = area.width / area.height
-        let imgW: number, imgH: number
-        if (cropRatio > areaRatio) {
-          imgW = area.width
-          imgH = area.width / cropRatio
-        } else {
-          imgH = area.height
-          imgW = area.height * cropRatio
-        }
-        const imgX = area.x + (area.width - imgW) / 2
-        const imgY = area.y + (area.height - imgH) / 2
+        const { imgX, imgY, imgW, imgH } = computeOutputImagePlacement(pkg, box, geom.cropWidthPx, geom.cropHeightPx)
         pdf!.addImage(cropDataUrl, imageFormat, imgX, imgY, imgW, imgH)
 
         drawTitleBlock(
@@ -177,7 +119,7 @@ export async function buildMapCutPdf(
             sheetTotal: boxes.length,
             scaleFeetPerInch: pkg.scaleFeetPerInch,
             sourcePageWidthPt: pageWidthPt,
-            box: { ...box, ...expandedFrac },
+            box: { ...box, ...geom.expandedFrac },
             sourceThumbnailDataUrl: thumbnailDataUrl,
             detectedTitle: pkg.detectedTitle,
             notes: pkg.notes,

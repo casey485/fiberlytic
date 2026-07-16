@@ -17,7 +17,8 @@ import { buildWorkObjectCalloutContent, geometryAnchor } from './workObjectCallo
 import type { CalloutDisplaySettings } from './calloutDisplaySettings'
 import { getSavedCalloutOffset } from './calloutPosition'
 import type { FieldMapExportOptions } from './fieldMapExportOptions'
-import { buildReportRows } from './fieldMapExport'
+import { drawInvoicePage, type SummaryReportMode } from './fieldMapExport'
+import { drawFiberLyticLogo } from './pdfLogo'
 
 function probeImageSize(dataUrl: string): Promise<{ w: number; h: number }> {
   return new Promise((resolve) => {
@@ -28,29 +29,13 @@ function probeImageSize(dataUrl: string): Promise<{ w: number; h: number }> {
   })
 }
 
-async function loadImageDataUrl(url: string): Promise<string | null> {
-  try {
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const blob = await res.blob()
-    return await new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null)
-      reader.onerror = () => resolve(null)
-      reader.readAsDataURL(blob)
-    })
-  } catch {
-    return null
-  }
-}
-
 /** Mounts one page's image + redline overlay + (optionally) callout boxes into a
  *  detached, off-screen container at the page's native resolution, waits for
  *  paint, and returns the container ready for html2canvas — caller must call the
  *  returned cleanup() afterward. */
 async function mountPageOffscreen(
   image: string, naturalW: number, naturalH: number, markups: FieldMarkup[],
-  data: AppData, calloutSettings: CalloutDisplaySettings, includeCallouts: boolean,
+  data: AppData, calloutSettings: CalloutDisplaySettings, includeCallouts: boolean, fileId: string,
 ): Promise<{ container: HTMLElement; cleanup: () => void }> {
   const container = document.createElement('div')
   container.style.cssText = `position:fixed;left:-100000px;top:0;width:${naturalW}px;height:${naturalH}px;background:#0a0a0a;overflow:hidden`
@@ -66,7 +51,7 @@ async function mountPageOffscreen(
     const anchor = geometryAnchor(m.geometry)
     if (!anchor) return null
     const [ax, ay] = anchor
-    const off = getSavedCalloutOffset(m.id) ?? { offsetX: 40, offsetY: -60 }
+    const off = getSavedCalloutOffset(fileId, m.id) ?? { offsetX: 40, offsetY: -60 }
     return { markup: m, ax, ay, boxX: ax + off.offsetX, boxY: ay + off.offsetY }
   }).filter((v): v is NonNullable<typeof v> => v !== null)
 
@@ -125,8 +110,17 @@ async function mountPageOffscreen(
 }
 
 export interface PdfPrintModeExportArgs {
-  project: { name: string; id: string }
+  project: { name: string; id: string; location: string; clientId?: string | null }
+  /** The currently-open ProjectFile's id — a cut piece and its master use this
+   *  to scope which saved callout offset applies (see calloutPosition.ts). */
+  fileId: string
   pageImages: string[]
+  /** Fixed legacy-formula pixel size per page (see pdf.ts's getPdfLogicalPageSizes)
+   *  — the coordinate space FieldMarkup.geometry is stored in. pageImages can now
+   *  be rendered at a much higher DPI for sharpness, so the offscreen mount below
+   *  must size its box off THIS, not the image's own resolution, or every
+   *  markup/callout position bakes in at the wrong spot relative to the image. */
+  logicalPageSizes: { w: number; h: number }[]
   pageIndexes: number[]
   /** All markups for this project file, in coordSpace 'pdfPage', already filtered
    *  by the export dialog's scope/criteria. */
@@ -134,12 +128,13 @@ export interface PdfPrintModeExportArgs {
   data: AppData
   calloutSettings: CalloutDisplaySettings
   options: FieldMapExportOptions
+  mode?: SummaryReportMode
 }
 
 export async function exportPdfPrintModeReport(args: PdfPrintModeExportArgs): Promise<void> {
-  const { project, pageImages, pageIndexes, markups, data, calloutSettings, options } = args
-  const [{ default: html2canvas }, { jsPDF }, logoDataUrl] = await Promise.all([
-    import('html2canvas'), import('jspdf'), loadImageDataUrl('/logo.jpg'),
+  const { project, fileId, pageImages, logicalPageSizes, pageIndexes, markups, data, calloutSettings, options, mode = { kind: 'admin' } } = args
+  const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+    import('html2canvas'), import('jspdf'),
   ])
 
   const pdf = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'letter', compress: true })
@@ -148,9 +143,8 @@ export async function exportPdfPrintModeReport(args: PdfPrintModeExportArgs): Pr
   // ── Cover page: project name/id, export timestamp, logo — kept off the print
   // pages themselves so those preserve the original print's exact scale/layout. ──
   let headerRight = margin
-  if (logoDataUrl) {
-    try { pdf.addImage(logoDataUrl, margin, margin - 4, 40, 40); headerRight = margin + 50 } catch { /* unsupported image data — skip */ }
-  }
+  drawFiberLyticLogo(pdf, margin, margin - 4, 40)
+  headerRight = margin + 50
   pdf.setFont('helvetica', 'bold'); pdf.setFontSize(18)
   pdf.text(project.name, headerRight, margin + 16)
   pdf.setFont('helvetica', 'normal'); pdf.setFontSize(10); pdf.setTextColor(120, 120, 120)
@@ -185,11 +179,17 @@ export async function exportPdfPrintModeReport(args: PdfPrintModeExportArgs): Pr
   for (const pageIndex of pageIndexes) {
     const image = pageImages[pageIndex]
     if (!image) continue
-    const { w: naturalW, h: naturalH } = await probeImageSize(image)
+    // Box the offscreen mount at the LOGICAL size (falling back to the image's
+    // own resolution only if it's somehow missing) so markup/callout positions
+    // — stored relative to the logical formula — land correctly regardless of
+    // how sharp the underlying image actually is; the browser downscales the
+    // image into this box, and html2canvas's own scale factor below is what
+    // pulls the extra source detail back out as crispness in the output.
+    const { w: naturalW, h: naturalH } = logicalPageSizes[pageIndex] ?? await probeImageSize(image)
     const pageMarkups = markups.filter((m) => m.pageIndex === pageIndex)
 
     const { container, cleanup } = await mountPageOffscreen(
-      image, naturalW, naturalH, pageMarkups, data, calloutSettings, options.includeCallouts,
+      image, naturalW, naturalH, pageMarkups, data, calloutSettings, options.includeCallouts, fileId,
     )
     try {
       const canvas = await html2canvas(container, {
@@ -215,41 +215,10 @@ export async function exportPdfPrintModeReport(args: PdfPrintModeExportArgs): Pr
     }
   }
 
-  // ── Summary page — same Work Object list as KmzMap's export ──
-  const rows = buildReportRows(markups, (data.markupBilling ?? []).filter((b) => markups.some((m) => m.id === b.markupId)))
-  if (rows.length > 0) {
-    pdf.addPage('letter', 'portrait')
-    pdf.setFont('helvetica', 'bold'); pdf.setFontSize(11)
-    pdf.text('Work Object Summary', margin, margin + 11)
-    pdf.setFontSize(8)
-    const summaryPageH = pdf.internal.pageSize.getHeight()
-    let y = margin + 30
-    const total = rows.reduce((s, r) => s + r.billingTotal, 0)
-    rows.forEach(({ markup, billingTotal }, i) => {
-      const typeDef = markup.workObjectType ? WORK_OBJECT_TYPE_MAP[markup.workObjectType] : null
-      const name = markup.featureName ?? markup.label ?? typeDef?.label ?? markup.tool
-      const qty = options.includeQuantities && markup.quantity != null
-        ? `${markup.quantity.toLocaleString()} ${markup.unit ?? typeDef?.defaultUnit ?? ''}` : null
-      const parts = [typeDef?.label ?? markup.tool, qty, options.includeBillingCodes ? `$${billingTotal.toFixed(2)}` : null].filter(Boolean)
-      pdf.setFont('helvetica', 'bold')
-      pdf.text(`${i + 1}. ${name}`, margin, y)
-      pdf.setFont('helvetica', 'normal')
-      pdf.text(parts.join(' · '), margin + 12, y + 11)
-      y += 22
-      if (options.includeNotes && markup.notes) {
-        pdf.setFont('helvetica', 'italic'); pdf.setFontSize(7)
-        pdf.text(markup.notes, margin + 12, y)
-        pdf.setFont('helvetica', 'normal'); pdf.setFontSize(8)
-        y += 11
-      }
-      y += 4
-      if (y > summaryPageH - margin) { pdf.addPage('letter', 'portrait'); y = margin + 14 }
-    })
-    if (options.includeBillingCodes) {
-      pdf.setFont('helvetica', 'bold')
-      pdf.text(`Total billed: $${total.toFixed(2)}`, margin, Math.min(y + 10, summaryPageH - margin))
-    }
-  }
+  // ── Invoice page — same billing lines as KmzMap's export ──
+  const billing = (data.markupBilling ?? []).filter((b) => markups.some((m) => m.id === b.markupId))
+  const client = project.clientId ? (data.clients ?? []).find((c) => c.id === project.clientId) ?? null : null
+  drawInvoicePage(pdf, billing, options, mode, project, client)
 
   pdf.save(`${project.name.replace(/[^a-z0-9]+/gi, '_')}_field_map_print_export.pdf`)
 }

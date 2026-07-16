@@ -103,7 +103,7 @@ export function ProjectPrints() {
               </button>
               <button
                 onClick={() => setViewingUrl(null)}
-                className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-700"
+                className="flex items-center gap-1 text-xs text-slate-400 hover:text-slate-700"
               >
                 <X size={13} /> Close
               </button>
@@ -122,7 +122,7 @@ export function ProjectPrints() {
       {filesByProject.length === 0 ? (
         <Card>
           <CardBody>
-            <p className="py-8 text-center text-sm text-slate-400">
+            <p className="py-8 text-center text-sm text-slate-500">
               {myProjects.length === 0
                 ? 'No active projects assigned to your crew.'
                 : 'No PDFs have been uploaded to your projects yet. Ask your admin to upload prints from the project page.'}
@@ -144,7 +144,7 @@ export function ProjectPrints() {
                       <FileText size={18} className="shrink-0 text-brand-500" />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-slate-800">{f.name}</p>
-                        <p className="text-xs text-slate-400">
+                        <p className="text-xs text-slate-500">
                           {formatBytes(f.size)} · {formatDate(f.uploadedAt.slice(0, 10))}
                         </p>
                       </div>
@@ -158,7 +158,7 @@ export function ProjectPrints() {
                         </button>
                         <button
                           onClick={() => openInTab(f.id, f.name)}
-                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-400 hover:bg-slate-50"
                           title="Open in new tab"
                         >
                           <ExternalLink size={13} />

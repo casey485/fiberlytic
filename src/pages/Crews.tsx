@@ -10,6 +10,7 @@ import { Button, Field, Input, Select } from '../components/ui/Form'
 import { moneyExact, number, crewStatusMeta, workTypeLabel } from '../lib/format'
 import { PAY_TYPES, payLabel, payUnit } from '../lib/laborCost'
 import { footageByCrew } from '../lib/analytics'
+import { SubcontractorsList } from './Subcontractors'
 import type { Crew, CrewStatus, PayType, WorkType } from '../types'
 
 const WORK_TYPES: WorkType[]   = ['aerial', 'underground', 'directional_bore', 'splicing', 'mdu']
@@ -156,7 +157,7 @@ function CrewEditorModal({ open, crew, onClose }: { open: boolean; crew: Crew | 
 // Crew list page
 // ---------------------------------------------------------------------------
 
-export function Crews() {
+function CrewsList() {
   const { data, updateCrew, deleteCrew, updateEquipment } = useData()
   const { isAdmin } = useRole()
   const [editor, setEditor] = useState<{ open: boolean; crew: Crew | null }>({ open: false, crew: null })
@@ -168,15 +169,12 @@ export function Crews() {
 
   return (
     <div>
-      <PageHeader
-        title="Crews"
-        description="Field teams identified by foreman — employees and hours are logged at production entry time."
-        action={
-          <Button onClick={() => setEditor({ open: true, crew: null })}>
-            <Plus size={16} /> Add crew
-          </Button>
-        }
-      />
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm text-slate-400">Field teams identified by foreman — employees and hours are logged at production entry time.</p>
+        <Button onClick={() => setEditor({ open: true, crew: null })}>
+          <Plus size={16} /> Add crew
+        </Button>
+      </div>
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {data.crews.map((crew) => {
@@ -258,11 +256,11 @@ export function Crews() {
                         {crewEquip.map((eq) => (
                           <li key={eq.id} className="flex items-center justify-between rounded-lg bg-purple-50 px-2.5 py-1.5 text-xs">
                             <span className="font-medium text-purple-800">{eq.name}
-                              <span className="ml-1 font-normal text-purple-400">· {eq.category}</span>
+                              <span className="ml-1 font-normal text-purple-600">· {eq.category}</span>
                             </span>
                             <button
                               onClick={() => updateEquipment(eq.id, { crewId: undefined })}
-                              className="ml-2 text-purple-400 hover:text-rose-500"
+                              className="ml-2 text-purple-600 hover:text-rose-500"
                               title="Remove from crew"
                             >
                               ✕
@@ -327,4 +325,39 @@ function initForm(crew: Crew | null) {
     payType:   (crew?.payType ?? 'daily') as PayType,
     payAmount: String(crew?.payAmount ?? 0),
   }
+}
+
+// ---------------------------------------------------------------------------
+// Crews and Subcontractors are two separate entities, but "who did the work"
+// is the same kind of question for both — some internal, some not — so they
+// live under one nav tab. Each tab keeps its own existing list/editor
+// self-contained; this just switches which one is visible.
+// ---------------------------------------------------------------------------
+
+type CrewTab = 'crews' | 'subcontractors'
+
+export function CrewsAndSubcontractors() {
+  const [tab, setTab] = useState<CrewTab>('crews')
+
+  return (
+    <div>
+      <PageHeader title="Crews & Subcontractors" description="In-house crews and outside subcontractor companies — who performed the work." />
+
+      <div className="mb-6 flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1 w-fit">
+        {(['crews', 'subcontractors'] as CrewTab[]).map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
+              tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
+            }`}
+          >
+            {t === 'crews' ? 'In-House Crews' : 'Subcontractors'}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'crews' ? <CrewsList /> : <SubcontractorsList />}
+    </div>
+  )
 }

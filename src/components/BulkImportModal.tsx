@@ -4,7 +4,7 @@ import { Upload, FileSpreadsheet, AlertTriangle, CheckCircle, XCircle, RefreshCw
 import { useData } from '../store/DataContext'
 import { Modal } from './ui/Modal'
 import { Button, Field, Select } from './ui/Form'
-import { moneyExact } from '../lib/format'
+import { moneyExact, localDateStr } from '../lib/format'
 import type { RateCardDivision, UOM } from '../types'
 
 // ── Column aliases (lower-cased) ─────────────────────────────────────────────
@@ -80,7 +80,7 @@ function parseRate(val: unknown): number | null {
 
 function normalizeUom(raw: string): string {
   const u = raw.toUpperCase().trim()
-  if (['LINEAR FOOT', 'LINEAR FEET', 'LIN FT', 'L.F.', 'LF'].includes(u)) return 'LF'
+  if (['LINEAR FOOT', 'LINEAR FEET', 'LIN FT', 'LIN. FT.', 'L.F.', 'LF', 'FT', 'FT.', 'FOOT', 'FEET'].includes(u)) return 'LF'
   if (['EACH', 'EA', 'EACH.', 'PC', 'PCS'].includes(u)) return 'EA'
   if (['SQFT', 'SF', 'SQ FT', 'SQ. FT.', 'SQUARE FEET'].includes(u)) return 'SQFT'
   return u
@@ -171,8 +171,8 @@ function parseSheetFull(
 
     if (rate === null) issues.push('Invalid or missing rate')
     if (rate !== null && rate < 0) issues.push('Negative rate')
-    if (!uom) issues.push('Missing UOM')
-    else if (!VALID_UOMS.includes(uom as UOM)) issues.push(`Unknown UOM "${uom}" — will save as-is`)
+    if (!uom) issues.push('Missing UOM — will default to LF, please verify')
+    else if (!VALID_UOMS.includes(uom as UOM)) issues.push(`Unknown UOM "${uom}" — will default to LF, please verify`)
 
     if (issues.some((m) => m.includes('Invalid') || m.includes('Negative'))) {
       status = 'error'
@@ -199,7 +199,7 @@ export function BulkImportModal({ onClose }: { onClose: () => void }) {
   const [divisions, setDivisions] = useState<RateCardDivision[]>([])
   const [rateCardId, setRateCardId] = useState<string>('__new__')
   const [newCardName, setNewCardName] = useState('')
-  const [newCardDate, setNewCardDate] = useState(new Date().toISOString().slice(0, 10))
+  const [newCardDate, setNewCardDate] = useState(localDateStr())
   const [overwrite, setOverwrite] = useState(false)
 
   // ── Step 2 state ──
@@ -351,7 +351,12 @@ export function BulkImportModal({ onClose }: { onClose: () => void }) {
     for (const row of importableRows) {
       if (row.rate === null) continue
       const code = row.unitCode.toUpperCase()
-      const uom = (VALID_UOMS.includes(row.uom as UOM) ? row.uom : 'EA') as UOM
+      // Unrecognized UOM strings default to LF, not EA — LF is by far the
+      // common case for fiber construction rate codes (see seed.ts), and an
+      // EA default silently zeroes footage/progress tracking for the whole
+      // rate code wherever it's used, which is a much worse failure mode
+      // than defaulting to the majority unit and needing a manual fix.
+      const uom = (VALID_UOMS.includes(row.uom as UOM) ? row.uom : 'LF') as UOM
       const existingUnit = existing.get(code)
       if (existingUnit && overwrite) {
         updateRateCardUnit(existingUnit.id, { description: row.description || existingUnit.description, uom, rate: row.rate })

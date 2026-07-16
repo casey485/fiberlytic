@@ -1,5 +1,5 @@
-import { useMemo, useState, useEffect } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useMemo, useState, useEffect, useCallback } from 'react'
+import { Link, useNavigate, useLocation } from 'react-router-dom'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 import { Plus, Trash2, X, FileText, PenLine, AlertCircle, Download, Clock, Camera, Pencil } from 'lucide-react'
 import * as XLSX from 'xlsx'
@@ -10,10 +10,13 @@ import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { StatCard } from '../components/ui/StatCard'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
-import { number, money, moneyExact, formatDateShort, workTypeLabel } from '../lib/format'
+import { number, money, moneyExact, formatDateShort, workTypeLabel, localDateStr } from '../lib/format'
 import { dailyProductionSeries, weekStart, weekEnd, daysInMonth, workTypeDivisions } from '../lib/analytics'
+import { crewOrSubName } from '../lib/crewOrSub'
 import { compressImage } from '../lib/imageCompress'
 import { saveBlob } from '../lib/fileStore'
+import { QaStatusBadge } from '../components/QaStatusBadge'
+import { QaStatusFilterSelect, type QaStatusFilterValue } from '../components/QaStatusFilterSelect'
 import type { RateCardUnit } from '../types'
 import type { LineItemInput } from '../store/DataContext'
 import type { PendingProduction } from '../lib/pendingProduction'
@@ -41,7 +44,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
   const { data, addProduction, addPhoto } = useData()
   const navigate = useNavigate()
   const { isAdmin } = useRole()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const activeProjects = data.projects.filter((p) => p.status === 'active')
 
   // Only consider rate cards that actually have units loaded
@@ -230,7 +233,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
       await Promise.all(pendingPhotos.map(async (ph) => {
         const blobKey = 'pb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
         await saveBlob(blobKey, ph.preview)
-        addPhoto({ projectId: form.projectId, caption: ph.caption || 'Production photo', category: 'progress', date: form.date, uploadedBy: 'Field', url: 'idb:' + blobKey, productionEntryId: entryId })
+        addPhoto({ projectId: form.projectId, caption: ph.caption || 'Production photo', category: 'progress', date: form.date, uploadedBy: 'Field', url: 'idb:' + blobKey, productionEntryId: entryId, crewId: form.crewId, capturedAt: new Date().toISOString() })
       }))
       setRows([])
       setEmpRows((rows) => rows.map((r) => ({ ...r, checked: false })))
@@ -304,7 +307,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
         {/* Print selection — mandatory redline step */}
         <div className="sm:col-span-2">
           <div className={`rounded-lg border px-4 py-3 ${projectPdfs.length === 0 ? 'border-amber-200 bg-amber-50' : 'border-brand-100 bg-brand-50'}`}>
-            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
               <PenLine size={13} /> Select print to mark up
             </p>
             {projectPdfs.length === 0 ? (
@@ -342,7 +345,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
       {/* Employee selection — hours pulled from time clock */}
       <div className="mt-5">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Employees on site today</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Employees on site today</p>
           {clockFilledCountProd > 0 && (
             <span className="flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-700">
               <Clock size={10} /> {clockFilledCountProd} from time clock
@@ -356,7 +359,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
           </div>
         )}
         {empRows.length === 0 ? (
-          <p className="text-sm text-slate-400">No active employees found.</p>
+          <p className="text-sm text-slate-500">No active employees found.</p>
         ) : (
           <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
             {empRows.map((row) => {
@@ -375,7 +378,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
                     {emp.isForeman && (
                       <span className="ml-1.5 inline-flex items-center rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">Foreman</span>
                     )}
-                    <span className="ml-1.5 text-xs text-slate-400">{emp.role}</span>
+                    <span className="ml-1.5 text-xs text-slate-500">{emp.role}</span>
                     {row.fromClock && (
                       <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                         <Clock size={8} /> clocked in
@@ -411,12 +414,12 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
         {checkedEmpRows.length > 0 && (
           <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">Total hours</span>
+              <span className="text-slate-400">Total hours</span>
               <span className="font-semibold text-slate-800">{totalHours.toFixed(1)} hrs</span>
             </div>
             {isAdmin && (
               <div className="mt-0.5 flex items-center justify-between text-sm">
-                <span className="text-slate-500">Est. labor cost</span>
+                <span className="text-slate-400">Est. labor cost</span>
                 <span className="font-semibold text-slate-800">{moneyExact(totalLaborCostProd)}</span>
               </div>
             )}
@@ -427,7 +430,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
       {/* Line items */}
       <div className="mt-5">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Rate card line items</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Rate card line items</p>
           <Button variant="ghost" className="py-1 text-xs" onClick={addRow} disabled={availableUnits.length === 0}>
             <Plus size={13} /> Add line item
           </Button>
@@ -456,7 +459,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
           <div className="overflow-x-auto rounded-lg border border-slate-200">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-3 py-2 font-medium">Code</th>
                   <th className="px-3 py-2 font-medium">Description</th>
                   <th className="px-3 py-2 font-medium">UOM</th>
@@ -488,9 +491,9 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
                           ))}
                         </Select>
                       </td>
-                      <td className="px-2 py-1.5 text-xs text-slate-600">{row.description}</td>
-                      <td className="px-2 py-1.5 text-xs text-slate-500">{row.uom}</td>
-                      <td className="px-2 py-1.5 text-right text-xs text-slate-500">{moneyExact(row.rateSnapshot)}</td>
+                      <td className="px-2 py-1.5 text-xs text-slate-400">{row.description}</td>
+                      <td className="px-2 py-1.5 text-xs text-slate-400">{row.uom}</td>
+                      <td className="px-2 py-1.5 text-right text-xs text-slate-400">{moneyExact(row.rateSnapshot)}</td>
                       <td className="px-2 py-1.5">
                         <Input
                           type="number"
@@ -506,7 +509,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
                         {moneyExact(extended)}
                       </td>
                       <td className="px-2 py-1.5">
-                        <button onClick={() => removeRow(row.key)} className="text-slate-300 hover:text-rose-500" aria-label="Remove">
+                        <button onClick={() => removeRow(row.key)} className="text-slate-600 hover:text-rose-500" aria-label="Remove">
                           <X size={14} />
                         </button>
                       </td>
@@ -522,12 +525,12 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
         {lineItems.length > 0 && (
           <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-4 py-3">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">Total LF placed</span>
+              <span className="text-slate-400">Total LF placed</span>
               <span className="font-semibold text-slate-800">{number(totalLF)} ft</span>
             </div>
             {isAdmin && (
               <div className="mt-1 flex items-center justify-between text-sm">
-                <span className="text-slate-500">Total revenue</span>
+                <span className="text-slate-400">Total revenue</span>
                 <span className="font-semibold text-emerald-700">{money(totalRevenue)}</span>
               </div>
             )}
@@ -561,7 +564,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
             </label>
           </div>
           {pendingPhotos.length === 0 ? (
-            <p className="px-4 pb-3 text-xs text-rose-400">Take or select at least one site photo before submitting.</p>
+            <p className="px-4 pb-3 text-xs text-rose-600">Take or select at least one site photo before submitting.</p>
           ) : (
             <div className="flex flex-wrap gap-3 px-4 pb-4">
               {pendingPhotos.map((ph) => (
@@ -576,7 +579,7 @@ function ProductionModal({ open, onClose }: { open: boolean; onClose: () => void
                     value={ph.caption}
                     onChange={(e) => setPendingPhotos((prev) => prev.map((p) => p.key === ph.key ? { ...p, caption: e.target.value } : p))}
                     placeholder="Caption…"
-                    className="mt-1 block w-20 truncate rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-600 placeholder-slate-300 focus:border-brand-400 focus:outline-none"
+                    className="mt-1 block w-20 truncate rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-400 placeholder-slate-300 focus:border-brand-400 focus:outline-none"
                   />
                 </div>
               ))}
@@ -596,7 +599,7 @@ function CrewDayModal({ open, onClose }: { open: boolean; onClose: () => void })
   const { data, addCrewDayEntry, addPhoto } = useData()
   const navigate = useNavigate()
   const { isAdmin } = useRole()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const activeProjects = data.projects.filter((p) => p.status === 'active')
 
   const defaultCrewId = data.crews[0]?.id ?? ''
@@ -798,7 +801,7 @@ const toggleEmp = (id: string) =>
       await Promise.all(pendingPhotos.map(async (ph) => {
         const blobKey = 'pb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2)
         await saveBlob(blobKey, ph.preview)
-        addPhoto({ projectId: form.projectId, caption: ph.caption || 'Production photo', category: 'progress', date: form.date, uploadedBy: 'Field', url: 'idb:' + blobKey, productionEntryId: entryId })
+        addPhoto({ projectId: form.projectId, caption: ph.caption || 'Production photo', category: 'progress', date: form.date, uploadedBy: 'Field', url: 'idb:' + blobKey, productionEntryId: entryId, crewId: form.crewId, capturedAt: new Date().toISOString() })
       }))
       reset()
       onClose()
@@ -879,7 +882,7 @@ const toggleEmp = (id: string) =>
         {/* Print selection */}
         <div className="sm:col-span-2">
           <div className={`rounded-lg border px-4 py-3 ${projectPdfs.length === 0 ? 'border-amber-200 bg-amber-50' : 'border-brand-100 bg-brand-50'}`}>
-            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
               <PenLine size={13} /> Select print to mark up
             </p>
             {projectPdfs.length === 0 ? (
@@ -915,7 +918,7 @@ const toggleEmp = (id: string) =>
       </div>
 
       {selectedCrew && (
-        <p className="mt-1 text-xs text-slate-400">
+        <p className="mt-1 text-xs text-slate-500">
           {workTypeLabel[selectedCrew.specialty]} crew
           {(foremanEmp?.name ?? selectedCrew.foreman) ? ` · Foreman: ${foremanEmp?.name ?? selectedCrew.foreman}` : ''}
         </p>
@@ -924,7 +927,7 @@ const toggleEmp = (id: string) =>
       {/* Rate card line items */}
       <div className="mt-5">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Work units placed</p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Work units placed</p>
           <Button variant="ghost" className="py-1 text-xs" onClick={addCrewRow} disabled={availableCrewUnits.length === 0}>
             <Plus size={13} /> Add unit
           </Button>
@@ -943,7 +946,7 @@ const toggleEmp = (id: string) =>
         )}
 
         {rows.length === 0 && availableCrewUnits.length > 0 && (
-          <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-400">
+          <p className="rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-500">
             No units added — enter raw footage below, or click "Add unit" to log by rate card code.
           </p>
         )}
@@ -952,7 +955,7 @@ const toggleEmp = (id: string) =>
           <div className="overflow-x-auto rounded-lg border border-slate-200">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-3 py-2 font-medium">Code</th>
                   <th className="px-3 py-2 font-medium">Description</th>
                   <th className="px-3 py-2 font-medium">UOM</th>
@@ -984,9 +987,9 @@ const toggleEmp = (id: string) =>
                           ))}
                         </Select>
                       </td>
-                      <td className="px-2 py-1.5 text-xs text-slate-600">{row.description}</td>
-                      <td className="px-2 py-1.5 text-xs text-slate-500">{row.uom}</td>
-                      <td className="px-2 py-1.5 text-right text-xs text-slate-500">{moneyExact(row.rateSnapshot)}</td>
+                      <td className="px-2 py-1.5 text-xs text-slate-400">{row.description}</td>
+                      <td className="px-2 py-1.5 text-xs text-slate-400">{row.uom}</td>
+                      <td className="px-2 py-1.5 text-right text-xs text-slate-400">{moneyExact(row.rateSnapshot)}</td>
                       <td className="px-2 py-1.5">
                         <Input
                           type="number"
@@ -1002,7 +1005,7 @@ const toggleEmp = (id: string) =>
                         {moneyExact(extended)}
                       </td>
                       <td className="px-2 py-1.5">
-                        <button onClick={() => removeCrewRow(row.key)} className="text-slate-300 hover:text-rose-500" aria-label="Remove">
+                        <button onClick={() => removeCrewRow(row.key)} className="text-slate-600 hover:text-rose-500" aria-label="Remove">
                           <X size={14} />
                         </button>
                       </td>
@@ -1017,12 +1020,12 @@ const toggleEmp = (id: string) =>
         {crewLineItems.length > 0 && (
           <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-slate-500">Total LF placed</span>
+              <span className="text-slate-400">Total LF placed</span>
               <span className="font-semibold text-slate-800">{number(crewTotalLF)} ft</span>
             </div>
             {isAdmin && (
               <div className="mt-0.5 flex items-center justify-between text-sm">
-                <span className="text-slate-500">Total revenue</span>
+                <span className="text-slate-400">Total revenue</span>
                 <span className="font-semibold text-emerald-700">{money(crewTotalRevenue)}</span>
               </div>
             )}
@@ -1043,7 +1046,7 @@ const toggleEmp = (id: string) =>
       {(() => {
         const crewEquip = data.equipment.filter((eq) => eq.active && eq.crewId === form.crewId)
         if (crewEquip.length === 0) return null
-        const dailyCost = crewEquip.reduce((s, eq) => s + eq.monthlyCost / daysInMonth(form.date || new Date().toISOString().slice(0, 10)), 0)
+        const dailyCost = crewEquip.reduce((s, eq) => s + eq.monthlyCost / daysInMonth(form.date || localDateStr()), 0)
         return (
           <div className="mt-3 rounded-lg border border-purple-100 bg-purple-50 px-4 py-3">
             <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-purple-600">
@@ -1053,9 +1056,9 @@ const toggleEmp = (id: string) =>
               {crewEquip.map((eq) => (
                 <div key={eq.id} className="flex items-center justify-between text-sm">
                   <span className="text-purple-800">{eq.name}
-                    <span className="ml-1.5 text-xs font-normal text-purple-400">· {eq.category}</span>
+                    <span className="ml-1.5 text-xs font-normal text-purple-600">· {eq.category}</span>
                   </span>
-                  {isAdmin && <span className="text-xs font-medium text-purple-600">{moneyExact(eq.monthlyCost / daysInMonth(form.date || new Date().toISOString().slice(0, 10)))}/day</span>}
+                  {isAdmin && <span className="text-xs font-medium text-purple-600">{moneyExact(eq.monthlyCost / daysInMonth(form.date || localDateStr()))}/day</span>}
                 </div>
               ))}
             </div>
@@ -1072,7 +1075,7 @@ const toggleEmp = (id: string) =>
       {/* Employee rows — filtered to this crew, hours pre-filled from time clock */}
       <div className="mt-5">
         <div className="mb-2 flex items-center justify-between">
-          <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
             Crew members worked today
           </p>
           {clockFilledCount > 0 && (
@@ -1090,7 +1093,7 @@ const toggleEmp = (id: string) =>
         )}
 
         {empRows.length === 0 ? (
-          <p className="text-sm text-slate-400">No active employees found. Add employees first.</p>
+          <p className="text-sm text-slate-500">No active employees found. Add employees first.</p>
         ) : (
           <div className="divide-y divide-slate-100 rounded-lg border border-slate-200">
             {empRows.map((row) => {
@@ -1109,7 +1112,7 @@ const toggleEmp = (id: string) =>
                     {emp.isForeman && (
                       <span className="ml-1.5 inline-flex items-center rounded bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold text-brand-700">Foreman</span>
                     )}
-                    <span className="ml-1.5 text-xs text-slate-400">{emp.role}</span>
+                    <span className="ml-1.5 text-xs text-slate-500">{emp.role}</span>
                     {row.fromClock && (
                       <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700">
                         <Clock size={8} /> clocked in
@@ -1152,22 +1155,22 @@ const toggleEmp = (id: string) =>
             </p>
           )}
           <div className="flex items-center justify-between text-sm">
-            <span className="text-slate-500">Footage</span>
+            <span className="text-slate-400">Footage</span>
             <span className="font-medium text-slate-800">
               {number(crewLineItems.length > 0 ? Math.round(crewTotalLF) : (parseFloat(form.footage) || 0))} ft
             </span>
           </div>
           <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-500">Employees</span>
+            <span className="text-slate-400">Employees</span>
             <span className="font-medium text-slate-800">{checkedRows.length}</span>
           </div>
           <div className="mt-1 flex items-center justify-between text-sm">
-            <span className="text-slate-500">Total hours</span>
+            <span className="text-slate-400">Total hours</span>
             <span className="font-semibold text-slate-800">{totalHours.toFixed(2)} hrs</span>
           </div>
           {isAdmin && (
             <div className="mt-1 flex items-center justify-between text-sm">
-              <span className="text-slate-500">Total labor cost</span>
+              <span className="text-slate-400">Total labor cost</span>
               <span className="font-semibold text-slate-800">{moneyExact(totalLaborCost)}</span>
             </div>
           )}
@@ -1200,7 +1203,7 @@ const toggleEmp = (id: string) =>
             </label>
           </div>
           {pendingPhotos.length === 0 ? (
-            <p className="px-4 pb-3 text-xs text-rose-400">Take or select at least one site photo before submitting.</p>
+            <p className="px-4 pb-3 text-xs text-rose-600">Take or select at least one site photo before submitting.</p>
           ) : (
             <div className="flex flex-wrap gap-3 px-4 pb-4">
               {pendingPhotos.map((ph) => (
@@ -1215,7 +1218,7 @@ const toggleEmp = (id: string) =>
                     value={ph.caption}
                     onChange={(e) => setPendingPhotos((prev) => prev.map((p) => p.key === ph.key ? { ...p, caption: e.target.value } : p))}
                     placeholder="Caption…"
-                    className="mt-1 block w-20 truncate rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-600 placeholder-slate-300 focus:border-brand-400 focus:outline-none"
+                    className="mt-1 block w-20 truncate rounded border border-slate-200 bg-white px-1 py-0.5 text-[10px] text-slate-400 placeholder-slate-300 focus:border-brand-400 focus:outline-none"
                   />
                 </div>
               ))}
@@ -1383,7 +1386,7 @@ function EditEntryModal({
         {/* Unit codes / line items */}
         <div>
           <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Unit codes / line items</p>
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Unit codes / line items</p>
             <div className="flex items-center gap-2">
               <Select className="text-xs" value={rateCardId} onChange={(e) => setRateCardId(e.target.value)}>
                 <option value="">— Rate card —</option>
@@ -1398,7 +1401,7 @@ function EditEntryModal({
           </div>
 
           {rows.length === 0 && (
-            <p className="rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-xs text-slate-400">
+            <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
               {existingLineItems.length === 0
                 ? 'No unit codes on this entry — enter raw footage below.'
                 : 'All units removed — saving will clear line items and use raw footage.'}
@@ -1406,10 +1409,10 @@ function EditEntryModal({
           )}
 
           {rows.length > 0 && (
-            <div className="overflow-x-auto rounded-lg border border-[#2a2a2a]">
+            <div className="overflow-x-auto rounded-lg border border-slate-200">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="bg-[#1a1a1a] text-left text-xs uppercase tracking-wide text-slate-400">
+                  <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                     <th className="px-3 py-2 font-medium">Code</th>
                     <th className="px-3 py-2 font-medium">UOM</th>
                     <th className="px-3 py-2 text-right font-medium">Rate</th>
@@ -1422,7 +1425,7 @@ function EditEntryModal({
                   {rows.map((row) => {
                     const qty = parseFloat(row.quantity) || 0
                     return (
-                      <tr key={row.key} className="border-t border-[#1e1e1e]">
+                      <tr key={row.key} className="border-t border-slate-100">
                         <td className="px-2 py-1.5">
                           <Select
                             className="text-xs"
@@ -1438,8 +1441,8 @@ function EditEntryModal({
                             ))}
                           </Select>
                         </td>
-                        <td className="px-2 py-1.5 text-xs text-slate-500">{row.uom}</td>
-                        <td className="px-2 py-1.5 text-right text-xs text-slate-500">{moneyExact(row.rateSnapshot)}</td>
+                        <td className="px-2 py-1.5 text-xs text-slate-400">{row.uom}</td>
+                        <td className="px-2 py-1.5 text-right text-xs text-slate-400">{moneyExact(row.rateSnapshot)}</td>
                         <td className="px-2 py-1.5">
                           <Input
                             type="number"
@@ -1451,11 +1454,11 @@ function EditEntryModal({
                             placeholder="0"
                           />
                         </td>
-                        <td className="px-2 py-1.5 text-right text-xs font-medium text-slate-300">
+                        <td className="px-2 py-1.5 text-right text-xs font-medium text-slate-600">
                           {moneyExact(qty * row.rateSnapshot)}
                         </td>
                         <td className="px-2 py-1.5">
-                          <button onClick={() => removeEditRow(row.key)} className="text-slate-500 hover:text-rose-500" aria-label="Remove">
+                          <button onClick={() => removeEditRow(row.key)} className="text-slate-400 hover:text-rose-500" aria-label="Remove">
                             <X size={14} />
                           </button>
                         </td>
@@ -1468,10 +1471,10 @@ function EditEntryModal({
           )}
 
           {editLineItems.length > 0 && (
-            <div className="mt-2 flex items-center justify-between rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-xs">
-              <span className="text-slate-500">LF placed</span>
-              <span className="font-semibold text-slate-300">{number(editTotalLF)} ft</span>
-              <span className="text-slate-500">Revenue</span>
+            <div className="mt-2 flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs">
+              <span className="text-slate-400">LF placed</span>
+              <span className="font-semibold text-slate-600">{number(editTotalLF)} ft</span>
+              <span className="text-slate-400">Revenue</span>
               <span className="font-semibold text-emerald-500">{money(editTotalRevenue)}</span>
             </div>
           )}
@@ -1479,9 +1482,9 @@ function EditEntryModal({
 
         {/* Footage — manual entry when no line items; computed when line items present */}
         {hasLineItems ? (
-          <div className="flex items-center justify-between rounded-lg border border-[#2a2a2a] bg-[#1a1a1a] px-3 py-2 text-xs text-slate-400">
+          <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500">
             <span>Footage (from LF units)</span>
-            <span className="font-mono font-semibold text-slate-300">{number(editTotalLF)} ft</span>
+            <span className="font-mono font-semibold text-slate-600">{number(editTotalLF)} ft</span>
           </div>
         ) : (
           <Field label="Footage (ft)">
@@ -1547,14 +1550,13 @@ function ExportModal({
     // ── Sheet 1: Production Summary ──
     const summaryRows = entries.map((e) => {
       const proj  = data.projects.find((p) => p.id === e.projectId)
-      const crew  = data.crews.find((c) => c.id === e.crewId)
       const items = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
       const revenue = items.reduce((s, li) => s + li.extendedTotal, 0)
       return {
         Date:     e.date,
         Project:  proj?.name ?? '',
         Client:   proj?.client ?? '',
-        Crew:     crew?.name ?? '',
+        Crew:     crewOrSubName(data, e.crewId, e.subcontractorId),
         'Footage (ft)': e.footage,
         'Hours':        e.hours,
         'Revenue ($)':  revenue,
@@ -1566,7 +1568,6 @@ function ExportModal({
     const lineRows: Record<string, string | number>[] = []
     for (const e of entries) {
       const proj  = data.projects.find((p) => p.id === e.projectId)
-      const crew  = data.crews.find((c) => c.id === e.crewId)
       const items = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
       if (items.length === 0) continue
       for (const li of items) {
@@ -1574,7 +1575,7 @@ function ExportModal({
           Date:         e.date,
           Project:      proj?.name ?? '',
           Client:       proj?.client ?? '',
-          Crew:         crew?.name ?? '',
+          Crew:         crewOrSubName(data, e.crewId, e.subcontractorId),
           'Unit Code':  li.unitCode,
           Description:  li.description,
           UOM:          li.uom,
@@ -1633,7 +1634,7 @@ function ExportModal({
               (projectId === 'all' || e.projectId === projectId),
           ).length
           return (
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-400">
               <span className="font-semibold text-slate-700">{count}</span> production {count === 1 ? 'entry' : 'entries'} will be exported.
             </p>
           )
@@ -1643,19 +1644,20 @@ function ExportModal({
   )
 }
 
-function ProductionTab() {
+function ProductionTab({ initial }: { initial?: { projectId: string; date: string } }) {
   const { data, deleteProduction } = useData()
   const { isAdmin, activeEmployeeId } = useRole()
   const [open, setOpen] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
   const [editEntryId, setEditEntryId] = useState<string | null>(null)
-  const [projectFilter, setProjectFilter] = useState('all')
-  const today = new Date().toISOString().slice(0, 10)
-  const [dateStart, setDateStart] = useState('2020-01-01')
-  const [dateEnd,   setDateEnd]   = useState(today)
+  const [projectFilter, setProjectFilter] = useState(initial?.projectId ?? 'all')
+  const [qaFilter, setQaFilter] = useState<QaStatusFilterValue>('all')
+  const today = localDateStr()
+  const [dateStart, setDateStart] = useState(initial?.date ?? '2020-01-01')
+  const [dateEnd,   setDateEnd]   = useState(initial?.date ?? today)
 
   const jumpToThisWeek = () => {
-    const now = new Date().toISOString().slice(0, 10)
+    const now = localDateStr()
     setDateStart(weekStart(now))
     setDateEnd(weekEnd(now))
   }
@@ -1671,16 +1673,32 @@ function ProductionTab() {
     )
   }, [isAdmin, activeEmployeeId, data.timecards])
 
+  // A line item "matches" the active QA filter — 'none' means logged outside
+  // the redline workflow entirely (no qaStatus at all), matching an entry's
+  // own fallback row when it has no rate-card line items.
+  // Line items with no qaStatus at all (logged before the redline QA/QC
+  // workflow existed, or via the plain Log Production/Log Crew Day flows)
+  // are treated as implicitly "approved" — they were never submitted for
+  // review, so there's nothing pending or rejected about them.
+  const qaMatches = useCallback((status: string | undefined) => {
+    if (qaFilter === 'all') return true
+    return (status ?? 'approved') === qaFilter
+  }, [qaFilter])
+
   const entries = useMemo(() => {
     return [...data.production]
       .filter((e) =>
         e.date >= dateStart &&
         e.date <= dateEnd &&
         (projectFilter === 'all' || e.projectId === projectFilter) &&
-        (myProdIds === null || myProdIds.has(e.id))
+        (myProdIds === null || myProdIds.has(e.id)) &&
+        (qaFilter === 'all' || (() => {
+          const items = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
+          return items.length > 0 ? items.some((li) => qaMatches(li.qaStatus)) : qaMatches(undefined)
+        })())
       )
       .sort((a, b) => b.date.localeCompare(a.date))
-  }, [data.production, dateStart, dateEnd, projectFilter, myProdIds])
+  }, [data.production, data.productionLineItems, dateStart, dateEnd, projectFilter, myProdIds, qaFilter, qaMatches])
 
   const footageInRange = entries.reduce((s, e) => s + e.footage, 0)
   const hoursInRange = entries.reduce((s, e) => s + e.hours, 0)
@@ -1702,14 +1720,15 @@ function ProductionTab() {
             {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
           <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} className="w-40" />
-          <span className="text-sm text-slate-400">to</span>
+          <span className="text-sm text-slate-500">to</span>
           <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} className="w-40" />
           <button onClick={jumpToThisWeek} className="text-sm font-medium text-brand-600 hover:text-brand-700">
             This week
           </button>
-          <button onClick={showAll} className="text-sm font-medium text-slate-500 hover:text-slate-700">
+          <button onClick={showAll} className="text-sm font-medium text-slate-400 hover:text-slate-700">
             All time
           </button>
+          {isAdmin && <QaStatusFilterSelect value={qaFilter} onChange={setQaFilter} className="w-56" />}
         </div>
         {isAdmin && (
           <div className="flex items-center gap-2">
@@ -1746,16 +1765,16 @@ function ProductionTab() {
       </Card>
 
       <Card className="mt-6">
-        <div className="flex items-center justify-between border-b border-[#2a2a2a] px-5 py-3.5">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
           <div>
-            <p className="text-sm font-semibold text-slate-200">Production log</p>
-            <p className="text-xs text-slate-400">{entries.length} {entries.length === 1 ? 'entry' : 'entries'} in range</p>
+            <p className="text-sm font-semibold text-slate-800">Production log</p>
+            <p className="text-xs text-slate-500">{entries.length} {entries.length === 1 ? 'entry' : 'entries'} in range</p>
           </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3">Project</th>
                 <th className="px-4 py-3">Crew</th>
@@ -1771,60 +1790,90 @@ function ProductionTab() {
             <tbody className="divide-y divide-slate-100">
               {entries.map((e, i) => {
                 const project = data.projects.find((p) => p.id === e.projectId)
-                const crew    = data.crews.find((c) => c.id === e.crewId)
+                const crewLabel = crewOrSubName(data, e.crewId, e.subcontractorId)
                 const pnlEntry = data.pnl.find((p) => p.productionEntryId === e.id)
                 const entryItems = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
                 const revenue = pnlEntry?.revenue ?? (entryItems.length > 0 ? entryItems.reduce((s, li) => s + li.extendedTotal, 0) : 0)
                 const ftPerHr = e.hours > 0 ? e.footage / e.hours : 0
                 const dollarPerFt = revenue > 0 && e.footage > 0 ? revenue / e.footage : 0
-                return (
-                  <tr key={e.id} className={`${i % 2 === 0 ? 'bg-transparent' : 'bg-white/3'} hover:bg-white/5`}>
-                    <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{formatDateShort(e.date)}</td>
-                    <td className="max-w-[140px] truncate px-4 py-2.5 font-medium text-slate-800">{project?.name ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-600">{crew?.name ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-right font-mono font-semibold text-slate-800">{number(e.footage)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">{typeof e.hours === 'number' ? e.hours.toFixed(1) : e.hours}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-500">{ftPerHr > 0 ? ftPerHr.toFixed(0) : <span className="text-slate-300">—</span>}</td>
+                const rowBg = i % 2 === 0 ? 'bg-transparent' : 'bg-slate-50/60'
+                // One full row per rate-card line item, not one blended row per
+                // entry — two different unit codes on the same work item can (and
+                // often do) bill at two different rates, and a single combined
+                // revenue/$-per-ft number hides that. Date/Project/Crew/Hours/
+                // Notes/Actions span across an entry's rows since those are
+                // entry-level, not per-item. Falls back to the entry's own
+                // footage/revenue as a single row when there are no rate-card
+                // line items (e.g. manually-entered raw footage).
+                const allLineRows = entryItems.length > 0
+                  ? entryItems.map((li) => ({ key: li.id, unitCode: li.unitCode as string | null, quantity: li.quantity, revenue: li.extendedTotal, rate: li.rateSnapshot, qaStatus: li.qaStatus }))
+                  : [{ key: e.id, unitCode: null, quantity: e.footage, revenue, rate: dollarPerFt, qaStatus: undefined }]
+                const lineRows = qaFilter === 'all' ? allLineRows : allLineRows.filter((lr) => qaMatches(lr.qaStatus))
+                const span = lineRows.length
+                return lineRows.map((lr, j) => (
+                  <tr key={lr.key} className={`${rowBg} hover:bg-slate-50`}>
+                    {j === 0 && (
+                      <>
+                        <td rowSpan={span} className="whitespace-nowrap px-4 py-2.5 align-top text-slate-400">{formatDateShort(e.date)}</td>
+                        <td rowSpan={span} className="max-w-[140px] truncate px-4 py-2.5 align-top font-medium text-slate-800">{project?.name ?? '—'}</td>
+                        <td rowSpan={span} className="px-4 py-2.5 align-top text-slate-400">{crewLabel}</td>
+                      </>
+                    )}
+                    <td className="px-4 py-2.5 text-right">
+                      <div className="font-mono font-semibold text-slate-800">{number(lr.quantity)}</div>
+                      {lr.unitCode && <div className="mt-0.5 text-[10px] font-normal leading-tight text-slate-400">{lr.unitCode}</div>}
+                      <div className="mt-1 flex justify-end"><QaStatusBadge status={lr.qaStatus ?? 'approved'} /></div>
+                    </td>
+                    {j === 0 && (
+                      <>
+                        <td rowSpan={span} className="px-4 py-2.5 text-right align-top font-mono text-slate-400">{typeof e.hours === 'number' ? e.hours.toFixed(1) : e.hours}</td>
+                        <td rowSpan={span} className="px-4 py-2.5 text-right align-top font-mono text-slate-400">{ftPerHr > 0 ? ftPerHr.toFixed(0) : <span className="text-slate-600">—</span>}</td>
+                      </>
+                    )}
                     {isAdmin && (
                       <td className="px-4 py-2.5 text-right font-mono font-semibold text-emerald-700">
-                        {revenue > 0 ? money(revenue) : <span className="font-normal text-slate-300">—</span>}
+                        {lr.revenue > 0 ? money(lr.revenue) : <span className="font-normal text-slate-600">—</span>}
                       </td>
                     )}
                     {isAdmin && (
-                      <td className="px-4 py-2.5 text-right font-mono text-slate-500">
-                        {dollarPerFt > 0 ? `$${dollarPerFt.toFixed(2)}` : <span className="text-slate-300">—</span>}
+                      <td className="px-4 py-2.5 text-right font-mono text-slate-400">
+                        {lr.rate > 0 ? `$${lr.rate.toFixed(2)}` : <span className="text-slate-600">—</span>}
                       </td>
                     )}
-                    <td className="max-w-[120px] truncate px-4 py-2.5 text-xs text-slate-400">{e.notes ?? ''}</td>
-                    <td className="px-4 py-2.5">
-                      <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => setEditEntryId(e.id)} className="rounded p-1 text-slate-300 hover:bg-brand-50 hover:text-brand-600" aria-label="Edit">
-                          <Pencil size={13} />
-                        </button>
-                        <button onClick={() => { if (confirm('Delete this production entry?')) deleteProduction(e.id) }} className="rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600" aria-label="Delete">
-                          <Trash2 size={13} />
-                        </button>
-                      </div>
-                    </td>
+                    {j === 0 && (
+                      <>
+                        <td rowSpan={span} className="max-w-[120px] truncate px-4 py-2.5 align-top text-xs text-slate-500">{e.notes ?? ''}</td>
+                        <td rowSpan={span} className="px-4 py-2.5 align-top">
+                          <div className="flex items-center justify-end gap-1">
+                            <button onClick={() => setEditEntryId(e.id)} className="rounded p-1 text-slate-600 hover:bg-brand-50 hover:text-brand-600" aria-label="Edit">
+                              <Pencil size={13} />
+                            </button>
+                            <button onClick={() => { if (confirm('Delete this production entry?')) deleteProduction(e.id) }} className="rounded p-1 text-slate-600 hover:bg-rose-50 hover:text-rose-600" aria-label="Delete">
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </td>
+                      </>
+                    )}
                   </tr>
-                )
+                ))
               })}
               {entries.length === 0 && (
                 <tr>
-                  <td colSpan={isAdmin ? 10 : 8} className="px-4 py-10 text-center text-slate-400">No production logged in this range.</td>
+                  <td colSpan={isAdmin ? 10 : 8} className="px-4 py-10 text-center text-slate-500">No production logged in this range.</td>
                 </tr>
               )}
             </tbody>
             {entries.length > 0 && (
               <tfoot>
-                <tr className="border-t-2 border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
+                <tr className="border-t-2 border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-400">
                   <td colSpan={3} className="px-4 py-2.5">Total</td>
                   <td className="px-4 py-2.5 text-right font-mono text-slate-700">{number(footageInRange)}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-slate-700">{hoursInRange.toFixed(1)}</td>
-                  <td className="px-4 py-2.5 text-right font-mono text-slate-500">{hoursInRange > 0 ? (footageInRange / hoursInRange).toFixed(0) : '—'}</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-400">{hoursInRange > 0 ? (footageInRange / hoursInRange).toFixed(0) : '—'}</td>
                   {isAdmin && <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-700">{money(revenueInRange)}</td>}
                   {isAdmin && (
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-500">
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-400">
                       {footageInRange > 0 ? `$${(revenueInRange / footageInRange).toFixed(2)}` : '—'}
                     </td>
                   )}
@@ -1854,18 +1903,19 @@ function ProductionTab() {
 // Crew daily entry tab
 // ---------------------------------------------------------------------------
 
-function CrewDailyTab() {
+function CrewDailyTab({ initial }: { initial?: { projectId: string; date: string } }) {
   const { data, deleteCrewDayEntry } = useData()
   const { isAdmin, activeEmployeeId } = useRole()
   const [open, setOpen] = useState(false)
   const [editEntryId, setEditEntryId] = useState<string | null>(null)
-  const [projectFilter, setProjectFilter] = useState('all')
-  const today = new Date().toISOString().slice(0, 10)
-  const [dateStart, setDateStart] = useState('2020-01-01')
-  const [dateEnd,   setDateEnd]   = useState(today)
+  const [projectFilter, setProjectFilter] = useState(initial?.projectId ?? 'all')
+  const [qaFilter, setQaFilter] = useState<QaStatusFilterValue>('all')
+  const today = localDateStr()
+  const [dateStart, setDateStart] = useState(initial?.date ?? '2020-01-01')
+  const [dateEnd,   setDateEnd]   = useState(initial?.date ?? today)
 
   const jumpToThisWeek = () => {
-    const now = new Date().toISOString().slice(0, 10)
+    const now = localDateStr()
     setDateStart(weekStart(now))
     setDateEnd(weekEnd(now))
   }
@@ -1881,15 +1931,29 @@ function CrewDailyTab() {
     )
   }, [isAdmin, activeEmployeeId, data.timecards])
 
+  // See ProductionTab's identical helper above.
+  // Line items with no qaStatus at all (logged before the redline QA/QC
+  // workflow existed, or via the plain Log Production/Log Crew Day flows)
+  // are treated as implicitly "approved" — they were never submitted for
+  // review, so there's nothing pending or rejected about them.
+  const qaMatches = useCallback((status: string | undefined) => {
+    if (qaFilter === 'all') return true
+    return (status ?? 'approved') === qaFilter
+  }, [qaFilter])
+
   const crewEntries = useMemo(() => {
     const list = data.production.filter((e) =>
       e.date >= dateStart &&
       e.date <= dateEnd &&
       (projectFilter === 'all' || e.projectId === projectFilter) &&
-      (myProdIds === null || myProdIds.has(e.id))
+      (myProdIds === null || myProdIds.has(e.id)) &&
+      (qaFilter === 'all' || (() => {
+        const items = data.productionLineItems.filter((li) => li.productionEntryId === e.id)
+        return items.length > 0 ? items.some((li) => qaMatches(li.qaStatus)) : qaMatches(undefined)
+      })())
     )
     return [...list].sort((a, b) => b.date.localeCompare(a.date))
-  }, [data.production, dateStart, dateEnd, projectFilter, myProdIds])
+  }, [data.production, data.productionLineItems, dateStart, dateEnd, projectFilter, myProdIds, qaFilter, qaMatches])
 
   const crewTotalFootage = crewEntries.reduce((s, e) => s + e.footage, 0)
   const crewTotalHours = useMemo(() =>
@@ -1912,14 +1976,15 @@ function CrewDailyTab() {
             {data.projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </Select>
           <Input type="date" value={dateStart} onChange={(e) => setDateStart(e.target.value)} className="w-40" />
-          <span className="text-sm text-slate-400">to</span>
+          <span className="text-sm text-slate-500">to</span>
           <Input type="date" value={dateEnd} onChange={(e) => setDateEnd(e.target.value)} className="w-40" />
           <button onClick={jumpToThisWeek} className="text-sm font-medium text-brand-600 hover:text-brand-700">
             This week
           </button>
-          <button onClick={showAllDates} className="text-sm font-medium text-slate-500 hover:text-slate-700">
+          <button onClick={showAllDates} className="text-sm font-medium text-slate-400 hover:text-slate-700">
             All time
           </button>
+          {isAdmin && <QaStatusFilterSelect value={qaFilter} onChange={setQaFilter} className="w-56" />}
         </div>
         {isAdmin && (
           <Button onClick={() => setOpen(true)}>
@@ -1936,16 +2001,16 @@ function CrewDailyTab() {
       </div>
 
       <Card>
-        <div className="flex items-center justify-between border-b border-[#2a2a2a] px-5 py-3.5">
+        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
           <div>
-            <p className="text-sm font-semibold text-slate-200">{isAdmin ? 'Crew day log' : 'My production'}</p>
-            <p className="text-xs text-slate-400">{crewEntries.length} {crewEntries.length === 1 ? 'entry' : 'entries'} in range</p>
+            <p className="text-sm font-semibold text-slate-800">{isAdmin ? 'Crew day log' : 'My production'}</p>
+            <p className="text-xs text-slate-500">{crewEntries.length} {crewEntries.length === 1 ? 'entry' : 'entries'} in range</p>
           </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                 <th className="px-4 py-3">Date</th>
                 <th className="px-4 py-3">Project</th>
                 <th className="px-4 py-3">Crew</th>
@@ -1961,7 +2026,7 @@ function CrewDailyTab() {
             <tbody className="divide-y divide-slate-100">
               {crewEntries.map((entry, i) => {
                 const project = data.projects.find((p) => p.id === entry.projectId)
-                const crew = data.crews.find((c) => c.id === entry.crewId)
+                const crewLabel = crewOrSubName(data, entry.crewId, entry.subcontractorId)
                 const foreman = data.employees.find((e) => e.isForeman && e.defaultCrewId === entry.crewId)
                 const entryTimecards = data.timecards.filter((t) => t.productionEntryId === entry.id)
                 const totalHours = entryTimecards.reduce((s, t) => s + t.hours, 0)
@@ -1969,46 +2034,68 @@ function CrewDailyTab() {
                 const entryItems = data.productionLineItems.filter((li) => li.productionEntryId === entry.id)
                 const revenue = pnlEntry?.revenue ?? (entryItems.length > 0 ? entryItems.reduce((s, li) => s + li.extendedTotal, 0) : 0)
                 const dollarPerFt = revenue > 0 && entry.footage > 0 ? revenue / entry.footage : 0
-                return (
-                  <tr key={entry.id} className={`${i % 2 === 0 ? 'bg-transparent' : 'bg-white/3'} hover:bg-white/5`}>
-                    <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{formatDateShort(entry.date)}</td>
-                    <td className="max-w-[140px] truncate px-4 py-2.5 font-medium text-slate-800">{project?.name ?? '—'}</td>
-                    <td className="px-4 py-2.5 text-slate-600">
-                      {crew?.name ?? '—'}
-                      {foreman && <span className="ml-1.5 text-xs text-slate-400">· {foreman.name}</span>}
+                const rowBg = i % 2 === 0 ? 'bg-transparent' : 'bg-slate-50/60'
+                // One full row per rate-card line item — see ProductionTab's
+                // identical pattern above for why (two unit codes on the same
+                // entry can bill at two different rates, which one blended
+                // row/revenue number would hide).
+                const allLineRows = entryItems.length > 0
+                  ? entryItems.map((li) => ({ key: li.id, unitCode: li.unitCode as string | null, quantity: li.quantity, revenue: li.extendedTotal, rate: li.rateSnapshot, qaStatus: li.qaStatus }))
+                  : [{ key: entry.id, unitCode: null, quantity: entry.footage, revenue, rate: dollarPerFt, qaStatus: undefined }]
+                const lineRows = qaFilter === 'all' ? allLineRows : allLineRows.filter((lr) => qaMatches(lr.qaStatus))
+                const span = lineRows.length
+                return lineRows.map((lr, j) => (
+                  <tr key={lr.key} className={`${rowBg} hover:bg-slate-50`}>
+                    {j === 0 && (
+                      <>
+                        <td rowSpan={span} className="whitespace-nowrap px-4 py-2.5 align-top text-slate-400">{formatDateShort(entry.date)}</td>
+                        <td rowSpan={span} className="max-w-[140px] truncate px-4 py-2.5 align-top font-medium text-slate-800">{project?.name ?? '—'}</td>
+                        <td rowSpan={span} className="px-4 py-2.5 align-top text-slate-400">
+                          {crewLabel}
+                          {foreman && <span className="ml-1.5 text-xs text-slate-500">· {foreman.name}</span>}
+                        </td>
+                        <td rowSpan={span} className="px-4 py-2.5 text-right align-top font-mono text-slate-400">{entryTimecards.length}</td>
+                        <td rowSpan={span} className="px-4 py-2.5 text-right align-top font-mono text-slate-400">{totalHours.toFixed(1)}</td>
+                      </>
+                    )}
+                    <td className="px-4 py-2.5 text-right">
+                      <div className="font-mono font-semibold text-slate-800">{number(lr.quantity)}</div>
+                      {lr.unitCode && <div className="mt-0.5 text-[10px] font-normal leading-tight text-slate-400">{lr.unitCode}</div>}
+                      <div className="mt-1 flex justify-end"><QaStatusBadge status={lr.qaStatus ?? 'approved'} /></div>
                     </td>
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">{entryTimecards.length}</td>
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-600">{totalHours.toFixed(1)}</td>
-                    <td className="px-4 py-2.5 text-right font-mono font-semibold text-slate-800">{number(entry.footage)}</td>
                     {isAdmin && (
                       <td className="px-4 py-2.5 text-right font-mono font-semibold text-emerald-700">
-                        {revenue > 0 ? money(revenue) : <span className="font-normal text-slate-300">—</span>}
+                        {lr.revenue > 0 ? money(lr.revenue) : <span className="font-normal text-slate-600">—</span>}
                       </td>
                     )}
                     {isAdmin && (
-                      <td className="px-4 py-2.5 text-right font-mono text-slate-500">
-                        {dollarPerFt > 0 ? `$${dollarPerFt.toFixed(2)}` : <span className="text-slate-300">—</span>}
+                      <td className="px-4 py-2.5 text-right font-mono text-slate-400">
+                        {lr.rate > 0 ? `$${lr.rate.toFixed(2)}` : <span className="text-slate-600">—</span>}
                       </td>
                     )}
-                    <td className="max-w-[120px] truncate px-4 py-2.5 text-xs text-slate-400">{entry.notes ?? ''}</td>
-                    {isAdmin && (
-                      <td className="px-4 py-2.5">
-                        <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => setEditEntryId(entry.id)} className="rounded p-1 text-slate-300 hover:bg-brand-50 hover:text-brand-600" aria-label="Edit" title="Change project or crew">
-                            <Pencil size={13} />
-                          </button>
-                          <button onClick={() => { if (confirm('Delete this crew day entry and all linked timecards?')) deleteCrewDayEntry(entry.id) }} className="rounded p-1 text-slate-300 hover:bg-rose-50 hover:text-rose-600" aria-label="Delete">
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </td>
+                    {j === 0 && (
+                      <>
+                        <td rowSpan={span} className="max-w-[120px] truncate px-4 py-2.5 align-top text-xs text-slate-500">{entry.notes ?? ''}</td>
+                        {isAdmin && (
+                          <td rowSpan={span} className="px-4 py-2.5 align-top">
+                            <div className="flex items-center justify-end gap-1">
+                              <button onClick={() => setEditEntryId(entry.id)} className="rounded p-1 text-slate-600 hover:bg-brand-50 hover:text-brand-600" aria-label="Edit" title="Change project or crew">
+                                <Pencil size={13} />
+                              </button>
+                              <button onClick={() => { if (confirm('Delete this crew day entry and all linked timecards?')) deleteCrewDayEntry(entry.id) }} className="rounded p-1 text-slate-600 hover:bg-rose-50 hover:text-rose-600" aria-label="Delete">
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </td>
+                        )}
+                      </>
                     )}
                   </tr>
-                )
+                ))
               })}
               {crewEntries.length === 0 && (
                 <tr>
-                  <td colSpan={isAdmin ? 10 : 7} className="px-4 py-10 text-center text-slate-400">
+                  <td colSpan={isAdmin ? 10 : 7} className="px-4 py-10 text-center text-slate-500">
                     {isAdmin ? 'No crew days logged yet. Use "Log crew day" to record a full crew\'s work.' : 'No production entries found for you yet.'}
                   </td>
                 </tr>
@@ -2016,14 +2103,14 @@ function CrewDailyTab() {
             </tbody>
             {crewEntries.length > 0 && (
               <tfoot>
-                <tr className="border-t-2 border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
+                <tr className="border-t-2 border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-400">
                   <td colSpan={3} className="px-4 py-2.5">Total</td>
-                  <td className="px-4 py-2.5 text-right font-mono text-slate-500">—</td>
+                  <td className="px-4 py-2.5 text-right font-mono text-slate-400">—</td>
                   <td className="px-4 py-2.5 text-right font-mono text-slate-700">{crewTotalHours.toFixed(1)}</td>
                   <td className="px-4 py-2.5 text-right font-mono text-slate-700">{number(crewTotalFootage)}</td>
                   {isAdmin && <td className="px-4 py-2.5 text-right font-mono font-bold text-emerald-700">{money(crewTotalRevenue)}</td>}
                   {isAdmin && (
-                    <td className="px-4 py-2.5 text-right font-mono text-slate-500">
+                    <td className="px-4 py-2.5 text-right font-mono text-slate-400">
                       {crewTotalFootage > 0 ? `$${(crewTotalRevenue / crewTotalFootage).toFixed(2)}` : '—'}
                     </td>
                   )}
@@ -2046,7 +2133,14 @@ function CrewDailyTab() {
 // ---------------------------------------------------------------------------
 
 export function Production() {
-  const [tab, setTab] = useState<'crew' | 'production'>('crew')
+  // Photos page "Open Production Record" arrives with a project+date to
+  // pre-filter to (no per-entry deep link exists in this data model — see
+  // photoLibrary.ts's doc comment — pre-filtering the log to the right
+  // project/day is the honest, in-scope equivalent).
+  const location = useLocation()
+  const prefilter = (location.state as { prefilterProjectId?: string; prefilterDate?: string } | null) ?? null
+  const initial = prefilter?.prefilterProjectId ? { projectId: prefilter.prefilterProjectId, date: prefilter.prefilterDate ?? localDateStr() } : undefined
+  const [tab, setTab] = useState<'crew' | 'production'>(initial ? 'production' : 'crew')
   return (
     <div>
       <PageHeader
@@ -2059,14 +2153,14 @@ export function Production() {
             key={t}
             onClick={() => setTab(t)}
             className={`rounded-md px-4 py-1.5 text-sm font-medium transition ${
-              tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-500 hover:text-slate-700'
+              tab === t ? 'bg-white shadow-sm text-slate-900' : 'text-slate-400 hover:text-slate-700'
             }`}
           >
             {t === 'crew' ? 'Crew Day Entry' : 'Rate Card Log'}
           </button>
         ))}
       </div>
-      {tab === 'crew' ? <CrewDailyTab /> : <ProductionTab />}
+      {tab === 'crew' ? <CrewDailyTab initial={initial} /> : <ProductionTab initial={initial} />}
     </div>
   )
 }

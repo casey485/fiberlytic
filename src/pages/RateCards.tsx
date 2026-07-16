@@ -6,7 +6,7 @@ import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select } from '../components/ui/Form'
-import { moneyExact, formatDate } from '../lib/format'
+import { moneyExact, formatDate, localDateStr } from '../lib/format'
 import { BulkImportModal } from '../components/BulkImportModal'
 import { WORK_OBJECT_TYPES } from '../lib/workObjectTypes'
 import type { Client, RateCard, RateCardUnit, RateCardDivision, UOM } from '../types'
@@ -18,22 +18,44 @@ const UOMS: UOM[] = ['LF', 'EA', 'SQFT']
 // Client modal
 // ---------------------------------------------------------------------------
 
+export interface ClientAddress {
+  billingAddress: string
+  billingCity: string
+  billingState: string
+  billingZip: string
+}
+
 function ClientModal({
   initial,
   onSave,
   onClose,
 }: {
   initial?: Client
-  onSave: (name: string, divisions: RateCardDivision[]) => void
+  onSave: (name: string, divisions: RateCardDivision[], address: ClientAddress) => void
   onClose: () => void
 }) {
   const [name, setName] = useState(initial?.name ?? '')
   const [divisions, setDivisions] = useState<RateCardDivision[]>(initial?.divisions ?? [])
+  const [billingAddress, setBillingAddress] = useState(initial?.billingAddress ?? '')
+  const [billingCity, setBillingCity] = useState(initial?.billingCity ?? '')
+  const [billingState, setBillingState] = useState(initial?.billingState ?? '')
+  const [billingZip, setBillingZip] = useState(initial?.billingZip ?? '')
 
   const toggleDiv = (d: RateCardDivision) =>
     setDivisions((prev) => prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d])
 
   const valid = name.trim().length > 0
+
+  function save() {
+    if (!valid) return
+    onSave(name.trim(), divisions, {
+      billingAddress: billingAddress.trim(),
+      billingCity: billingCity.trim(),
+      billingState: billingState.trim(),
+      billingZip: billingZip.trim(),
+    })
+    onClose()
+  }
 
   return (
     <Modal
@@ -43,7 +65,7 @@ function ClientModal({
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button disabled={!valid} onClick={() => { if (valid) { onSave(name.trim(), divisions); onClose() } }}>Save</Button>
+          <Button disabled={!valid} onClick={save}>Save</Button>
         </>
       }
     >
@@ -65,7 +87,7 @@ function ClientModal({
                       ? d === 'Underground'
                         ? 'border-blue-600 bg-blue-600 text-white'
                         : 'border-cyan-600 bg-cyan-600 text-white'
-                      : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+                      : 'border-slate-300 bg-white text-slate-400 hover:border-slate-400'
                   }`}
                 >
                   <span className={`h-2 w-2 rounded-full ${active ? 'bg-white' : d === 'Underground' ? 'bg-blue-400' : 'bg-cyan-400'}`} />
@@ -75,6 +97,20 @@ function ClientModal({
             })}
           </div>
         </Field>
+        <Field label="Billing address" hint="Used as the &ldquo;Bill To&rdquo; block on Field Map invoice exports">
+          <Input value={billingAddress} onChange={(e) => setBillingAddress(e.target.value)} placeholder="Street address, suite" />
+        </Field>
+        <div className="grid grid-cols-3 gap-3">
+          <Field label="City">
+            <Input value={billingCity} onChange={(e) => setBillingCity(e.target.value)} />
+          </Field>
+          <Field label="State">
+            <Input value={billingState} onChange={(e) => setBillingState(e.target.value)} placeholder="TN" />
+          </Field>
+          <Field label="Zip">
+            <Input value={billingZip} onChange={(e) => setBillingZip(e.target.value)} />
+          </Field>
+        </div>
       </div>
     </Modal>
   )
@@ -95,7 +131,7 @@ function RateCardModal({
   onSave: (f: RcForm) => void
   onClose: () => void
 }) {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const [form, setForm] = useState<RcForm>({
     name: initial?.name ?? '',
     divisions: initial?.divisions ?? [],
@@ -143,7 +179,7 @@ function RateCardModal({
                         ? d === 'Underground'
                           ? 'border-blue-600 bg-blue-600 text-white'
                           : 'border-cyan-600 bg-cyan-600 text-white'
-                        : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+                        : 'border-slate-300 bg-white text-slate-400 hover:border-slate-400'
                     }`}
                   >
                     <span className={`h-2 w-2 rounded-full ${active ? 'bg-white' : d === 'Underground' ? 'bg-blue-400' : 'bg-cyan-400'}`} />
@@ -157,7 +193,7 @@ function RateCardModal({
         <Field label="Effective date">
           <Input type="date" value={form.effectiveDate} onChange={(e) => set('effectiveDate', e.target.value)} />
         </Field>
-        <p className="sm:col-span-2 text-xs text-slate-400">Client: fixed to the selected client above.</p>
+        <p className="sm:col-span-2 text-xs text-slate-500">Client: fixed to the selected client above.</p>
       </div>
     </Modal>
   )
@@ -266,7 +302,7 @@ function RateCardRow({
           className="flex items-center gap-2 text-left"
           onClick={() => setExpanded((x) => !x)}
         >
-          <ChevronIcon size={15} className="text-slate-400" />
+          <ChevronIcon size={15} className="text-slate-500" />
           <div>
             <span className="font-medium text-slate-800">{card.name}</span>
             <span className="ml-2">
@@ -275,18 +311,18 @@ function RateCardRow({
               ))}
             </span>
           </div>
-          <span className="ml-2 text-xs text-slate-400">Effective {formatDate(card.effectiveDate)} · {units.length} units</span>
+          <span className="ml-2 text-xs text-slate-500">Effective {formatDate(card.effectiveDate)} · {units.length} units</span>
         </button>
         <div className="flex items-center gap-1.5">
           <Button variant="ghost" className="px-2 py-1 text-xs" onClick={onAddUnit}>
             <Plus size={13} /> Add unit
           </Button>
-          <button onClick={onEditCard} className="p-1.5 text-slate-400 hover:text-brand-600" aria-label="Edit card">
+          <button onClick={onEditCard} className="p-1.5 text-slate-500 hover:text-brand-600" aria-label="Edit card">
             <Pencil size={14} />
           </button>
           <button
             onClick={() => { if (confirm('Delete this rate card and all its units?')) onDeleteCard() }}
-            className="p-1.5 text-slate-400 hover:text-rose-600"
+            className="p-1.5 text-slate-500 hover:text-rose-600"
             aria-label="Delete card"
           >
             <Trash2 size={14} />
@@ -297,11 +333,11 @@ function RateCardRow({
       {expanded && (
         <div className="border-t border-slate-100">
           {units.length === 0 ? (
-            <p className="px-4 py-4 text-sm text-slate-400">No units yet. Click "Add unit" to start.</p>
+            <p className="px-4 py-4 text-sm text-slate-500">No units yet. Click "Add unit" to start.</p>
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-2 font-medium">Code</th>
                   <th className="px-4 py-2 font-medium">Description</th>
                   <th className="px-4 py-2 font-medium">Category</th>
@@ -315,15 +351,15 @@ function RateCardRow({
                   <tr key={u.id} className="border-t border-slate-50 hover:bg-slate-50/60">
                     <td className="px-4 py-2 font-mono text-xs font-semibold text-brand-700">{u.unitCode}</td>
                     <td className="px-4 py-2 text-slate-700">{u.description}</td>
-                    <td className="px-4 py-2 text-slate-500">{u.category ? <Badge tone="slate">{u.category}</Badge> : <span className="text-slate-300">—</span>}</td>
-                    <td className="px-4 py-2 text-slate-500">{u.uom}</td>
+                    <td className="px-4 py-2 text-slate-400">{u.category ? <Badge tone="slate">{u.category}</Badge> : <span className="text-slate-600">—</span>}</td>
+                    <td className="px-4 py-2 text-slate-400">{u.uom}</td>
                     <td className="px-4 py-2 text-right font-medium text-slate-800">{moneyExact(u.rate)}</td>
                     <td className="px-4 py-2 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => onEditUnit(u)} className="p-1 text-slate-300 hover:text-brand-600" aria-label="Edit">
+                        <button onClick={() => onEditUnit(u)} className="p-1 text-slate-600 hover:text-brand-600" aria-label="Edit">
                           <Pencil size={13} />
                         </button>
-                        <button onClick={() => onDeleteUnit(u.id)} className="p-1 text-slate-300 hover:text-rose-600" aria-label="Delete">
+                        <button onClick={() => onDeleteUnit(u.id)} className="p-1 text-slate-600 hover:text-rose-600" aria-label="Delete">
                           <Trash2 size={13} />
                         </button>
                       </div>
@@ -376,7 +412,7 @@ export function RateCards() {
 
       {data.clients.length === 0 && (
         <Card className="py-16 text-center">
-          <p className="text-slate-400">No clients yet. Add a client to create rate cards.</p>
+          <p className="text-slate-500">No clients yet. Add a client to create rate cards.</p>
         </Card>
       )}
 
@@ -399,12 +435,12 @@ export function RateCards() {
                   <Button variant="ghost" className="text-xs" onClick={() => setDialog({ type: 'addCard', clientId: client.id })}>
                     <Plus size={13} /> Add rate card
                   </Button>
-                  <button onClick={() => setDialog({ type: 'editClient', client })} className="p-1.5 text-slate-400 hover:text-brand-600" aria-label="Edit client">
+                  <button onClick={() => setDialog({ type: 'editClient', client })} className="p-1.5 text-slate-500 hover:text-brand-600" aria-label="Edit client">
                     <Pencil size={14} />
                   </button>
                   <button
                     onClick={() => { if (confirm(`Delete client "${client.name}" and all associated rate cards?`)) deleteClient(client.id) }}
-                    className="p-1.5 text-slate-400 hover:text-rose-600"
+                    className="p-1.5 text-slate-500 hover:text-rose-600"
                     aria-label="Delete client"
                   >
                     <Trash2 size={14} />
@@ -414,7 +450,7 @@ export function RateCards() {
             />
             <CardBody>
               {cards.length === 0 ? (
-                <p className="text-sm text-slate-400">No rate cards for this client.</p>
+                <p className="text-sm text-slate-500">No rate cards for this client.</p>
               ) : (
                 cards.map((card) => {
                   const units = data.rateCardUnits.filter((u) => u.rateCardId === card.id)
@@ -439,10 +475,10 @@ export function RateCards() {
 
       {/* Dialogs */}
       {dialog?.type === 'addClient' && (
-        <ClientModal onSave={(name, divisions) => addClient({ name, divisions })} onClose={close} />
+        <ClientModal onSave={(name, divisions, address) => addClient({ name, divisions, ...address })} onClose={close} />
       )}
       {dialog?.type === 'editClient' && (
-        <ClientModal initial={dialog.client} onSave={(name, divisions) => updateClient(dialog.client.id, { name, divisions })} onClose={close} />
+        <ClientModal initial={dialog.client} onSave={(name, divisions, address) => updateClient(dialog.client.id, { name, divisions, ...address })} onClose={close} />
       )}
       {dialog?.type === 'addCard' && (
         <RateCardModal

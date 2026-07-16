@@ -5,26 +5,32 @@ export default {
   theme: {
     extend: {
       colors: {
-        // Fiberlytic brand palette — gold
+        // FiberLytic brand palette — monochromatic (Obsidian/White scale)
         brand: {
-          50:  '#fef8e7',
-          100: '#fdefc4',
-          200: '#f9da8a',
-          300: '#f3bf3e',
-          400: '#e8a90e',
-          500: '#c9920a',
-          600: '#a87208',
-          700: '#835907',
-          800: '#604005',
-          900: '#3e2a03',
-          950: '#221602',
+          50:  '#ececec', // Cloud — exact page-background gray sampled from brand reference
+          100: '#f0f0f0', // Mist
+          200: '#e5e5e5', // Silver
+          300: '#d4d4d4',
+          400: '#a3a3a3',
+          500: '#6b6b6b', // Body text
+          600: '#525252',
+          700: '#333333', // Charcoal
+          800: '#1f1f1f',
+          900: '#111111', // Obsidian
+          950: '#0a0a0a',
         },
+        // Accent used for links, progress, active states — brand guide's Info/Links semantic color
         fiber: {
-          400: '#22d3ee',
-          500: '#06b6d4',
-          600: '#0891b2',
+          400: '#60a5fa',
+          500: '#2563eb',
+          600: '#1d4ed8',
         },
-        // Explicit dark surface tokens
+        // Semantic UI colors from the brand guide
+        success: '#16a34a',
+        danger: '#dc2626',
+        warning: '#a16207',
+        info: '#2563eb',
+        // Explicit dark surface tokens (already aligned with Obsidian #111111)
         surface: {
           900: '#0a0a0a',
           800: '#111111',
@@ -35,7 +41,8 @@ export default {
         },
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'Avenir', 'Helvetica', 'Arial', 'sans-serif'],
+        sans: ['DM Sans', 'system-ui', 'Avenir', 'Helvetica', 'Arial', 'sans-serif'],
+        heading: ['Instrument Sans', 'system-ui', 'Avenir', 'Helvetica', 'Arial', 'sans-serif'],
       },
     },
   },

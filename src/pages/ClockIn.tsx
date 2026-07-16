@@ -11,6 +11,8 @@ import { Card, CardHeader, CardBody } from '../components/ui/Card'
 import { Button, Field, Input, Select } from '../components/ui/Form'
 import { Modal } from '../components/ui/Modal'
 import { pointInPolygon } from '../lib/geofence'
+import { localDateStr } from '../lib/format'
+import { weekStart } from '../lib/analytics'
 
 type GpsState = 'idle' | 'checking' | 'inside' | 'outside' | 'error' | 'no-boundary'
 
@@ -132,9 +134,9 @@ function EditClockModal({ entryId, onClose }: { entryId: string; onClose: () => 
 // ── Main page ───────────────────────────────────────────────────────────────
 
 export function ClockIn() {
-  const { data, addClockIn, clockOut, deleteClockEntry } = useData()
+  const { data, addClockIn, clockOut, deleteClockEntry, deleteClockEntries } = useData()
   const { isAdmin, activeEmployeeId } = useRole()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
 
   // In field mode, lock the employee to the active user
   const [employeeId, setEmployeeId] = useState(() => (!isAdmin && activeEmployeeId) ? activeEmployeeId : '')
@@ -152,18 +154,24 @@ export function ClockIn() {
   // Edit modal state
   const [editEntryId, setEditEntryId] = useState<string | null>(null)
 
+  // Bulk-select for "All clock entries" — lets an admin clear out a whole
+  // employee's history (or any multi-entry cleanup) in one action instead of
+  // confirming a delete dialog per row.
+  const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set())
+
   // Weekly spreadsheet
   const [weekOffset, setWeekOffset] = useState(0)
 
+  // Local-calendar-day arithmetic throughout (never UTC — see localDateStr's
+  // doc comment) so the week grid's Monday..Sunday columns, and which one is
+  // "today," always match the browser's actual local date.
   const weekDays = useMemo(() => {
-    const now = new Date()
-    const utcDay = now.getUTCDay()
-    const mondayOffset = utcDay === 0 ? -6 : 1 - utcDay
-    const base = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + mondayOffset + weekOffset * 7))
+    const base = new Date(weekStart(localDateStr()) + 'T00:00:00')
+    base.setDate(base.getDate() + weekOffset * 7)
     return Array.from({ length: 7 }, (_, i) => {
       const d = new Date(base)
-      d.setUTCDate(base.getUTCDate() + i)
-      return d.toISOString().slice(0, 10)
+      d.setDate(base.getDate() + i)
+      return localDateStr(d)
     })
   }, [weekOffset])
 
@@ -234,6 +242,23 @@ export function ClockIn() {
     .sort((a, b) => b.clockIn.localeCompare(a.clockIn))
     .slice(0, 30)
 
+  // Shared selection set — a manual entry is the same underlying ClockEntry
+  // whether it's showing in "Manual entries" or "All clock entries" below, so
+  // one Set of ids works correctly across both tables' checkboxes.
+  const allEntriesSelected = allEntries.length > 0 && allEntries.every((e) => selectedEntryIds.has(e.id))
+  const toggleAllEntries = () => setSelectedEntryIds(allEntriesSelected ? new Set() : new Set(allEntries.map((e) => e.id)))
+  const toggleEntry = (id: string) => setSelectedEntryIds((prev) => {
+    const next = new Set(prev)
+    next.has(id) ? next.delete(id) : next.add(id)
+    return next
+  })
+  const deleteSelectedEntries = () => {
+    if (selectedEntryIds.size === 0) return
+    if (!confirm(`Delete ${selectedEntryIds.size} selected entr${selectedEntryIds.size === 1 ? 'y' : 'ies'}? This cannot be undone.`)) return
+    deleteClockEntries([...selectedEntryIds])
+    setSelectedEntryIds(new Set())
+  }
+
   const manualEntries = useMemo(
     () => [...(data.clockEntries ?? [])]
       .filter((e) => {
@@ -244,6 +269,15 @@ export function ClockIn() {
       .sort((a, b) => b.clockIn.localeCompare(a.clockIn)),
     [data.clockEntries, isAdmin, activeEmployeeId],
   )
+  const manualEntriesSelected = manualEntries.length > 0 && manualEntries.every((e) => selectedEntryIds.has(e.id))
+  const toggleManualEntries = () => setSelectedEntryIds((prev) => {
+    if (manualEntriesSelected) {
+      const next = new Set(prev)
+      for (const e of manualEntries) next.delete(e.id)
+      return next
+    }
+    return new Set([...prev, ...manualEntries.map((e) => e.id)])
+  })
 
   // GPS handlers
   const checkGps = () => {
@@ -325,7 +359,7 @@ export function ClockIn() {
                     {data.employees.find((e) => e.id === activeEmployeeId)?.name ?? '—'}
                   </div>
                 ) : (
-                  <Select value={employeeId} onChange={(e) => { setEmployeeId(e.target.value); setGpsState('idle'); setGpsCoords(null) }}>
+                  <Select value={employeeId} onChange={(e) => { setEmployeeId(e.target.value); setGpsState('idle'); setGpsCoords(null); setSelectedEntryIds(new Set()) }}>
                     <option value="">— Select employee —</option>
                     {data.employees.filter((e) => e.active).map((e) => (
                       <option key={e.id} value={e.id}>{e.name}</option>
@@ -369,7 +403,7 @@ export function ClockIn() {
                     </Button>
                   )}
                   {gpsState === 'checking' && (
-                    <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 py-4 text-sm text-slate-500">
+                    <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-50 py-4 text-sm text-slate-400">
                       <Loader2 size={18} className="animate-spin" /> Getting your GPS location…
                     </div>
                   )}
@@ -416,16 +450,16 @@ export function ClockIn() {
               onClick={() => setManualOpen((o) => !o)}
             >
               <div className="flex items-center gap-2">
-                <PenLine size={16} className="text-slate-500" />
+                <PenLine size={16} className="text-slate-400" />
                 <span className="text-sm font-semibold text-slate-700">Manual / batch time entry</span>
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">Admin</span>
+                <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-400">Admin</span>
               </div>
-              {manualOpen ? <ChevronUp size={16} className="text-slate-400" /> : <ChevronDown size={16} className="text-slate-400" />}
+              {manualOpen ? <ChevronUp size={16} className="text-slate-500" /> : <ChevronDown size={16} className="text-slate-500" />}
             </button>
 
             {manualOpen && (
               <div className="space-y-4 border-t border-slate-100 px-5 pb-5 pt-4">
-                <p className="text-xs text-slate-500">
+                <p className="text-xs text-slate-400">
                   Pick a crew to auto-select its members. Check everyone who worked the same shift, then save — one entry is created per person.
                 </p>
 
@@ -462,7 +496,7 @@ export function ClockIn() {
                 {/* Employee checklist */}
                 <div>
                   <div className="mb-1.5 flex items-center justify-between">
-                    <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Who worked this shift?</p>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Who worked this shift?</p>
                     <button type="button" onClick={toggleAll} className="text-xs font-medium text-brand-600 hover:text-brand-700">
                       {allSelected ? 'Deselect all' : 'Select all'}
                     </button>
@@ -485,11 +519,11 @@ export function ClockIn() {
                       </label>
                     ))}
                     {batchEmps.length === 0 && (
-                      <p className="px-3 py-3 text-xs text-slate-400">No active employees.</p>
+                      <p className="px-3 py-3 text-xs text-slate-500">No active employees.</p>
                     )}
                   </div>
                   {selectedEmpIds.size > 0 && (
-                    <p className="mt-1.5 text-xs text-slate-500">{selectedEmpIds.size} employee{selectedEmpIds.size !== 1 ? 's' : ''} selected</p>
+                    <p className="mt-1.5 text-xs text-slate-400">{selectedEmpIds.size} employee{selectedEmpIds.size !== 1 ? 's' : ''} selected</p>
                   )}
                 </div>
 
@@ -515,28 +549,28 @@ export function ClockIn() {
               <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
                 <div>
                   <p className="text-sm font-semibold text-slate-800">Weekly hours</p>
-                  <p className="text-xs text-slate-400">
+                  <p className="text-xs text-slate-500">
                     {new Date(weekDays[0] + 'T12:00:00Z').toLocaleDateString([], { month: 'short', day: 'numeric' })}
                     {' – '}
                     {new Date(weekDays[6] + 'T12:00:00Z').toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' })}
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
-                  <button onClick={() => setWeekOffset((o) => o - 1)} className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><ChevronLeft size={15} /></button>
+                  <button onClick={() => setWeekOffset((o) => o - 1)} className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-400"><ChevronLeft size={15} /></button>
                   {weekOffset !== 0 && (
-                    <button onClick={() => setWeekOffset(0)} className="rounded px-2 py-1 text-[11px] font-medium text-slate-400 hover:bg-slate-100 hover:text-slate-600">Today</button>
+                    <button onClick={() => setWeekOffset(0)} className="rounded px-2 py-1 text-[11px] font-medium text-slate-500 hover:bg-slate-100 hover:text-slate-400">Today</button>
                   )}
-                  <button onClick={() => setWeekOffset((o) => o + 1)} className="rounded p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"><ChevronRight size={15} /></button>
+                  <button onClick={() => setWeekOffset((o) => o + 1)} className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-400"><ChevronRight size={15} /></button>
                 </div>
               </div>
               <CardBody className="p-0">
                 {weekSheet.length === 0 ? (
-                  <p className="px-5 py-10 text-center text-sm text-slate-400">No time entries this week.</p>
+                  <p className="px-5 py-10 text-center text-sm text-slate-500">No time entries this week.</p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                       <thead>
-                        <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        <tr className="border-b border-slate-200 bg-slate-50 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                           <th className="px-4 py-2.5 text-left">Employee</th>
                           {weekDays.map((dayStr, i) => (
                             <th key={dayStr} className={`px-2 py-2 text-center ${dayStr === today ? 'text-brand-600' : ''}`}>
@@ -557,7 +591,7 @@ export function ClockIn() {
                               <td key={di} className={`px-2 py-2.5 text-center font-mono text-xs ${weekDays[di] === today ? 'bg-brand-50/40' : ''}`}>
                                 {hrs > 0
                                   ? <span className="font-semibold text-slate-700">{hrs.toFixed(1)}</span>
-                                  : <span className="text-slate-200">—</span>}
+                                  : <span className="text-slate-800">—</span>}
                               </td>
                             ))}
                             <td className="px-3 py-2.5 text-right font-mono text-xs font-bold text-slate-800">{total.toFixed(1)}</td>
@@ -565,7 +599,7 @@ export function ClockIn() {
                         ))}
                       </tbody>
                       <tfoot>
-                        <tr className="border-t border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-600">
+                        <tr className="border-t border-slate-200 bg-slate-50 text-[11px] font-semibold text-slate-400">
                           <td className="px-4 py-2">Total</td>
                           {weekDays.map((_, di) => (
                             <td key={di} className={`px-2 py-2 text-center font-mono ${weekDays[di] === today ? 'bg-brand-50/40' : ''}`}>
@@ -588,16 +622,35 @@ export function ClockIn() {
           <Card>
             <CardHeader
               title={isAdmin ? `Manual entries · ${manualEntries.length}` : `My time entries · ${manualEntries.length}`}
-              subtitle={isAdmin ? 'Pencil to edit · trash to delete' : 'Your manually entered clock times'}
+              subtitle={isAdmin ? 'Check rows to bulk-delete · pencil to edit · trash to delete one' : 'Your manually entered clock times'}
+              action={isAdmin && selectedEntryIds.size > 0 ? (
+                <button
+                  onClick={deleteSelectedEntries}
+                  className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-100 transition"
+                >
+                  <Trash2 size={13} /> Delete {selectedEntryIds.size} selected
+                </button>
+              ) : undefined}
             />
             <CardBody className="p-0">
               {manualEntries.length === 0 ? (
-                <p className="px-5 py-10 text-center text-sm text-slate-400">No manual entries yet.</p>
+                <p className="px-5 py-10 text-center text-sm text-slate-500">No manual entries yet.</p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                      <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                        {isAdmin && (
+                          <th className="px-3 py-2.5">
+                            <input
+                              type="checkbox"
+                              checked={manualEntriesSelected}
+                              onChange={toggleManualEntries}
+                              className="rounded border-slate-300 text-brand-600"
+                              aria-label="Select all manual entries"
+                            />
+                          </th>
+                        )}
                         <th className="px-3 py-2.5">Date</th>
                         {isAdmin && <th className="px-3 py-2.5">Employee</th>}
                         <th className="px-3 py-2.5">Crew</th>
@@ -615,11 +668,22 @@ export function ClockIn() {
                         const proj = data.projects.find((p)  => p.id  === e.projectId)
                         const hrs  = hrsNum(e.clockIn, e.clockOut)
                         return (
-                          <tr key={e.id} className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'} hover:bg-brand-50/30`}>
-                            <td className="whitespace-nowrap px-3 py-2 text-slate-500">{fmtDate(e.clockIn)}</td>
+                          <tr key={e.id} className={`${selectedEntryIds.has(e.id) ? 'bg-brand-50/60' : i % 2 === 0 ? 'bg-white' : 'bg-slate-50/60'} hover:bg-brand-50/30`}>
+                            {isAdmin && (
+                              <td className="px-3 py-2">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedEntryIds.has(e.id)}
+                                  onChange={() => toggleEntry(e.id)}
+                                  className="rounded border-slate-300 text-brand-600"
+                                  aria-label={`Select entry for ${emp?.name ?? 'employee'} on ${fmtDate(e.clockIn)}`}
+                                />
+                              </td>
+                            )}
+                            <td className="whitespace-nowrap px-3 py-2 text-slate-400">{fmtDate(e.clockIn)}</td>
                             {isAdmin && <td className="px-3 py-2 font-medium text-slate-800">{emp?.name ?? '—'}</td>}
-                            <td className="px-3 py-2 text-slate-500">{crew?.name ?? <span className="text-slate-300">—</span>}</td>
-                            <td className="max-w-[140px] truncate px-3 py-2 text-slate-600">{proj?.name ?? '—'}</td>
+                            <td className="px-3 py-2 text-slate-400">{crew?.name ?? <span className="text-slate-600">—</span>}</td>
+                            <td className="max-w-[140px] truncate px-3 py-2 text-slate-400">{proj?.name ?? '—'}</td>
                             <td className="whitespace-nowrap px-3 py-2 font-mono text-slate-700">{fmtTime(e.clockIn)}</td>
                             <td className="whitespace-nowrap px-3 py-2 font-mono text-slate-700">
                               {e.clockOut ? fmtTime(e.clockOut) : <span className="text-emerald-600 font-medium">Active</span>}
@@ -632,17 +696,19 @@ export function ClockIn() {
                                 <div className="flex items-center justify-end gap-0.5">
                                   <button
                                     onClick={() => setEditEntryId(e.id)}
-                                    className="rounded p-1.5 text-slate-400 hover:bg-brand-50 hover:text-brand-600"
+                                    className="rounded p-1.5 text-slate-500 hover:bg-brand-50 hover:text-brand-600"
                                     title="Edit entry"
                                   >
                                     <Pencil size={13} />
                                   </button>
                                   <button
                                     onClick={() => {
-                                      if (confirm(`Delete entry for ${emp?.name ?? 'employee'} on ${fmtDate(e.clockIn)}?`))
+                                      if (confirm(`Delete entry for ${emp?.name ?? 'employee'} on ${fmtDate(e.clockIn)}?`)) {
                                         deleteClockEntry(e.id)
+                                        setSelectedEntryIds((prev) => { const next = new Set(prev); next.delete(e.id); return next })
+                                      }
                                     }}
-                                    className="rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                                    className="rounded p-1.5 text-slate-500 hover:bg-rose-50 hover:text-rose-600"
                                     title="Delete entry"
                                   >
                                     <Trash2 size={13} />
@@ -655,8 +721,8 @@ export function ClockIn() {
                       })}
                     </tbody>
                     <tfoot>
-                      <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-500">
-                        <td colSpan={isAdmin ? 6 : 5} className="px-3 py-2">Total</td>
+                      <tr className="border-t border-slate-200 bg-slate-50 text-xs font-semibold text-slate-400">
+                        <td colSpan={isAdmin ? 7 : 5} className="px-3 py-2">Total</td>
                         <td className="px-3 py-2 text-right font-mono text-slate-700">
                           {manualEntries.reduce((s, e) => s + (hrsNum(e.clockIn, e.clockOut) ?? 0), 0).toFixed(1)}
                         </td>
@@ -675,12 +741,31 @@ export function ClockIn() {
               <CardHeader
                 title="All clock entries"
                 subtitle={employeeId ? employee?.name : 'GPS + manual · last 30'}
+                action={isAdmin && selectedEntryIds.size > 0 ? (
+                  <button
+                    onClick={deleteSelectedEntries}
+                    className="flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-600 hover:bg-rose-100 transition"
+                  >
+                    <Trash2 size={13} /> Delete {selectedEntryIds.size} selected
+                  </button>
+                ) : undefined}
               />
               <CardBody className="p-0">
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead>
-                      <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      <tr className="border-b border-slate-100 text-left text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        {isAdmin && (
+                          <th className="px-4 py-2.5">
+                            <input
+                              type="checkbox"
+                              checked={allEntriesSelected}
+                              onChange={toggleAllEntries}
+                              className="rounded border-slate-300 text-brand-600"
+                              aria-label="Select all entries"
+                            />
+                          </th>
+                        )}
                         <th className="px-4 py-2.5">Employee</th>
                         <th className="px-4 py-2.5">Crew</th>
                         <th className="px-4 py-2.5">Project</th>
@@ -698,21 +783,32 @@ export function ClockIn() {
                         const proj = data.projects.find((p)  => p.id  === e.projectId)
                         const hrs  = hrsNum(e.clockIn, e.clockOut)
                         return (
-                          <tr key={e.id} className="border-b border-[#1e1e1e] hover:bg-white/5">
+                          <tr key={e.id} className={`border-b border-slate-100 hover:bg-slate-50 ${selectedEntryIds.has(e.id) ? 'bg-brand-50/40' : ''}`}>
+                            {isAdmin && (
+                              <td className="px-4 py-2.5">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedEntryIds.has(e.id)}
+                                  onChange={() => toggleEntry(e.id)}
+                                  className="rounded border-slate-300 text-brand-600"
+                                  aria-label={`Select entry for ${emp?.name ?? 'employee'} on ${fmtDate(e.clockIn)}`}
+                                />
+                              </td>
+                            )}
                             <td className="px-4 py-2.5">
                               <span className="font-medium text-slate-700">{emp?.name ?? '—'}</span>
                               {e.manual && (
                                 <span className="ml-1.5 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700">Manual</span>
                               )}
                             </td>
-                            <td className="px-4 py-2.5 text-slate-600">{crew?.name ?? <span className="text-slate-300">—</span>}</td>
-                            <td className="max-w-[100px] truncate px-4 py-2.5 text-slate-600">{proj?.name ?? '—'}</td>
-                            <td className="whitespace-nowrap px-4 py-2.5 text-slate-500">{fmtDate(e.clockIn)}</td>
+                            <td className="px-4 py-2.5 text-slate-400">{crew?.name ?? <span className="text-slate-600">—</span>}</td>
+                            <td className="max-w-[100px] truncate px-4 py-2.5 text-slate-400">{proj?.name ?? '—'}</td>
+                            <td className="whitespace-nowrap px-4 py-2.5 text-slate-400">{fmtDate(e.clockIn)}</td>
                             <td className="whitespace-nowrap px-4 py-2.5 text-slate-700">{fmtTime(e.clockIn)}</td>
                             <td className="whitespace-nowrap px-4 py-2.5 text-slate-700">
                               {e.clockOut ? fmtTime(e.clockOut) : <span className="font-medium text-emerald-600">Active</span>}
                             </td>
-                            <td className="px-4 py-2.5 text-right font-mono text-slate-600">
+                            <td className="px-4 py-2.5 text-right font-mono text-slate-400">
                               {hrs !== null ? hrs.toFixed(1) : '—'}
                             </td>
                             <td className="px-4 py-2.5">
@@ -720,7 +816,7 @@ export function ClockIn() {
                                 {e.manual && (
                                   <button
                                     onClick={() => setEditEntryId(e.id)}
-                                    className="rounded p-1.5 text-slate-300 hover:bg-brand-50 hover:text-brand-600"
+                                    className="rounded p-1.5 text-slate-600 hover:bg-brand-50 hover:text-brand-600"
                                     title="Edit"
                                   >
                                     <Pencil size={13} />
@@ -728,10 +824,12 @@ export function ClockIn() {
                                 )}
                                 <button
                                   onClick={() => {
-                                    if (confirm(`Delete ${e.manual ? 'manual' : 'GPS'} entry for ${emp?.name ?? 'employee'}?`))
+                                    if (confirm(`Delete ${e.manual ? 'manual' : 'GPS'} entry for ${emp?.name ?? 'employee'}?`)) {
                                       deleteClockEntry(e.id)
+                                      setSelectedEntryIds((prev) => { const next = new Set(prev); next.delete(e.id); return next })
+                                    }
                                   }}
-                                  className="rounded p-1.5 text-slate-300 hover:bg-rose-50 hover:text-rose-500"
+                                  className="rounded p-1.5 text-slate-600 hover:bg-rose-50 hover:text-rose-500"
                                   title="Delete"
                                 >
                                   <Trash2 size={13} />

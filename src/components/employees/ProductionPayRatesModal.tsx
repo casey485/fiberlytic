@@ -5,7 +5,7 @@ import { useRole } from '../../store/RoleContext'
 import { Modal } from '../ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../ui/Form'
 import { Badge } from '../ui/Badge'
-import { moneyExact, formatDate } from '../../lib/format'
+import { moneyExact, formatDate, localDateStr } from '../../lib/format'
 import { PRODUCTION_PAY_TYPES, productionPayTypeLabel } from '../../lib/productionPay'
 import type { Employee, EmployeeProductionRate, ProductionPayType } from '../../types'
 
@@ -20,7 +20,7 @@ type RateForm = {
 }
 
 function emptyForm(initial?: EmployeeProductionRate): RateForm {
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   return {
     unitCode: initial?.unitCode ?? '',
     unitDescription: initial?.unitDescription ?? '',
@@ -188,12 +188,12 @@ export function ProductionPayRatesModal({ employee, onClose }: { employee: Emplo
                     {isAdmin && (
                       <td className="px-2 py-2 text-right">
                         <div className="flex items-center justify-end gap-1">
-                          <button onClick={() => setEditing({ open: true, rate: r })} className="p-1 text-slate-300 hover:text-brand-600" aria-label="Edit">
+                          <button onClick={() => setEditing({ open: true, rate: r })} className="p-1 text-slate-400 hover:text-brand-600" aria-label="Edit">
                             <Pencil size={13} />
                           </button>
                           <button
                             onClick={() => { if (confirm(`Delete the ${r.unitCode} production rate for ${employee.name}?`)) deleteEmployeeProductionRate(r.id) }}
-                            className="p-1 text-slate-300 hover:text-rose-600"
+                            className="p-1 text-slate-400 hover:text-rose-600"
                             aria-label="Delete"
                           >
                             <Trash2 size={13} />

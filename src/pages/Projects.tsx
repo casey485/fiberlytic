@@ -8,7 +8,7 @@ import { Card } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Modal } from '../components/ui/Modal'
 import { Button, Field, Input, Select, Textarea } from '../components/ui/Form'
-import { money, number, percent, formatDate, projectStatusMeta, workTypeLabel } from '../lib/format'
+import { money, number, percent, formatDate, projectStatusMeta, workTypeLabel, localDateStr } from '../lib/format'
 import { projectProgress, summarizePnl } from '../lib/analytics'
 import type { Project, ProjectStatus, WorkType } from '../types'
 
@@ -34,20 +34,31 @@ const WORK_TYPE_DOT: Record<WorkType, string> = {
 
 export function Projects() {
   const { data, addProject } = useData()
-  const { isAdmin, activeEmployeeId } = useRole()
+  const { isAdmin, role, activeEmployeeId, activeSupervisorEmployeeId } = useRole()
   const [filter, setFilter] = useState<ProjectStatus | 'all'>('all')
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Project | null>(null)
 
-  // For field users: collect project IDs the employee's crews are assigned to
+  // Supervisor keeps its own separate identity from In-House view (see
+  // RoleContext's doc comment) — pick whichever id actually belongs to the
+  // current role rather than assuming activeEmployeeId.
+  const myIdentityId = role === 'supervisor' ? activeSupervisorEmployeeId : activeEmployeeId
+
+  // For field users: collect project IDs the employee's crews are assigned to.
+  // A supervisor instead sees whatever project(s) they're explicitly assigned
+  // to oversee, regardless of crew membership (overseeing isn't the same as
+  // being staffed on it).
   const myProjectIds = useMemo(() => {
-    if (isAdmin || !activeEmployeeId) return null
-    const emp = data.employees.find((e) => e.id === activeEmployeeId)
+    if (isAdmin || !myIdentityId) return null
+    if (role === 'supervisor') {
+      return new Set(data.projects.filter((p) => p.supervisorId === myIdentityId).map((p) => p.id))
+    }
+    const emp = data.employees.find((e) => e.id === myIdentityId)
     const myCrewIds = new Set<string>()
     for (const crew of data.crews) {
       if (emp?.defaultCrewId === crew.id) myCrewIds.add(crew.id)
-      if (crew.foremanId === activeEmployeeId) myCrewIds.add(crew.id)
-      if (crew.members.some((m) => m.employeeId === activeEmployeeId && m.active)) myCrewIds.add(crew.id)
+      if (crew.foremanId === myIdentityId) myCrewIds.add(crew.id)
+      if (crew.members.some((m) => m.employeeId === myIdentityId && m.active)) myCrewIds.add(crew.id)
     }
     const fromCurrentProject = data.crews
       .filter((c) => myCrewIds.has(c.id) && c.currentProjectId)
@@ -56,7 +67,7 @@ export function Projects() {
       .filter((p) => [...myCrewIds].some((cid) => p.crewIds.includes(cid)))
       .map((p) => p.id)
     return new Set([...fromCurrentProject, ...fromCrewIds])
-  }, [isAdmin, activeEmployeeId, data.employees, data.crews, data.projects])
+  }, [isAdmin, role, myIdentityId, data.employees, data.crews, data.projects])
 
   const filtered = useMemo(() => {
     let list = filter === 'all' ? data.projects : data.projects.filter((p) => p.status === filter)
@@ -93,7 +104,7 @@ export function Projects() {
               key={s}
               onClick={() => setFilter(s)}
               className={`rounded-full px-3 py-1 text-sm font-medium transition ${
-                filter === s ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'
+                filter === s ? 'bg-brand-600 text-white' : 'bg-white text-slate-400 ring-1 ring-slate-200 hover:bg-slate-50'
               }`}
             >
               {s === 'all' ? 'All' : projectStatusMeta[s].label}
@@ -112,15 +123,15 @@ export function Projects() {
                 <h3 className="font-semibold text-slate-900 pr-6">{p.name}</h3>
                 <Badge tone={projectStatusMeta[p.status].tone}>{projectStatusMeta[p.status].label}</Badge>
               </div>
-              <p className="mt-1 flex items-center gap-1 text-xs text-slate-500">
+              <p className="mt-1 flex items-center gap-1 text-xs text-slate-400">
                 <MapPin size={12} /> {p.location}{(p.workTypes ?? []).length > 0 ? ' · ' + (p.workTypes ?? []).map((w) => workTypeLabel[w]).join(' + ') : ''}
               </p>
-              <p className="mt-0.5 text-xs text-slate-400">{p.client}</p>
+              <p className="mt-0.5 text-xs text-slate-500">{p.client}</p>
 
               <div className="mt-4">
                 {p.footageGoal > 0 ? (
                   <>
-                    <div className="mb-1 flex justify-between text-xs text-slate-500">
+                    <div className="mb-1 flex justify-between text-xs text-slate-400">
                       <span>{number(p.footageComplete)} / {number(p.footageGoal)} LF</span>
                       <span className="font-medium text-slate-700">{percent(pct)} complete</span>
                     </div>
@@ -129,9 +140,9 @@ export function Projects() {
                     </div>
                   </>
                 ) : (
-                  <div className="flex items-center justify-between text-xs text-slate-500">
+                  <div className="flex items-center justify-between text-xs text-slate-400">
                     <span>{number(p.footageComplete)} LF placed</span>
-                    <span className="text-slate-400">No footage goal set</span>
+                    <span className="text-slate-500">No footage goal set</span>
                   </div>
                 )}
               </div>
@@ -139,24 +150,24 @@ export function Projects() {
               <div className={`mt-4 grid gap-2 border-t border-slate-100 pt-3 text-center ${isAdmin ? 'grid-cols-3' : 'grid-cols-2'}`}>
                 {isAdmin && (
                   <div>
-                    <p className="text-[11px] uppercase tracking-wide text-slate-400">Contract</p>
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Contract</p>
                     <p className="text-sm font-semibold text-slate-800">{money(p.contractValue)}</p>
                   </div>
                 )}
                 {isAdmin && (
                   <div>
-                    <p className="text-[11px] uppercase tracking-wide text-slate-400">Profit</p>
+                    <p className="text-[11px] uppercase tracking-wide text-slate-500">Profit</p>
                     <p className={`text-sm font-semibold ${profit >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                       {money(profit)}
                     </p>
                   </div>
                 )}
                 <div>
-                  <p className="text-[11px] uppercase tracking-wide text-slate-400">Work type</p>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Work type</p>
                   <p className="text-sm font-semibold text-slate-800">{(p.workTypes ?? []).map((w) => workTypeLabel[w]).join(' + ') || '—'}</p>
                 </div>
                 <div>
-                  <p className="text-[11px] uppercase tracking-wide text-slate-400">Due</p>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-500">Due</p>
                   <p className="text-sm font-semibold text-slate-800">{formatDate(p.dueDate)}</p>
                 </div>
               </div>
@@ -168,7 +179,7 @@ export function Projects() {
               {isAdmin && (
                 <button
                   onClick={(e) => { e.preventDefault(); setEditing(p) }}
-                  className="absolute right-3 top-3 z-10 rounded-md p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  className="absolute right-3 top-3 z-10 rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
                   aria-label="Edit project"
                 >
                   <Pencil size={14} />
@@ -180,7 +191,7 @@ export function Projects() {
       </div>
 
       {filtered.length === 0 && (
-        <Card className="p-10 text-center text-sm text-slate-400">
+        <Card className="p-10 text-center text-sm text-slate-500">
           {myProjectIds !== null
             ? 'No projects assigned to your crew yet.'
             : 'No projects match this filter.'}
@@ -240,8 +251,8 @@ function ClientField({
       )}
       {linkedCards.length > 0 && (
         <div className="mt-2">
-          <label className="mb-1 block text-xs font-medium text-slate-500">
-            Rate card <span className="font-normal text-slate-400">— used by the Field Map for billing</span>
+          <label className="mb-1 block text-xs font-medium text-slate-400">
+            Rate card <span className="font-normal text-slate-500">— used by the Field Map for billing</span>
           </label>
           <Select value={rateCardId} onChange={(e) => onRateCardChange(e.target.value)}>
             <option value="">— Not assigned —</option>
@@ -273,7 +284,7 @@ function NewProjectModal({
   onCreate: ReturnType<typeof useData>['addProject']
 }) {
   const { data } = useData()
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const [form, setForm] = useState({
     name: '',
     client: '',
@@ -344,7 +355,7 @@ function NewProjectModal({
                     type="button"
                     onClick={() => set('workTypes', active ? form.workTypes.filter((x) => x !== w) : [...form.workTypes, w])}
                     className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
-                      active ? WORK_TYPE_PILL[w] : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+                      active ? WORK_TYPE_PILL[w] : 'border-slate-300 bg-white text-slate-400 hover:border-slate-400'
                     }`}
                   >
                     <span className={`h-2 w-2 rounded-full ${active ? 'bg-white' : WORK_TYPE_DOT[w]}`} />
@@ -402,7 +413,13 @@ function EditProjectModal({ project, onClose }: { project: Project; onClose: () 
     contractValue: project.contractValue,
     budget: project.budget,
     footageGoal: project.footageGoal,
-    retentionPct: (project.retentionPct ?? 0) * 100,
+    // 0.10 (10%) is the standard default used everywhere else retentionPct is
+    // read (DailyPnL.tsx, Dashboard.tsx) for a project that predates this
+    // field or never had it explicitly set — falling back to 0 here instead
+    // showed "0" in the edit form, and saving without noticing silently
+    // zeroed out retention on any project that got edited for any other
+    // reason (rate card, contract value, etc.).
+    retentionPct: (project.retentionPct ?? 0.10) * 100,
     notes: project.notes ?? '',
   })
 
@@ -463,7 +480,7 @@ function EditProjectModal({ project, onClose }: { project: Project; onClose: () 
                     type="button"
                     onClick={() => set('workTypes', active ? form.workTypes.filter((x) => x !== w) : [...form.workTypes, w])}
                     className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-medium transition-colors ${
-                      active ? WORK_TYPE_PILL[w] : 'border-slate-300 bg-white text-slate-600 hover:border-slate-400'
+                      active ? WORK_TYPE_PILL[w] : 'border-slate-300 bg-white text-slate-400 hover:border-slate-400'
                     }`}
                   >
                     <span className={`h-2 w-2 rounded-full ${active ? 'bg-white' : WORK_TYPE_DOT[w]}`} />

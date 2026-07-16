@@ -1,4 +1,7 @@
-import type { AppData, PnLEntry, Project, Timecard, Equipment, WorkType, RateCardDivision, InvoiceLineItem } from '../types'
+import type { AppData, PnLEntry, Project, Timecard, Equipment, WorkType, RateCardDivision, QaStatus, ProductionEntry, ProductionLineItem } from '../types'
+import { buildQaReviewRows, applyQaFilters, EMPTY_QA_FILTERS } from './qaReview'
+import type { QaFilterState } from './qaReview'
+import { localDateStr } from './format'
 
 /** Maps project work types to the division labels used on rate cards. */
 export function workTypeDivisions(wts: WorkType[]): RateCardDivision[] {
@@ -8,6 +11,54 @@ export function workTypeDivisions(wts: WorkType[]): RateCardDivision[] {
     if (wt === 'aerial') out.add('Aerial')
   }
   return [...out]
+}
+
+// Lower = needs more attention. Missing qaStatus (never submitted for
+// review — logged before the redline QA/QC workflow existed, or via the
+// plain Log Production/Log Crew Day flows) is treated as implicitly
+// approved, same convention as Production.tsx/DailyPnL.tsx's badges.
+const QA_STATUS_SEVERITY: Record<QaStatus, number> = {
+  rejected: 0, pending_review: 1, rejection_fixed: 2, approved_after_correction: 3, approved: 4,
+}
+/** The most-severe QA status among a set of line items — used anywhere a
+ *  single row (a production entry, a photo) needs one representative status
+ *  rolled up from several underlying billing lines. */
+export function worstQaStatus(items: { qaStatus?: QaStatus }[]): QaStatus {
+  return items.reduce<QaStatus>((worst, li) => {
+    const s = li.qaStatus ?? 'approved'
+    return QA_STATUS_SEVERITY[s] < QA_STATUS_SEVERITY[worst] ? s : worst
+  }, 'approved')
+}
+
+/** A production entry's real placed footage — prefers the LF-quantity sum
+ *  from its own rate-card line items when present, falling back to the raw
+ *  ProductionEntry.footage field otherwise. A multi-crew redline split
+ *  intentionally zeroes entry.footage on non-primary crews to avoid
+ *  double-counting shared footage (see productionFromMarkup.ts) — that
+ *  crew's own billed quantity still lives on its line items, so trusting
+ *  entry.footage directly silently shows 0 for those entries. */
+export function entryDisplayFootage(entry: ProductionEntry, lineItems: ProductionLineItem[]): number {
+  if (lineItems.length === 0) return entry.footage
+  return Math.round(lineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0))
+}
+
+/** Same LF-preferring logic as entryDisplayFootage, but for point-type work
+ *  (splices, handholes, tie-ins — billed in EA/SQFT, not LF) that genuinely
+ *  has zero linear footage, this returns the real billed quantity in its own
+ *  unit instead of a misleading "0 ft" — e.g. "3 EA" rather than "0 ft" for
+ *  an entry with real, nonzero billed work that just isn't measured in feet.
+ *  Only for per-row display; week/project footage TOTALS should keep using
+ *  entryDisplayFootage's pure-LF number, since blending LF with EA/SQFT into
+ *  one summed figure would be meaningless. */
+export function entryFootageLabel(entry: ProductionEntry, lineItems: ProductionLineItem[]): string {
+  const lfQty = lineItems.filter((li) => li.uom === 'LF').reduce((s, li) => s + li.quantity, 0)
+  if (lfQty > 0) return `${Math.round(lfQty).toLocaleString()} ft`
+  if (lineItems.length > 0) {
+    const byUom = new Map<string, number>()
+    for (const li of lineItems) byUom.set(li.uom, (byUom.get(li.uom) ?? 0) + li.quantity)
+    return [...byUom.entries()].map(([uom, qty]) => `${qty.toLocaleString()} ${uom}`).join(', ')
+  }
+  return `${Math.round(entry.footage).toLocaleString()} ft`
 }
 
 export const pnlCost = (e: PnLEntry) => e.laborCost + e.materialCost + e.equipmentCost + e.otherCost
@@ -68,6 +119,17 @@ export function footageByCrew(data: AppData, days = 14) {
     crew: c,
     footage: recent.filter((e) => e.crewId === c.id).reduce((s, e) => s + e.footage, 0),
     hours: recent.filter((e) => e.crewId === c.id).reduce((s, e) => s + e.hours, 0),
+  }))
+}
+
+/** Footage by subcontractor over a recent window — sibling to footageByCrew,
+ *  same shape, for the Subcontractors tab's productivity display. */
+export function footageBySubcontractor(data: AppData, days = 14) {
+  const recent = withinDays(data.production, days)
+  return (data.subcontractors ?? []).map((s) => ({
+    subcontractor: s,
+    footage: recent.filter((e) => e.subcontractorId === s.id).reduce((sum, e) => sum + e.footage, 0),
+    hours: recent.filter((e) => e.subcontractorId === s.id).reduce((sum, e) => sum + e.hours, 0),
   }))
 }
 
@@ -218,19 +280,19 @@ export function daysInMonth(dateStr: string): number {
 
 /** Returns the daily equipment cost for a piece of equipment using actual calendar days in the given month. */
 export const equipmentDailyRate = (eq: Equipment, dateStr?: string) =>
-  eq.monthlyCost / daysInMonth(dateStr ?? new Date().toISOString().slice(0, 10))
+  eq.monthlyCost / daysInMonth(dateStr ?? localDateStr())
 
 export function computeMetrics(
   data: AppData,
   options: { days?: number; startDate?: string; endDate?: string; projectId?: string } = {}
 ): MetricsResult {
-  const todayStr = new Date().toISOString().slice(0, 10)
+  const todayStr = localDateStr()
   const { projectId } = options
   let startDate = options.startDate
   if (!startDate && options.days) {
     const d = new Date()
     d.setDate(d.getDate() - (options.days - 1))
-    startDate = d.toISOString().slice(0, 10)
+    startDate = localDateStr(d)
   }
   const endDate = options.endDate ?? todayStr
   if (!startDate) startDate = '2000-01-01'
@@ -322,7 +384,7 @@ export function computeMetrics(
     while (d <= end) {
       const dow = d.getDay()
       if (dow !== 0 && dow !== 6) {
-        const ds = d.toISOString().slice(0, 10)
+        const ds = localDateStr(d)
         if (!prodByCrewDate.has(`${crewId}|${ds}`)) {
           // Only count equipment that was deployed by this date (or has no deployedFrom)
           const eligible = crewEquip.filter((eq) => !eq.deployedFrom || eq.deployedFrom <= ds)
@@ -368,34 +430,160 @@ export function recentUnitCodes(data: AppData, limit = 8): string[] {
   return out
 }
 
-/**
- * Group a project's billed-but-not-yet-invoiced MarkupBilling lines into invoice
- * line items, mirroring Invoicing.tsx's buildLinesFromSession for Print Reader
- * sessions. Returns the source billing ids too, so the caller can mark them
- * `invoiceId` once the invoice is actually created.
- */
-export function billableMarkupLines(data: AppData, projectId: string): { lines: InvoiceLineItem[]; sourceBillingIds: string[] } {
-  const markupIds = new Set(data.fieldMarkups.filter((m) => m.projectId === projectId && !m.deletedAt).map((m) => m.id))
-  const eligible = (data.markupBilling ?? []).filter(
-    (b) => markupIds.has(b.markupId) && b.invoiceStatus === 'invoiced' && !b.invoiceId,
-  )
-  const byKey = new Map<string, { description: string; quantity: number; unitPrice: number; ids: string[] }>()
-  for (const b of eligible) {
-    const key = `${b.rateCode}|${b.description}`
-    const existing = byKey.get(key)
-    if (existing) {
-      existing.quantity += b.quantity
-      existing.ids.push(b.id)
-    } else {
-      byKey.set(key, { description: `${b.description} (${b.rateCode})`, quantity: b.quantity, unitPrice: b.rate, ids: [b.id] })
+export interface QaRevenueBreakdown {
+  pendingReviewRevenue: number
+  approvedRevenue: number
+  rejectedRevenue: number
+  revenueWaitingOnCorrections: number
+  totalSubmittedRevenue: number
+  finalApprovedRevenue: number
+  /** Footage/units (not dollars) — grouped by unit of measure since a project
+   *  can mix LF, EA, etc. e.g. { LF: 1200, EA: 4 }. */
+  rejectedProductionValue: Record<string, number>
+  pendingProductionValue: Record<string, number>
+}
+
+/** Redline QA/QC Approval Workflow — P&L breakdown by QA status, kept as a
+ *  sibling selector to computeMetrics rather than folded into it: computeMetrics
+ *  has zero line changes so every existing revenue/EBITDA number is provably
+ *  unchanged, and this new function is purely additive. Walks
+ *  data.productionLineItems (not PnLEntry directly, since one PnLEntry can
+ *  aggregate several line items each with independent QA status) filtered
+ *  through the same QaFilterState/applyQaFilters the /qa-review page uses, so
+ *  the P&L cards and the review list can never disagree about what's "pending"
+ *  vs "approved" vs "rejected" for a given filter selection. */
+export function computeQaRevenueBreakdown(data: AppData, filters: QaFilterState = EMPTY_QA_FILTERS): QaRevenueBreakdown {
+  const filteredBillingIds = new Set(applyQaFilters(buildQaReviewRows(data), filters).map((r) => r.billing.id))
+
+  const out: QaRevenueBreakdown = {
+    pendingReviewRevenue: 0,
+    approvedRevenue: 0,
+    rejectedRevenue: 0,
+    revenueWaitingOnCorrections: 0,
+    totalSubmittedRevenue: 0,
+    finalApprovedRevenue: 0,
+    rejectedProductionValue: {},
+    pendingProductionValue: {},
+  }
+
+  const addQty = (bucket: Record<string, number>, uom: string, qty: number) => {
+    bucket[uom] = (bucket[uom] ?? 0) + qty
+  }
+
+  for (const li of data.productionLineItems ?? []) {
+    if (!li.qaStatus) continue
+    if (!li.sourceMarkupBillingId || !filteredBillingIds.has(li.sourceMarkupBillingId)) continue
+
+    out.totalSubmittedRevenue += li.extendedTotal
+    switch (li.qaStatus) {
+      case 'pending_review':
+        out.pendingReviewRevenue += li.extendedTotal
+        addQty(out.pendingProductionValue, li.uom, li.quantity)
+        break
+      case 'rejection_fixed':
+        out.revenueWaitingOnCorrections += li.extendedTotal
+        addQty(out.pendingProductionValue, li.uom, li.quantity)
+        break
+      case 'approved':
+        out.approvedRevenue += li.extendedTotal
+        out.finalApprovedRevenue += li.extendedTotal
+        break
+      case 'approved_after_correction':
+        out.finalApprovedRevenue += li.extendedTotal
+        break
+      case 'rejected':
+        out.rejectedRevenue += li.extendedTotal
+        addQty(out.rejectedProductionValue, li.uom, li.quantity)
+        break
     }
   }
-  const lines: InvoiceLineItem[] = []
-  const sourceBillingIds: string[] = []
-  let i = 0
-  for (const v of byKey.values()) {
-    lines.push({ id: `mb-line-${i++}`, description: v.description, quantity: v.quantity, unitPrice: v.unitPrice })
-    sourceBillingIds.push(...v.ids)
+
+  return out
+}
+
+export interface AllProductionQaTotals {
+  pendingReviewRevenue: number
+  rejectedRevenue: number
+  revenueWaitingOnCorrections: number
+  /** approved + approved_after_correction + every line item with no QA
+   *  lineage at all (logged before the redline QA/QC workflow existed, or via
+   *  the plain "Log production"/"Log crew day" flows, which never touch
+   *  MarkupBilling). Those are implicitly treated as approved — they were
+   *  never submitted for review, so there's nothing pending or rejected about
+   *  them, and hiding them from this total is what made the Admin Dashboard's
+   *  QA/QC Status card disagree with its own Gross Revenue card above it. */
+  finalApprovedRevenue: number
+  totalRevenue: number
+}
+
+/** Same "pending/rejected/waiting/approved" shape as computeQaRevenueBreakdown,
+ *  but over ALL production revenue in scope — not just line items linked to a
+ *  submitted redline — so the totals reconcile with Gross Revenue instead of
+ *  only covering redline-submitted work. Deliberately a separate function
+ *  rather than a flag on computeQaRevenueBreakdown: that one backs the QA/QC
+ *  Revenue tab and SubcontractorDashboard earnings, where "only what actually
+ *  went through the redline workflow" is the correct, narrower meaning.
+ *
+ *  Walks data.production (not productionLineItems) as the base loop: most
+ *  production — anything logged before the QA/QC workflow existed, or via
+ *  the plain "Log production"/"Log crew day" flows — has ZERO ProductionLineItem
+ *  rows at all, with its revenue living only on the linked PnLEntry (see
+ *  addProduction). Only entries that DO have rate-card line items are broken
+ *  out per line, since one entry can mix two different QA statuses. */
+export function computeAllProductionQaTotals(
+  data: AppData,
+  opts: { projectIds?: Set<string> | null; dateFrom?: string; dateTo?: string } = {},
+): AllProductionQaTotals {
+  const out: AllProductionQaTotals = {
+    pendingReviewRevenue: 0, rejectedRevenue: 0, revenueWaitingOnCorrections: 0,
+    finalApprovedRevenue: 0, totalRevenue: 0,
   }
-  return { lines, sourceBillingIds }
+  const bucket = (status: QaStatus | undefined, amount: number) => {
+    out.totalRevenue += amount
+    switch (status) {
+      case 'pending_review':
+        out.pendingReviewRevenue += amount
+        break
+      case 'rejection_fixed':
+        out.revenueWaitingOnCorrections += amount
+        break
+      case 'rejected':
+        out.rejectedRevenue += amount
+        break
+      case 'approved':
+      case 'approved_after_correction':
+      default:
+        out.finalApprovedRevenue += amount
+        break
+    }
+  }
+
+  const inScope = (date: string, projectId: string) => {
+    if (opts.dateFrom && date < opts.dateFrom) return false
+    if (opts.dateTo && date > opts.dateTo) return false
+    if (opts.projectIds && !opts.projectIds.has(projectId)) return false
+    return true
+  }
+
+  for (const entry of data.production ?? []) {
+    if (!inScope(entry.date, entry.projectId)) continue
+    const items = (data.productionLineItems ?? []).filter((li) => li.productionEntryId === entry.id)
+    if (items.length > 0) {
+      for (const li of items) bucket(li.qaStatus, li.extendedTotal)
+    } else {
+      const pnlEntry = (data.pnl ?? []).find((p) => p.productionEntryId === entry.id)
+      bucket(undefined, pnlEntry?.revenue ?? 0)
+    }
+  }
+
+  // PnLEntry rows not tied to any production entry (manual/other revenue) —
+  // same "never submitted for review" logic applies, so they're approved too.
+  const productionIds = new Set((data.production ?? []).map((e) => e.id))
+  for (const p of data.pnl ?? []) {
+    if (p.productionEntryId && productionIds.has(p.productionEntryId)) continue
+    if (!p.projectId || !inScope(p.date, p.projectId)) continue
+    bucket(undefined, p.revenue)
+  }
+
+  return out
 }

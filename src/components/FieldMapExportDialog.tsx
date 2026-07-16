@@ -1,16 +1,18 @@
 import { useMemo, useState } from 'react'
 import { X, Download, Loader2 } from 'lucide-react'
-import type { Crew, FieldMarkup, WorkObjectTypeId } from '../types'
+import type { AppData, FieldMarkup, WorkObjectTypeId } from '../types'
 import { WORK_OBJECT_TYPES, WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
 import type { ExportFilterCriteria } from '../lib/fieldMapExportFilters'
 import { DEFAULT_EXPORT_OPTIONS, type FieldMapExportOptions } from '../lib/fieldMapExportOptions'
+import { crewOrSubSelectorOptions } from '../lib/crewOrSub'
+import { useRole } from '../store/RoleContext'
 import { Field, Select, Input } from './ui/Form'
 
 type Scope = 'all' | 'currentPage' | 'selectedPages' | 'selectedRedlines'
 
 interface Props {
   markups: FieldMarkup[]
-  crews: Crew[]
+  data: AppData
   /** Only present for the paginated PdfPrintMode export — KmzMap's Leaflet map has
    *  no page concept, so the "current page"/"selected pages" scopes are hidden. */
   pageContext?: { currentPage: number; pageCount: number } | null
@@ -23,13 +25,19 @@ interface Props {
  *  radio option is chosen) picks the base candidate set; the filters below it
  *  further narrow whichever scope was picked — e.g. "Entire project" + "Crew:
  *  Christian" exports every one of Christian's redlines project-wide. */
-export function FieldMapExportDialog({ markups, crews, pageContext, exporting, onExport, onClose }: Props) {
+export function FieldMapExportDialog({ markups, data, pageContext, exporting, onExport, onClose }: Props) {
+  const { role, activeSubcontractorId } = useRole()
   const [scope, setScope] = useState<Scope>(pageContext ? 'currentPage' : 'all')
   const [selectedPages, setSelectedPages] = useState<Set<number>>(new Set(pageContext ? [pageContext.currentPage] : []))
   const [selectedRedlines, setSelectedRedlines] = useState<Set<string>>(new Set())
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
-  const [crewId, setCrewId] = useState('')
+  // Encoded 'crew:<id>' / 'sub:<id>' — same convention AddWorkModal's merged
+  // Crew/Subcontractor picker uses. Role-aware: a subcontractor session only
+  // ever sees their own company here (crewOrSubSelectorOptions collapses to
+  // one entry), so this filter can actually scope an export to "just me."
+  const [crewOrSubValue, setCrewOrSubValue] = useState('')
+  const crewOrSubOptions = crewOrSubSelectorOptions(data, role, activeSubcontractorId)
   const [workType, setWorkType] = useState<WorkObjectTypeId | ''>('')
   const [billingCode, setBillingCode] = useState('')
   const [options, setOptions] = useState<FieldMapExportOptions>(DEFAULT_EXPORT_OPTIONS)
@@ -60,6 +68,7 @@ export function FieldMapExportDialog({ markups, crews, pageContext, exporting, o
   }
 
   function handleExport() {
+    const [kind, id] = crewOrSubValue ? crewOrSubValue.split(':') : [null, null]
     const criteria: ExportFilterCriteria = {
       redlineIds: scope === 'selectedRedlines' ? selectedRedlines : null,
       pageIndexes: pageContext
@@ -69,7 +78,8 @@ export function FieldMapExportDialog({ markups, crews, pageContext, exporting, o
         : null,
       dateFrom: dateFrom || null,
       dateTo: dateTo || null,
-      crewId: crewId || null,
+      crewId: kind === 'crew' ? id : null,
+      subcontractorId: kind === 'sub' ? id : null,
       workType: workType || null,
       billingCode: billingCode || null,
     }
@@ -136,10 +146,30 @@ export function FieldMapExportDialog({ markups, crews, pageContext, exporting, o
             <Field label="Date to"><Input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} /></Field>
           </div>
 
-          <Field label="Crew">
-            <Select value={crewId} onChange={(e) => setCrewId(e.target.value)}>
-              <option value="">All crews</option>
-              {crews.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          <Field label="Crew or Subcontractor">
+            <Select value={crewOrSubValue} onChange={(e) => setCrewOrSubValue(e.target.value)}>
+              <option value="">{role === 'subcontractor' ? 'All your redlines' : 'All crews & subcontractors'}</option>
+              {crewOrSubOptions.length === 1 ? (
+                // Subcontractor session: only their own name, per the same
+                // isolation principle as the Add Work picker — never show the
+                // internal crew roster or other companies here either.
+                <option value={`${crewOrSubOptions[0].kind === 'subcontractor' ? 'sub' : 'crew'}:${crewOrSubOptions[0].id}`}>
+                  {crewOrSubOptions[0].name}
+                </option>
+              ) : (
+                <>
+                  <optgroup label="In-House Crews">
+                    {crewOrSubOptions.filter((o) => o.kind === 'crew').map((o) => (
+                      <option key={o.id} value={`crew:${o.id}`}>{o.name}</option>
+                    ))}
+                  </optgroup>
+                  <optgroup label="Subcontractors">
+                    {crewOrSubOptions.filter((o) => o.kind === 'subcontractor').map((o) => (
+                      <option key={o.id} value={`sub:${o.id}`}>{o.name}</option>
+                    ))}
+                  </optgroup>
+                </>
+              )}
             </Select>
           </Field>
 

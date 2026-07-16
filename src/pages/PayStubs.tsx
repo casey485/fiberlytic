@@ -6,7 +6,7 @@ import { Card, CardBody, CardHeader } from '../components/ui/Card'
 import { PageHeader } from '../components/ui/PageHeader'
 import { Select, Input } from '../components/ui/Form'
 import { weekStart, weekEnd, weekDates } from '../lib/analytics'
-import { money, moneyExact } from '../lib/format'
+import { money, moneyExact, localDateStr } from '../lib/format'
 import { calculateProductionPay } from '../lib/productionPay'
 import type { ProductionEntry, ProductionLineItem, ProductionPayAllocation } from '../types'
 
@@ -15,7 +15,7 @@ const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 function shiftWeek(dateStr: string, n: number): string {
   const d = new Date(dateStr + 'T12:00:00')
   d.setDate(d.getDate() + n * 7)
-  return d.toISOString().slice(0, 10)
+  return localDateStr(d)
 }
 
 function MetricTile({
@@ -23,11 +23,11 @@ function MetricTile({
 }: { label: string; value: string; sub?: string; tone?: 'neutral' | 'green' }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
-      <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+      <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">{label}</p>
       <p className={`mt-1 text-2xl font-extrabold ${tone === 'green' ? 'text-emerald-700' : 'text-slate-800'}`}>
         {value}
       </p>
-      {sub && <p className="mt-0.5 text-xs text-slate-400">{sub}</p>}
+      {sub && <p className="mt-0.5 text-xs text-slate-500">{sub}</p>}
     </div>
   )
 }
@@ -67,10 +67,10 @@ function AllocationLineRow({
 
   return (
     <tr className="border-b border-slate-50 align-top">
-      <td className="px-3 py-2 text-xs text-slate-500">{entry.date}</td>
-      <td className="px-3 py-2 text-xs text-slate-500">{projectName}{crewName ? ` · ${crewName}` : ''}</td>
+      <td className="px-3 py-2 text-xs text-slate-400">{entry.date}</td>
+      <td className="px-3 py-2 text-xs text-slate-400">{projectName}{crewName ? ` · ${crewName}` : ''}</td>
       <td className="px-3 py-2 font-mono text-xs font-semibold text-brand-700">{lineItem.unitCode}</td>
-      <td className="px-3 py-2 text-xs text-slate-600">{lineItem.description}</td>
+      <td className="px-3 py-2 text-xs text-slate-400">{lineItem.description}</td>
       <td className="px-3 py-2 text-right text-xs text-slate-700">
         {lineItem.quantity} {lineItem.uom}
         {remaining > 0 && <span className="ml-1.5 text-amber-600">({remaining} unallocated)</span>}
@@ -83,13 +83,13 @@ function AllocationLineRow({
             return (
               <div key={a.id} className="flex items-center gap-2 text-xs">
                 <span className="text-slate-700">{emp?.name ?? '—'}</span>
-                <span className="text-slate-400">· {a.quantity} {lineItem.uom}</span>
+                <span className="text-slate-500">· {a.quantity} {lineItem.uom}</span>
                 {!hasRate && (
                   <span className="flex items-center gap-1 text-amber-600" title="No production pay rate found for this employee and unit.">
                     <AlertTriangle size={11} /> No rate
                   </span>
                 )}
-                <button onClick={() => onDelete(a.id)} className="text-slate-300 hover:text-rose-600" aria-label="Remove allocation">
+                <button onClick={() => onDelete(a.id)} className="text-slate-600 hover:text-rose-600" aria-label="Remove allocation">
                   <Trash2 size={12} />
                 </button>
               </div>
@@ -109,7 +109,7 @@ function AllocationLineRow({
                 const q = parseFloat(qty)
                 if (empId && q > 0) { onAdd(empId, q); setEmpId(''); setQty('') }
               }}
-              className="rounded p-1 text-slate-400 hover:text-brand-600"
+              className="rounded p-1 text-slate-500 hover:text-brand-600"
               aria-label="Add allocation"
             >
               <Plus size={14} />
@@ -167,7 +167,7 @@ function AllocateProductionSection({ wStart, wEnd }: { wStart: string; wEnd: str
       <CardHeader
         title={
           <button className="flex items-center gap-1.5 text-left" onClick={() => setExpanded((x) => !x)}>
-            {expanded ? <ChevronDown size={15} className="text-slate-400" /> : <ChevronUp size={15} className="text-slate-400" />}
+            {expanded ? <ChevronDown size={15} className="text-slate-500" /> : <ChevronUp size={15} className="text-slate-500" />}
             Allocate Production
           </button>
         }
@@ -180,11 +180,11 @@ function AllocateProductionSection({ wStart, wEnd }: { wStart: string; wEnd: str
       {expanded && (
         <CardBody className="p-0">
           {lineItems.length === 0 ? (
-            <p className="px-5 py-6 text-sm text-slate-400">No production entries logged in this week's date range.</p>
+            <p className="px-5 py-6 text-sm text-slate-500">No production entries logged in this week's date range.</p>
           ) : (
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-3 py-2 font-medium">Date</th>
                   <th className="px-3 py-2 font-medium">Project / Crew</th>
                   <th className="px-3 py-2 font-medium">Unit</th>
@@ -235,7 +235,7 @@ export function PayStubs() {
   const [weekOffset, setWeekOffset] = useState(0)
   const [showAll, setShowAll] = useState(false)
 
-  const today   = new Date().toISOString().slice(0, 10)
+  const today   = localDateStr()
   const refDate = useMemo(() => shiftWeek(today, weekOffset), [today, weekOffset])
   const wStart  = weekStart(refDate)
   const wEnd    = weekEnd(refDate)
@@ -331,12 +331,12 @@ export function PayStubs() {
               className="rounded-lg border border-slate-200 bg-white p-1.5 shadow-sm hover:bg-slate-50"
               title="Previous week"
             >
-              <ChevronLeft size={16} className="text-slate-600" />
+              <ChevronLeft size={16} className="text-slate-400" />
             </button>
             {weekOffset !== 0 && (
               <button
                 onClick={() => setWeekOffset(0)}
-                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm hover:bg-slate-50"
+                className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-400 shadow-sm hover:bg-slate-50"
               >
                 This Week
               </button>
@@ -347,7 +347,7 @@ export function PayStubs() {
               className="rounded-lg border border-slate-200 bg-white p-1.5 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
               title="Next week"
             >
-              <ChevronRight size={16} className="text-slate-600" />
+              <ChevronRight size={16} className="text-slate-400" />
             </button>
           </div>
         }
@@ -377,7 +377,7 @@ export function PayStubs() {
               key={label}
               onClick={() => setShowAll(val)}
               className={`rounded-full px-3 py-1 text-xs font-semibold transition ${
-                showAll === val ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                showAll === val ? 'bg-brand-600 text-white' : 'bg-slate-100 text-slate-400 hover:bg-slate-200'
               }`}
             >
               {label}
@@ -385,7 +385,7 @@ export function PayStubs() {
           ))}
         </div>
         {isCurrentWeek && (
-          <p className="flex items-center gap-1.5 text-xs text-slate-400">
+          <p className="flex items-center gap-1.5 text-xs text-slate-500">
             <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-emerald-500" />
             Live — totals update as clock entries are logged
           </p>
@@ -396,13 +396,13 @@ export function PayStubs() {
       <Card className="overflow-x-auto overflow-hidden">
         <CardBody className="p-0">
           {display.length === 0 ? (
-            <div className="px-5 py-12 text-center text-sm text-slate-400">
+            <div className="px-5 py-12 text-center text-sm text-slate-500">
               No clock entries found for this week.
             </div>
           ) : (
             <table className="w-full min-w-[1000px] text-sm">
               <thead>
-                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
+                <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-3 font-medium">Employee</th>
                   <th className="px-4 py-3 font-medium">Crew</th>
                   {dates.map((d, i) => (
@@ -435,12 +435,12 @@ export function PayStubs() {
                         </div>
                         <div>
                           <p className="font-medium text-slate-800">{emp.name}</p>
-                          <p className="text-[11px] text-slate-400">{emp.role}</p>
+                          <p className="text-[11px] text-slate-500">{emp.role}</p>
                         </div>
                       </div>
                     </td>
                     {/* Crew */}
-                    <td className="px-4 py-3 text-xs text-slate-400">{crewNames || '—'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{crewNames || '—'}</td>
                     {/* Daily hours */}
                     {dates.map((d) => {
                       const h = byDate[d]?.hours ?? 0
@@ -455,7 +455,7 @@ export function PayStubs() {
                               {h.toFixed(1)}
                             </span>
                           ) : (
-                            <span className="text-slate-200">—</span>
+                            <span className="text-slate-800">—</span>
                           )}
                         </td>
                       )
@@ -465,7 +465,7 @@ export function PayStubs() {
                       {totalHours > 0 ? `${totalHours.toFixed(1)} h` : '—'}
                     </td>
                     {/* Rate */}
-                    <td className="px-4 py-3 text-right text-slate-400">
+                    <td className="px-4 py-3 text-right text-slate-500">
                       ${emp.hourlyRate.toFixed(2)}/h
                     </td>
                     {/* Hourly pay */}
@@ -493,13 +493,13 @@ export function PayStubs() {
               </tbody>
               <tfoot>
                 <tr className="border-t-2 border-slate-200 bg-slate-50">
-                  <td colSpan={2} className="px-5 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <td colSpan={2} className="px-5 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
                     Week Totals
                   </td>
                   {dates.map((d) => {
                     const dayTotal = display.reduce((s, r) => s + (r.byDate[d]?.hours ?? 0), 0)
                     return (
-                      <td key={d} className="px-2 py-2.5 text-center text-xs font-bold text-slate-600">
+                      <td key={d} className="px-2 py-2.5 text-center text-xs font-bold text-slate-400">
                         {dayTotal > 0 ? dayTotal.toFixed(1) : '—'}
                       </td>
                     )

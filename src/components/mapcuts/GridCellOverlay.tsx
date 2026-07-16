@@ -1,9 +1,20 @@
 import { useRef, useState } from 'react'
 import { Combine, X, Check } from 'lucide-react'
 import type { GridCellSelection } from '../../types'
-import { computeGridCells, areCellsConnected, fracToPixelRect, gridCellId, type Rect } from '../../lib/mapCuts/geometry'
+import { computeGridCells, areCellsConnected, expandRect, fracToPixelRect, gridCellId, type Rect } from '../../lib/mapCuts/geometry'
 
 interface PdfPoint { x: number; y: number }
+
+/** One other phase's finalized picks, rendered underneath the active phase's
+ *  own (interactive) cells as a non-interactive, color-coded ghost — lets the
+ *  user see everything already claimed by another phase while picking cells
+ *  for the current one. Only meaningful when the other phase shares this
+ *  grid's rows/cols (the caller is responsible for filtering that). */
+export interface GhostPhase {
+  color: string
+  label: string
+  selection: GridCellSelection
+}
 
 interface GridCellOverlayProps {
   pageWidthPt: number
@@ -16,6 +27,18 @@ interface GridCellOverlayProps {
   cols: number
   selection: GridCellSelection
   onSelectionChange: (next: GridCellSelection) => void
+  /** 0-30. Purely a preview — draws a dashed outline of expandRect(cell,
+   *  overlapPct) around every selected/merged cell so the Overlap slider has
+   *  visible on-screen feedback. The actual overlap is applied later, at
+   *  generate time, by pdfBuilder.ts via this same expandRect. */
+  overlapPct: number
+  /** This phase's own highlight color (phaseColor(pkg.phaseNumber)) — used
+   *  for its selected/merged cells instead of a fixed green, so the active
+   *  phase is visually distinct from every other phase's ghosted cells
+   *  (otherPhases below), which are drawn in their own phase colors. */
+  activeColor: string
+  /** Other phases in this print's phase family, drawn as read-only ghosts. */
+  otherPhases?: GhostPhase[]
   /** Reports incremental pan deltas (in PDF points) while dragging the grid
    *  background — same contract as BoxEditor's onPanDelta prop, just a
    *  separate implementation (a tap-vs-drag threshold here, since every pixel
@@ -32,7 +55,7 @@ const DRAG_THRESHOLD_PX = 6
  *  editing code. */
 export function GridCellOverlay({
   pageWidthPt, pageHeightPt, scale, panPt, containerWidthCss, containerHeightCss,
-  rows, cols, selection, onSelectionChange, onPanDelta,
+  rows, cols, selection, onSelectionChange, overlapPct, activeColor, otherPhases, onPanDelta,
 }: GridCellOverlayProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [mergeMode, setMergeMode] = useState(false)
@@ -165,6 +188,42 @@ export function GridCellOverlay({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       >
+        {otherPhases?.map((phase) => {
+          const otherMerged = new Set(phase.selection.merges.flat())
+          const soloIds = Object.keys(phase.selection.selectedOrder).filter((id) => !otherMerged.has(id))
+          const groups: { ids: string[]; label: string }[] = [
+            ...phase.selection.merges.map((ids) => ({ ids, label: phase.label })),
+            ...soloIds.map((id) => ({ ids: [id], label: phase.label })),
+          ]
+          return (
+            <g key={phase.label} style={{ pointerEvents: 'none' }}>
+              {groups.map(({ ids }) => {
+                const rects = ids.map((id) => cells[id]).filter((r): r is Rect => !!r)
+                if (rects.length === 0) return null
+                const x = Math.min(...rects.map((r) => r.x))
+                const y = Math.min(...rects.map((r) => r.y))
+                const right = Math.max(...rects.map((r) => r.x + r.width))
+                const bottom = Math.max(...rects.map((r) => r.y + r.height))
+                const rectPx = fracToPixelRect({ x, y, width: right - x, height: bottom - y }, pageWidthPt, pageHeightPt)
+                return (
+                  <g key={ids.join(',')}>
+                    <rect
+                      x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
+                      fill={phase.color} fillOpacity={0.12} stroke={phase.color} strokeWidth={strokeW}
+                    />
+                    <text
+                      x={rectPx.x + 4 / scale} y={rectPx.y + labelSize}
+                      fontSize={labelSize * 0.85} fontWeight={700} fill={phase.color}
+                      style={{ paintOrder: 'stroke', stroke: '#0a0a0a', strokeWidth: strokeW * 2 }}
+                    >
+                      {phase.label}
+                    </text>
+                  </g>
+                )
+              })}
+            </g>
+          )
+        })}
         {Array.from({ length: rows }).map((_, r) =>
           Array.from({ length: cols }).map((_, c) => {
             const id = gridCellId(r, c)
@@ -176,15 +235,16 @@ export function GridCellOverlay({
               <g key={id}>
                 <rect
                   x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
-                  fill={isSelected ? 'rgba(34,197,94,0.15)' : 'rgba(148,163,184,0.04)'}
-                  stroke={isPending ? '#f97316' : isSelected ? '#22c55e' : 'rgba(148,163,184,0.35)'}
+                  fill={isSelected ? activeColor : 'rgba(148,163,184,0.04)'}
+                  fillOpacity={isSelected ? 0.15 : undefined}
+                  stroke={isPending ? '#f97316' : isSelected ? activeColor : 'rgba(148,163,184,0.35)'}
                   strokeWidth={strokeW}
                   strokeDasharray={isPending ? `${6 / scale} ${4 / scale}` : undefined}
                 />
                 {isSelected && (
                   <text
                     x={rectPx.x + rectPx.width / 2} y={rectPx.y + rectPx.height / 2}
-                    fontSize={labelSize * 1.4} fontWeight={700} fill="#22c55e" textAnchor="middle" dominantBaseline="central"
+                    fontSize={labelSize * 1.4} fontWeight={700} fill={activeColor} textAnchor="middle" dominantBaseline="central"
                     style={{ pointerEvents: 'none', paintOrder: 'stroke', stroke: '#0a0a0a', strokeWidth: strokeW * 2 }}
                   >
                     {selection.selectedOrder[id]}
@@ -200,11 +260,11 @@ export function GridCellOverlay({
             <g key={group.join(',')}>
               <rect
                 x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
-                fill="rgba(59,130,246,0.15)" stroke="#3b82f6" strokeWidth={strokeW * 1.3}
+                fill={activeColor} fillOpacity={0.15} stroke={activeColor} strokeWidth={strokeW * 1.3}
               />
               <text
                 x={rectPx.x + rectPx.width / 2} y={rectPx.y + rectPx.height / 2}
-                fontSize={labelSize * 1.4} fontWeight={700} fill="#3b82f6" textAnchor="middle" dominantBaseline="central"
+                fontSize={labelSize * 1.4} fontWeight={700} fill={activeColor} textAnchor="middle" dominantBaseline="central"
                 style={{ pointerEvents: 'none', paintOrder: 'stroke', stroke: '#0a0a0a', strokeWidth: strokeW * 2 }}
               >
                 {order}
@@ -212,6 +272,26 @@ export function GridCellOverlay({
             </g>
           )
         })}
+        {overlapPct > 0 && (
+          <g style={{ pointerEvents: 'none' }}>
+            {Object.keys(selection.selectedOrder).filter((id) => !mergedCellIds.has(id)).map((id) => {
+              const cell = cells[id]
+              if (!cell) return null
+              const rectPx = fracToPixelRect(expandRect(cell, overlapPct), pageWidthPt, pageHeightPt)
+              return (
+                <rect key={`overlap-${id}`} x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
+                  fill="none" stroke="#e2e8f0" strokeOpacity={0.6} strokeDasharray={`${5 / scale} ${4 / scale}`} strokeWidth={strokeW} />
+              )
+            })}
+            {mergedRects.map(({ group, rect }) => {
+              const rectPx = fracToPixelRect(expandRect(rect, overlapPct), pageWidthPt, pageHeightPt)
+              return (
+                <rect key={`overlap-${group.join(',')}`} x={rectPx.x} y={rectPx.y} width={rectPx.width} height={rectPx.height}
+                  fill="none" stroke="#e2e8f0" strokeOpacity={0.6} strokeDasharray={`${5 / scale} ${4 / scale}`} strokeWidth={strokeW} />
+              )
+            })}
+          </g>
+        )}
       </svg>
 
       <div className="pointer-events-auto absolute right-2 top-2 flex flex-col gap-1.5 rounded-lg border border-[#2a2a2a] bg-[#141414]/95 p-2 shadow-lg backdrop-blur">

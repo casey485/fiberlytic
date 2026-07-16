@@ -12,13 +12,15 @@ import {
 import { useData } from '../store/DataContext'
 import { useRole } from '../store/RoleContext'
 import { saveBlob, loadBlob } from '../lib/fileStore'
-import { MARKUP_STATUS_META } from '../types'
+import { resolveActorId } from '../lib/actorId'
+import { MARKUP_STATUS_META, QA_STATUS_META } from '../types'
 import type { FieldMarkup, MarkupBilling, MarkupPhoto, MarkupAttachment, InspectionItem, InspectionResult, MarkupStatus } from '../types'
 import type { EditMode } from '../lib/markupLayer'
 import { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS } from '../lib/markupMeta'
 import { ENGINEERING_SYMBOL_MAP } from '../lib/engineeringSymbols'
 import { submitMarkupToProduction } from '../lib/productionFromMarkup'
 import { WORK_OBJECT_TYPE_MAP } from '../lib/workObjectTypes'
+import { localDateStr } from '../lib/format'
 
 // Re-export so existing imports from MarkupPanel still work
 export { FEATURE_DROP_TOOLS, FEATURE_TOOL_LABELS }
@@ -129,10 +131,29 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
     data, updateMarkup,
     addMarkupPhoto, deleteMarkupPhoto,
     addMarkupBilling, updateMarkupBilling, deleteMarkupBilling,
-    addProduction,
+    addProduction, addNotification, logQaSubmitted,
+    approveQaLine, rejectQaLine,
     addMarkupVideo, deleteMarkupVideo, addMarkupInspection, addMarkupAttachment, deleteMarkupAttachment,
   } = useData()
-  const { activeEmployeeId } = useRole()
+  const { role, activeEmployeeId, isAdmin, activeSupervisorEmployeeId, activeSubcontractorId } = useRole()
+  // Supervisor and subcontractor sessions each keep their own separate
+  // identity from In-House view (see RoleContext's doc comment and
+  // lib/actorId.ts) — this is the id recorded as "who did this" for any
+  // edit a session makes below.
+  const effectiveActorId = resolveActorId(role, activeEmployeeId, activeSupervisorEmployeeId, activeSubcontractorId)
+  // Even on their own submitted work, a subcontractor must never see the
+  // customer's billing rate/total — only the admin side ever sees what the
+  // customer is actually being charged. Their own pay (rate-card % based)
+  // is shown elsewhere (Subcontractor Dashboard earnings cards), not here.
+  // Same rule for an in-house field session — they're paid hourly (Time
+  // Clock), which has no relationship to the customer billing rate at all,
+  // so there's no substitute figure to show them either; it's just hidden.
+  // A supervisor gets full operational visibility across every crew and
+  // subcontractor on their project (unlike field/subcontractor, they're
+  // never blocked from someone else's redline — see isWorkHiddenFromSession)
+  // but the same "no revenue" rule applies: they oversee the work, not what
+  // it bills for.
+  const hideDollarAmounts = role === 'subcontractor' || role === 'field' || role === 'supervisor'
 
   const [tab, setTab] = useState<'notes' | 'photos' | 'billing' | 'inspection' | 'history' | 'attachments'>('notes')
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,7 +186,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
   const attachmentInputRef = useRef<HTMLInputElement>(null)
 
   // ── Billing ───────────────────────────────────────────────────────────────
-  const today = new Date().toISOString().slice(0, 10)
+  const today = localDateStr()
   const billingEntries = (data.markupBilling ?? []).filter((b) => b.markupId === markup.id)
   const [newDate, setNewDate]             = useState(today)
   const [newCrewId, setNewCrewId]         = useState('')
@@ -201,7 +222,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
     updateMarkup(markup.id, {
       featureName: featureName || null,
       notes: notes || null,
-    }, activeEmployeeId)
+    }, effectiveActorId)
     setDirty(false)
   }
 
@@ -224,9 +245,12 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
             caption: null,
             takenAt: new Date().toISOString(),
             uploadedBy: null,
-            lat: null,
-            lng: null,
-          }, activeEmployeeId)
+            lat: markup.capturedLat ?? null,
+            lng: markup.capturedLng ?? null,
+            crewId: markup.crewId,
+            employeeId: markup.createdBy,
+            subcontractorId: markup.assignedSubcontractorId,
+          }, effectiveActorId)
           await saveBlob(`mkp-${id}`, dataUrl)
           resolve()
         }
@@ -251,7 +275,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
       billable: newBillable,
       invoiceStatus: 'not_billed',
       notes: newNotes || null,
-    }, activeEmployeeId)
+    }, effectiveActorId)
     setNewDate(today); setNewCrewId(''); setNewRateCode(''); setNewDesc('')
     setNewQty(markup.lengthFt ? Math.round(markup.lengthFt) : 1)
     setNewRate(0); setNewNotes('')
@@ -267,8 +291,8 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
     setSubmitting(true)
     try {
       const result = submitMarkupToProduction({
-        markup, billingEntries, activeEmployeeId, data,
-        addProduction, updateMarkupBilling, updateMarkup,
+        markup, billingEntries, activeEmployeeId: effectiveActorId, data,
+        addProduction, updateMarkupBilling, updateMarkup, addNotification, logQaSubmitted,
       })
       if (!result) return
       setStatus('billed')
@@ -283,9 +307,9 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
 
   function toggleLock() {
     if (isLocked) {
-      updateMarkup(markup.id, { lockedAt: null }, activeEmployeeId)
+      updateMarkup(markup.id, { lockedAt: null }, effectiveActorId)
     } else {
-      updateMarkup(markup.id, { lockedAt: new Date().toISOString() }, activeEmployeeId)
+      updateMarkup(markup.id, { lockedAt: new Date().toISOString() }, effectiveActorId)
     }
   }
 
@@ -303,10 +327,17 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
     || markup.tool
 
   return (
-    <div className="flex h-full flex-col bg-[#0a0a0a] border-l border-[#1e1e1e] text-slate-200 text-xs">
+    // w-full min-w-0 — the wrapper this renders into (KmzMap.tsx/PdfPrintMode.tsx)
+    // is itself display:flex with a fixed width and overflow-hidden; without an
+    // explicit width here, this root sized itself to its own content's natural
+    // width instead of filling that fixed width, so anything inside wider than
+    // intended (e.g. a row of buttons) silently grew the whole panel and got
+    // visually clipped by the wrapper's overflow-hidden rather than reflowing
+    // to fit — the actual cause of content looking "cut off" at the edge.
+    <div className="flex h-full w-full min-w-0 flex-col bg-[#0e0e0e] text-slate-200 text-xs">
 
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2 border-b border-[#1e1e1e] shrink-0">
+      <div className="flex items-center gap-2 px-2.5 py-2 border-b border-[#1e1e1e] shrink-0">
         {toolLabel && (
           <span
             className="shrink-0 flex h-6 w-8 items-center justify-center rounded text-[10px] font-bold"
@@ -358,7 +389,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
             }`}
           >
             {t(`workObjectPanel.tabs.${tabKey === 'notes' ? 'details' : tabKey}`)}
-            {tabKey === 'billing' && billingTotal > 0 ? ` ($${billingTotal.toFixed(0)})` : ''}
+            {tabKey === 'billing' && billingTotal > 0 && !hideDollarAmounts ? ` ($${billingTotal.toFixed(0)})` : ''}
             {tabKey === 'photos' && photos.length > 0 ? ` (${photos.length})` : ''}
             {tabKey === 'inspection' && inspections.length > 0 ? ` (${inspections.length})` : ''}
             {tabKey === 'attachments' && attachments.length > 0 ? ` (${attachments.length})` : ''}
@@ -366,7 +397,12 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-0">
+      {/* min-w-0 — this is a flex-col child, so flex-1 governs its height,
+          but without min-w-0 its default min-width:auto still let deeply
+          nested content (e.g. a row of buttons that also wouldn't shrink)
+          push this container itself wider than the panel, which the panel's
+          own overflow-hidden then visually cut off rather than reflowed. */}
+      <div className="min-w-0 flex-1 overflow-y-auto px-3 py-3 space-y-0">
 
         {/* ── Notes tab ───────────────────────────────────────────────── */}
         {tab === 'notes' && (
@@ -463,7 +499,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                     <button
                       key={c}
                       disabled={isLocked}
-                      onClick={() => updateMarkup(markup.id, { color: c }, activeEmployeeId)}
+                      onClick={() => updateMarkup(markup.id, { color: c }, effectiveActorId)}
                       title={c}
                       className={`h-5 w-5 rounded-full border-2 transition disabled:opacity-40 ${markup.color === c ? 'border-white scale-110' : 'border-transparent hover:scale-110'}`}
                       style={{ background: c }}
@@ -474,7 +510,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                   <select
                     value={markup.weight}
                     disabled={isLocked}
-                    onChange={(e) => updateMarkup(markup.id, { weight: Number(e.target.value) }, activeEmployeeId)}
+                    onChange={(e) => updateMarkup(markup.id, { weight: Number(e.target.value) }, effectiveActorId)}
                     className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-1 text-[10px] text-slate-300 outline-none disabled:opacity-40"
                   >
                     {STYLE_WEIGHTS.map((w) => <option key={w.value} value={w.value}>{w.label}</option>)}
@@ -482,7 +518,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                   <select
                     value={markup.opacity ?? 1}
                     disabled={isLocked}
-                    onChange={(e) => updateMarkup(markup.id, { opacity: Number(e.target.value) }, activeEmployeeId)}
+                    onChange={(e) => updateMarkup(markup.id, { opacity: Number(e.target.value) }, effectiveActorId)}
                     className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-1 text-[10px] text-slate-300 outline-none disabled:opacity-40"
                   >
                     {[1, 0.75, 0.5, 0.25].map((o) => <option key={o} value={o}>{Math.round(o * 100)}%</option>)}
@@ -490,7 +526,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                   <select
                     value={markup.lineStyle ?? 'solid'}
                     disabled={isLocked}
-                    onChange={(e) => updateMarkup(markup.id, { lineStyle: e.target.value as FieldMarkup['lineStyle'] }, activeEmployeeId)}
+                    onChange={(e) => updateMarkup(markup.id, { lineStyle: e.target.value as FieldMarkup['lineStyle'] }, effectiveActorId)}
                     className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-1 text-[10px] text-slate-300 outline-none disabled:opacity-40"
                   >
                     <option value="solid">Solid</option>
@@ -504,7 +540,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                     <select
                       value={markup.fontFamily ?? 'inherit'}
                       disabled={isLocked}
-                      onChange={(e) => updateMarkup(markup.id, { fontFamily: e.target.value }, activeEmployeeId)}
+                      onChange={(e) => updateMarkup(markup.id, { fontFamily: e.target.value }, effectiveActorId)}
                       className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-1 text-[10px] text-slate-300 outline-none disabled:opacity-40"
                     >
                       {FONT_FAMILIES.map((f) => <option key={f} value={f}>{f === 'inherit' ? 'Default' : f}</option>)}
@@ -512,7 +548,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                     <select
                       value={markup.fontSize ?? 13}
                       disabled={isLocked}
-                      onChange={(e) => updateMarkup(markup.id, { fontSize: Number(e.target.value) }, activeEmployeeId)}
+                      onChange={(e) => updateMarkup(markup.id, { fontSize: Number(e.target.value) }, effectiveActorId)}
                       className="rounded border border-[#2a3347] bg-[#141414] px-1.5 py-1 text-[10px] text-slate-300 outline-none disabled:opacity-40"
                     >
                       {FONT_SIZES.map((s) => <option key={s} value={s}>{s}px</option>)}
@@ -523,7 +559,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                       <button
                         key={field}
                         disabled={isLocked}
-                        onClick={() => updateMarkup(markup.id, { [field]: !markup[field] }, activeEmployeeId)}
+                        onClick={() => updateMarkup(markup.id, { [field]: !markup[field] }, effectiveActorId)}
                         className={`h-6 w-6 rounded border text-[10px] font-bold transition disabled:opacity-40 ${
                           markup[field] ? 'border-brand-500 bg-brand-600/20 text-brand-300' : 'border-[#2a3347] text-slate-500 hover:text-slate-300'
                         }`}
@@ -537,9 +573,9 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
             )}
 
             {/* Customer + sync status */}
-            <div className="border-t border-[#1e1e1e] pt-2 flex items-center justify-between text-[10px] text-slate-500">
-              <span>Customer: <span className="text-slate-300">{client?.name ?? '—'}</span></span>
-              <span className={`rounded px-1.5 py-0.5 font-semibold uppercase tracking-wider ${
+            <div className="border-t border-[#1e1e1e] pt-2 flex items-center justify-between gap-2 text-[10px] text-slate-500">
+              <span className="min-w-0 truncate">Customer: <span className="text-slate-300">{client?.name ?? '—'}</span></span>
+              <span className={`shrink-0 rounded px-1.5 py-0.5 font-semibold uppercase tracking-wider ${
                 markup.syncStatus === 'error' ? 'bg-red-900/40 text-red-400' : 'bg-[#1e1e1e] text-slate-500'
               }`}>
                 {markup.syncStatus ?? 'local'}
@@ -565,7 +601,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                   <PhotoThumb
                     key={ph.id}
                     photo={ph}
-                    onDelete={() => deleteMarkupPhoto(ph.id, activeEmployeeId)}
+                    onDelete={() => deleteMarkupPhoto(ph.id, effectiveActorId)}
                   />
                 ))}
               </div>
@@ -586,14 +622,18 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
               </div>
             )}
 
-            {/* Upload buttons */}
+            {/* Upload buttons — min-w-0 lets each one actually shrink instead of
+                refusing to shrink below its own text's width (flexbox's default),
+                which on a narrow panel pushed the second button's edge past the
+                panel boundary entirely. Shortened label text as well so there's
+                less that ever needs shrinking in the first place. */}
             {!isLocked && (
               <div className="flex gap-2">
                 <button
                   onClick={() => fileInputRef.current?.click()}
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded border border-[#2a3347] py-2 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200 transition"
+                  className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded border border-[#2a3347] py-2 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200 transition"
                 >
-                  <ImagePlus size={12} /> Upload Photo / Video
+                  <ImagePlus size={12} className="shrink-0" /> <span className="truncate">Upload</span>
                 </button>
                 <button
                   onClick={() => {
@@ -605,9 +645,9 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                     input.onchange = () => handlePhotoFiles(input.files)
                     input.click()
                   }}
-                  className="flex flex-1 items-center justify-center gap-1.5 rounded border border-[#2a3347] py-2 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200 transition"
+                  className="flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded border border-[#2a3347] py-2 text-[11px] text-slate-400 hover:bg-white/5 hover:text-slate-200 transition"
                 >
-                  <Camera size={12} /> Camera
+                  <Camera size={12} className="shrink-0" /> <span className="truncate">Camera</span>
                 </button>
               </div>
             )}
@@ -629,14 +669,20 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                     key={b.id}
                     entry={b}
                     isLocked={isLocked}
+                    isAdmin={isAdmin}
                     onUpdate={(patch) => updateMarkupBilling(b.id, patch)}
-                    onDelete={() => deleteMarkupBilling(b.id, activeEmployeeId)}
+                    onDelete={() => deleteMarkupBilling(b.id, effectiveActorId)}
+                    onApproveQa={(note) => approveQaLine(b.id, effectiveActorId, note)}
+                    onRejectQa={(note) => rejectQaLine(b.id, effectiveActorId, note)}
+                    hideDollarAmounts={hideDollarAmounts}
                   />
                 ))}
-                <div className="flex items-center justify-between border-t border-[#2a3347] pt-2 text-[11px]">
-                  <span className="text-slate-500">Total</span>
-                  <span className="font-bold text-emerald-400">${billingTotal.toFixed(2)}</span>
-                </div>
+                {!hideDollarAmounts && (
+                  <div className="flex items-center justify-between border-t border-[#2a3347] pt-2 text-[11px]">
+                    <span className="text-slate-500">Total</span>
+                    <span className="font-bold text-emerald-400">${billingTotal.toFixed(2)}</span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -713,8 +759,10 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                   />
                 </div>
 
-                {/* Unit / Footage / Rate */}
-                <div className="grid grid-cols-3 gap-2">
+                {/* Unit / Footage / Rate — Rate is customer pricing, never shown to a
+                    subcontractor (even for their own work); newRate still gets set from
+                    the Rate Code selection above, it's just not visible or editable here. */}
+                <div className={hideDollarAmounts ? 'grid grid-cols-2 gap-2' : 'grid grid-cols-3 gap-2'}>
                   <div>
                     <Label>Unit</Label>
                     <select
@@ -735,20 +783,24 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                       className="w-full rounded border border-[#2a3347] bg-[#141414] px-2 py-1.5 text-[11px] text-slate-200 outline-none"
                     />
                   </div>
-                  <div>
-                    <Label>Rate ($)</Label>
-                    <input
-                      type="number" min={0} step={0.01} value={newRate}
-                      onChange={(e) => setNewRate(parseFloat(e.target.value) || 0)}
-                      className="w-full rounded border border-[#2a3347] bg-[#141414] px-2 py-1.5 text-[11px] text-slate-200 outline-none"
-                    />
-                  </div>
+                  {!hideDollarAmounts && (
+                    <div>
+                      <Label>Rate ($)</Label>
+                      <input
+                        type="number" min={0} step={0.01} value={newRate}
+                        onChange={(e) => setNewRate(parseFloat(e.target.value) || 0)}
+                        className="w-full rounded border border-[#2a3347] bg-[#141414] px-2 py-1.5 text-[11px] text-slate-200 outline-none"
+                      />
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <div className="text-[11px] text-slate-400">
-                    Total: <span className="font-bold text-emerald-400">${(newQty * newRate).toFixed(2)}</span>
-                  </div>
+                  {!hideDollarAmounts && (
+                    <div className="text-[11px] text-slate-400">
+                      Total: <span className="font-bold text-emerald-400">${(newQty * newRate).toFixed(2)}</span>
+                    </div>
+                  )}
                   <label className="flex items-center gap-1.5 cursor-pointer">
                     <input type="checkbox" checked={newBillable} onChange={(e) => setNewBillable(e.target.checked)}
                       className="accent-brand-500" />
@@ -813,7 +865,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                   className="flex w-full items-center justify-center gap-1.5 rounded bg-emerald-700 py-2 text-[11px] font-semibold text-white hover:bg-emerald-600 disabled:opacity-40 transition"
                 >
                   <Send size={11} />
-                  {submitting ? 'Submitting…' : `Submit to Production — $${unsubmittedTotal.toFixed(2)}`}
+                  {submitting ? 'Submitting…' : hideDollarAmounts ? 'Submit to Production' : `Submit to Production — $${unsubmittedTotal.toFixed(2)}`}
                 </button>
               )
             })()}
@@ -848,7 +900,7 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                 <div className="flex gap-2">
                   <button
                     onClick={() => setNewInspectionItems(null)}
-                    className="flex-1 rounded border border-[#2a3347] py-1.5 text-[11px] text-slate-400 hover:bg-white/5 transition"
+                    className="min-w-0 flex-1 truncate rounded border border-[#2a3347] py-1.5 text-[11px] text-slate-400 hover:bg-white/5 transition"
                   >
                     Cancel
                   </button>
@@ -858,11 +910,11 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
                       const overallResult: 'pass' | 'fail' | 'pending' = items.some((i) => i.result === 'fail')
                         ? 'fail' : items.every((i) => i.result !== 'na') ? 'pass' : 'pending'
                       addMarkupInspection({
-                        markupId: markup.id, items, overallResult, notes: null, createdBy: activeEmployeeId,
+                        markupId: markup.id, items, overallResult, notes: null, createdBy: effectiveActorId,
                       })
                       setNewInspectionItems(null)
                     }}
-                    className="flex-1 rounded bg-brand-600 py-1.5 text-[11px] font-semibold text-white hover:bg-brand-700 transition"
+                    className="min-w-0 flex-1 truncate rounded bg-brand-600 py-1.5 text-[11px] font-semibold text-white hover:bg-brand-700 transition"
                   >
                     Save Inspection
                   </button>
@@ -889,19 +941,19 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
 
             {inspections.map((insp) => (
               <div key={insp.id} className="rounded border border-[#2a3347] bg-[#0d0d0d] p-2.5">
-                <div className="mb-1.5 flex items-center justify-between">
-                  <span className={`text-[10px] font-bold uppercase ${
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <span className={`shrink-0 text-[10px] font-bold uppercase ${
                     insp.overallResult === 'pass' ? 'text-emerald-400' : insp.overallResult === 'fail' ? 'text-red-400' : 'text-slate-500'
                   }`}>
                     {insp.overallResult}
                   </span>
-                  <span className="text-[10px] text-slate-600">{new Date(insp.createdAt).toLocaleString()}</span>
+                  <span className="min-w-0 truncate text-right text-[10px] text-slate-600">{new Date(insp.createdAt).toLocaleString()}</span>
                 </div>
                 <ul className="space-y-0.5">
                   {insp.items.map((item) => (
-                    <li key={item.id} className="flex items-center justify-between text-[11px] text-slate-400">
-                      <span>{item.label}</span>
-                      <span className={item.result === 'pass' ? 'text-emerald-400' : item.result === 'fail' ? 'text-red-400' : 'text-slate-600'}>{item.result}</span>
+                    <li key={item.id} className="flex items-center justify-between gap-2 text-[11px] text-slate-400">
+                      <span className="min-w-0 truncate">{item.label}</span>
+                      <span className={`shrink-0 ${item.result === 'pass' ? 'text-emerald-400' : item.result === 'fail' ? 'text-red-400' : 'text-slate-600'}`}>{item.result}</span>
                     </li>
                   ))}
                 </ul>
@@ -918,20 +970,29 @@ export function MarkupPanel({ markup, onClose, onRequestDelete, editMode = 'none
             )}
             {historyEntries.map((h) => (
               <div key={h.id} className="rounded bg-white/5 px-2 py-1.5 text-[11px] text-slate-400">
-                <div className="flex items-center justify-between">
-                  <span>
-                    {h.action === 'created' && 'Work Object created'}
-                    {h.action === 'field_changed' && `Changed ${h.field}: ${h.oldValue ?? '(empty)'} → ${h.newValue ?? '(empty)'}`}
-                    {h.action === 'photo_added' && 'Photo added'}
-                    {h.action === 'photo_removed' && 'Photo removed'}
-                    {h.action === 'billing_added' && 'Billing line added'}
-                    {h.action === 'billing_removed' && 'Billing line removed'}
-                    {h.action === 'inspection_added' && 'Inspection recorded'}
-                    {h.action === 'locked' && 'Locked'}
-                    {h.action === 'unlocked' && 'Unlocked'}
-                  </span>
-                  <span className="shrink-0 text-slate-600">{new Date(h.timestamp).toLocaleString()}</span>
-                </div>
+                {/* Stacked, not side-by-side — the action description (especially
+                    field_changed's old→new value pair) can run long, and a narrow
+                    panel has no room to keep it on the same line as a timestamp
+                    without one of them getting cut off. */}
+                <p>
+                  {h.action === 'created' && 'Work Object created'}
+                  {h.action === 'field_changed' && `Changed ${h.field}: ${h.oldValue ?? '(empty)'} → ${h.newValue ?? '(empty)'}`}
+                  {h.action === 'photo_added' && 'Photo added'}
+                  {h.action === 'photo_removed' && 'Photo removed'}
+                  {h.action === 'billing_added' && 'Billing line added'}
+                  {h.action === 'billing_removed' && 'Billing line removed'}
+                  {h.action === 'inspection_added' && 'Inspection recorded'}
+                  {h.action === 'locked' && 'Locked'}
+                  {h.action === 'unlocked' && 'Unlocked'}
+                  {h.action === 'qa_submitted' && 'Submitted for QA/QC review'}
+                  {h.action === 'qa_approved' && 'QA/QC: Approved'}
+                  {h.action === 'qa_rejected' && 'QA/QC: Rejected'}
+                  {h.action === 'qa_rejection_fixed' && 'QA/QC: Rejection marked fixed'}
+                  {h.action === 'qa_approved_after_correction' && 'QA/QC: Approved after correction'}
+                </p>
+                <p className="mt-0.5 text-[10px] text-slate-600">{new Date(h.timestamp).toLocaleString()}</p>
+                {h.actor && <p className="mt-0.5 text-[10px] text-slate-600">by {h.actor}</p>}
+                {h.note && <p className="mt-0.5 text-[10px] italic text-slate-400">{h.note}</p>}
               </div>
             ))}
           </div>
@@ -1034,20 +1095,45 @@ function AttachmentRow({ attachment, onDelete }: { attachment: MarkupAttachment;
 // ── Billing row sub-component ─────────────────────────────────────────────────
 
 function BillingRow({
-  entry, isLocked, onUpdate, onDelete,
+  entry, isLocked, isAdmin, onUpdate, onDelete, onApproveQa, onRejectQa, hideDollarAmounts,
 }: {
   entry: MarkupBilling
   isLocked: boolean
+  /** Redline QA/QC Approval Workflow — Approve/Reject inline actions only render
+   *  for admins, and only once this line has entered the pipeline (qaStatus set
+   *  by submitMarkupToProduction). A line that's never been submitted has no
+   *  qaStatus and shows no QA UI at all — nothing to review yet. */
+  isAdmin: boolean
   onUpdate: (patch: Partial<MarkupBilling>) => void
   onDelete: () => void
+  onApproveQa: (note?: string) => void
+  onRejectQa: (note: string) => void
+  /** Customer billing rate/total — never shown to a subcontractor, even on
+   *  their own submitted work. */
+  hideDollarAmounts: boolean
 }) {
   const [open, setOpen] = useState(false)
+  const [rejecting, setRejecting] = useState(false)
+  const [rejectNote, setRejectNote] = useState('')
 
   const statusColors: Record<MarkupBilling['invoiceStatus'], string> = {
     not_billed: '#6b7280',
     invoiced:   '#f59e0b',
     approved:   '#06b6d4',
     paid:       '#22c55e',
+  }
+
+  const qaMeta = entry.qaStatus ? QA_STATUS_META[entry.qaStatus] : null
+  // Reviewable = there's an open question for an admin to answer. A fresh
+  // pending_review or a field-marked rejection_fixed both need a decision;
+  // approved/rejected/approved_after_correction are settled until acted on again.
+  const qaReviewable = entry.qaStatus === 'pending_review' || entry.qaStatus === 'rejection_fixed'
+
+  function submitReject() {
+    if (!rejectNote.trim()) return
+    onRejectQa(rejectNote.trim())
+    setRejecting(false)
+    setRejectNote('')
   }
 
   return (
@@ -1060,7 +1146,17 @@ function BillingRow({
           {entry.rateCode ? <span className="text-brand-400 mr-1">{entry.rateCode}</span> : null}
           {entry.description}
         </span>
-        <span className="shrink-0 text-[10px] font-bold text-emerald-400">${entry.total.toFixed(2)}</span>
+        {qaMeta && (
+          <span
+            className="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+            style={{ color: qaMeta.color, backgroundColor: `${qaMeta.color}22` }}
+          >
+            {qaMeta.label}
+          </span>
+        )}
+        {!hideDollarAmounts && (
+          <span className="shrink-0 text-[10px] font-bold text-emerald-400">${entry.total.toFixed(2)}</span>
+        )}
         <ChevronDown size={10} className={`text-slate-600 transition ${open ? 'rotate-180' : ''}`} />
       </button>
 
@@ -1069,7 +1165,7 @@ function BillingRow({
           <div className="grid grid-cols-3 gap-x-3 gap-y-1 text-slate-400">
             <span>Unit: <b className="text-slate-200">{entry.unitType}</b></span>
             <span>Qty: <b className="text-slate-200">{entry.quantity}</b></span>
-            <span>Rate: <b className="text-slate-200">${entry.rate.toFixed(2)}</b></span>
+            {!hideDollarAmounts && <span>Rate: <b className="text-slate-200">${entry.rate.toFixed(2)}</b></span>}
           </div>
 
           <div className="flex items-center gap-3">
@@ -1098,6 +1194,67 @@ function BillingRow({
           </div>
 
           {entry.notes && <p className="text-slate-500 italic">{entry.notes}</p>}
+
+          {/* QA/QC review panel — visible to everyone (so field users can read
+              rejection notes), but Approve/Reject only render for admins. */}
+          {qaMeta && (
+            <div className="rounded border border-[#1e1e1e] bg-[#141414] p-2 space-y-1.5">
+              {entry.qaRejectionNote && (
+                <p className="text-red-400"><b>Rejection note:</b> {entry.qaRejectionNote}</p>
+              )}
+              {entry.qaApprovedBy && entry.qaApprovedAt && (
+                <p className="text-slate-500">Approved by {entry.qaApprovedBy} · {new Date(entry.qaApprovedAt).toLocaleString()}</p>
+              )}
+              {entry.qaCorrectedBy && entry.qaCorrectedAt && (
+                <p className="text-slate-500">Marked fixed by {entry.qaCorrectedBy} · {new Date(entry.qaCorrectedAt).toLocaleString()}</p>
+              )}
+
+              {isAdmin && qaReviewable && !rejecting && (
+                <div className="flex gap-2 pt-0.5">
+                  <button
+                    onClick={() => onApproveQa()}
+                    className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded bg-emerald-700/80 py-1 text-[10px] font-semibold text-white hover:bg-emerald-600 transition"
+                  >
+                    <Check size={10} className="shrink-0" /> <span className="truncate">Approve</span>
+                  </button>
+                  <button
+                    onClick={() => setRejecting(true)}
+                    className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded bg-red-800/60 py-1 text-[10px] font-semibold text-white hover:bg-red-700 transition"
+                  >
+                    <X size={10} className="shrink-0" /> <span className="truncate">Reject</span>
+                  </button>
+                </div>
+              )}
+
+              {isAdmin && rejecting && (
+                <div className="space-y-1.5 pt-0.5">
+                  <textarea
+                    autoFocus
+                    value={rejectNote}
+                    onChange={(e) => setRejectNote(e.target.value)}
+                    placeholder="Rejection comments (required)…"
+                    rows={2}
+                    className="w-full rounded border border-red-900/60 bg-[#0d0d0d] px-2 py-1 text-[10px] text-slate-200 outline-none focus:border-red-500"
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={submitReject}
+                      disabled={!rejectNote.trim()}
+                      className="flex-1 rounded bg-red-700 py-1 text-[10px] font-semibold text-white hover:bg-red-600 disabled:opacity-40 transition"
+                    >
+                      Confirm Reject
+                    </button>
+                    <button
+                      onClick={() => { setRejecting(false); setRejectNote('') }}
+                      className="rounded border border-[#2a3347] px-2 py-1 text-[10px] text-slate-400 hover:text-slate-200 transition"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {!isLocked && (
             <button onClick={onDelete} className="flex items-center gap-1 text-red-500 hover:text-red-400 transition">
